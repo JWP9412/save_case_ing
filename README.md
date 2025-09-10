@@ -1,6 +1,12 @@
 # case-ing
 대법원 나의 사건 조회 자동화 API & 크롤러
 
+## 📚 원본 출처
+이 프로젝트는 [iicdii/case-ing](https://github.com/iicdii/case-ing)를 기반으로 하여 실시간 대화형 캡차 처리 시스템을 추가한 포크 버전입니다.
+
+**원본 저장소**: https://github.com/iicdii/case-ing  
+**포크 저장소**: https://github.com/JWP9412/save_case_ing
+
 <a href="https://github.com/iicdii/case-ing/blob/master/LICENSE" alt="License">
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" />
 </a>
