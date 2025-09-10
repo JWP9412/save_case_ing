@@ -14,15 +14,43 @@
 case-ing는 case + ~ing의 합성어로 여러개의 사건 진행현황을 쉽게 조회하도록 도와주는
 자동화 도구입니다.
 
+## 🆕 실시간 대화형 캡차 처리 시스템
+
+최신 업데이트로 **실시간 대화형 캡차 처리 시스템**이 추가되었습니다!
+
+### ✨ 주요 기능
+- **파이썬 GUI 입력창**: 사용자가 직접 캡차를 입력할 수 있는 직관적인 인터페이스
+- **실시간 캡차 캡처**: 캡차 이미지만 따로 스크린샷 촬영
+- **자동 처리 표**: 브라우저 콘솔에 실시간 처리 현황 표시
+- **자동 종료 방지**: 60초 대기로 로그 확인 시간 제공
+
+### 🚀 빠른 시작
+```bash
+# 실시간 캡차 처리 시스템 실행
+npx cypress run --spec "cypress/e2e/realtime-captcha-automation.cy.js" --headed
+
+# 파이썬 입력창 테스트
+python captcha_input.py
+```
+
+### 📁 핵심 파일
+- `cypress/e2e/realtime-captcha-automation.cy.js` - 실시간 캡차 처리 메인 스크립트
+- `captcha_input.py` - 파이썬 GUI 입력창
+- `사건별-캡차-처리-표.md` - 캡차 처리 관리 표
+
 ## 사용된 기술
 - [Cypress](https://www.cypress.io/) - 크롤링
 - [Scikit-learn](https://scikit-learn.org/) - Captcha 학습, 분석
 - [Serverless Framework](https://www.serverless.com/) - Captcha 분석 API, 구글 스프레드시트 조회/수정 API 생성
+- [Python Tkinter](https://docs.python.org/3/library/tkinter.html) - 실시간 캡차 입력 GUI
+- [Pillow (PIL)](https://pillow.readthedocs.io/) - 캡차 이미지 처리
 
 ## 요구사항
 - Node.js >= 14
 - yarn v1.x
 - Docker
+- Python 3.7+ (실시간 캡차 처리용)
+- Pillow (PIL) 라이브러리
 
 ## 폴더 구조
 ```
@@ -50,7 +78,9 @@ case-ing
 │        └─ index.js
 ├─ create-fixtures.js            # 구글 스프레드시트를 조회해서 필요한 fixtures를 생성함
 ├─ cypress-partial.js            # Cypress 병렬 실행용 스크립트
-└─ cypress.env.json              # 환경변수 저장소
+├─ cypress.env.json              # 환경변수 저장소
+├─ captcha_input.py              # 실시간 캡차 입력 GUI (Python Tkinter)
+└─ 사건별-캡차-처리-표.md         # 캡차 처리 관리 표
 ```
 
 ## 사전 준비
@@ -244,10 +274,31 @@ echo '${{ secrets.CYPRESS_ENV_CI }}' > cypress.env.json
 ```
 
 ## Cypress 자동화 테스트
+
+### 기존 자동화 (OCR 기반)
 ```shell
 node create-fixtures.js
 yarn test
 ```
+
+### 실시간 대화형 캡차 처리
+```shell
+# 파이썬 의존성 설치
+pip install Pillow
+
+# 실시간 캡차 처리 시스템 실행
+npx cypress run --spec "cypress/e2e/realtime-captcha-automation.cy.js" --headed
+
+# 파이썬 입력창만 테스트
+python captcha_input.py
+```
+
+#### 실시간 캡차 처리 시스템 사용법
+1. **자동 실행**: Cypress가 사이트에 접속하고 캡차 이미지를 캡처
+2. **파이썬 GUI**: 캡차 이미지가 표시된 입력창이 자동으로 열림
+3. **사용자 입력**: 6글자 캡차를 직접 입력
+4. **자동 처리**: 입력한 캡차가 자동으로 웹사이트에 입력되고 검색 실행
+5. **결과 확인**: 60초 대기로 결과를 충분히 확인 가능
 
 ## GitHub Actions workflow
 
@@ -304,3 +355,46 @@ Lambda API에 캡챠 이미지를 전송하여 예측된 숫자를 입력함
 ### 6. S3에 스크린샷 업로드
 ### 7. 구글 시트 업데이트
 Lambda API를 통해 사건 별로 S3 이미지 링크를 시트에 업데이트
+
+## 🔧 문제 해결
+
+### 실시간 캡차 처리 시스템 관련
+
+#### 파이썬 입력창이 안 열리는 경우
+```bash
+# Pillow 라이브러리 설치 확인
+pip install Pillow
+
+# Python 버전 확인 (3.7+ 필요)
+python --version
+```
+
+#### 캡차 이미지가 안 보이는 경우
+- 스크린샷 경로 확인: `cypress/screenshots/realtime-captcha-automation.cy.js/`
+- 파일명: `{사건번호}-{YYYYMMDD}-{HHMMSS}.png` (예: 2024가합51101-20241201-143022.png)
+- 파이썬 GUI에서 🔄 새로고침 버튼으로 최신 이미지 로드
+
+#### 브라우저가 자동으로 종료되는 경우
+- 60초 대기 시간이 설정되어 있음
+- 로그를 충분히 확인한 후 수동으로 브라우저 종료
+
+#### 캡차 입력이 전달되지 않는 경우
+- 파이썬 출력이 깨지는 경우: `captcha_input.py`에서 `print(captcha_input)`만 출력하도록 수정됨
+- Cypress 로그에서 `🐍 파이썬 입력창 결과` 확인
+
+### 일반적인 문제
+
+#### Cypress 실행 오류
+```bash
+# 의존성 재설치
+npm install
+yarn install
+
+# Cypress 캐시 클리어
+npx cypress cache clear
+```
+
+#### 사이트 접속 오류
+- 네트워크 연결 확인
+- 사이트 서버 상태 확인
+- 방화벽 설정 확인

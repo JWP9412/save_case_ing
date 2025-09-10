@@ -37,26 +37,139 @@ def get_captcha_input(case_number, captcha_image_path):
     tk.Label(case_frame, text="사건 번호:", font=("Arial", 12, "bold")).pack(side=tk.LEFT)
     tk.Label(case_frame, text=case_number, font=("Arial", 12), fg="red").pack(side=tk.LEFT, padx=(10, 0))
     
-    # 캡차 이미지 표시
-    image_frame = tk.Frame(main_frame)
+    # 캡차 이미지 표시 (드래그 가능한 프레임)
+    image_frame = tk.Frame(main_frame, relief=tk.SUNKEN, bd=2, bg="white")
     image_frame.pack(fill=tk.X, pady=(0, 10))
     
-    tk.Label(image_frame, text="캡차 이미지:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+    # 캡차 이미지 헤더와 새로고침 버튼
+    image_header = tk.Frame(image_frame, bg="white")
+    image_header.pack(fill=tk.X, padx=5, pady=5)
+    
+    tk.Label(image_header, text="캡차 이미지:", font=("Arial", 12, "bold"), bg="white").pack(side=tk.LEFT)
+    
+    # 새로고침 버튼
+    def refresh_image():
+        nonlocal img_label, photo, screenshot_path
+        try:
+            # 최신 이미지 다시 찾기 (사건번호+날짜+시간 형식)
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            # 두 개의 가능한 디렉토리 검색
+            screenshot_dirs = [
+                os.path.join(current_dir, "cypress", "screenshots"),  # 메인 스크린샷 디렉토리
+                os.path.join(current_dir, "cypress", "screenshots", "realtime-captcha-automation.cy.js")  # 하위 디렉토리
+            ]
+            
+            print(f"새로고침: 스크린샷 디렉토리들 검색")
+            for dir_path in screenshot_dirs:
+                print(f"  - {dir_path} (존재: {os.path.exists(dir_path)})")
+            
+            for screenshot_dir in screenshot_dirs:
+                if os.path.exists(screenshot_dir):
+                    import glob
+                    # 사건번호로 시작하는 파일들 찾기
+                    pattern = os.path.join(screenshot_dir, f"{case_number}-*.png")
+                    files = glob.glob(pattern)
+                    print(f"새로고침: 디렉토리 {screenshot_dir}에서 찾은 파일들 - {files}")
+                    
+                    if files:
+                        # 파일명에서 날짜+시간 추출하여 최신 파일 찾기
+                        def extract_datetime(filename):
+                            try:
+                                basename = os.path.basename(filename)
+                                parts = basename.split('-')
+                                if len(parts) >= 3:
+                                    date_time = parts[1] + parts[2].split('.')[0]  # YYYYMMDDHHMMSS
+                                    return int(date_time)
+                                return 0
+                            except:
+                                return 0
+                        
+                        latest_file = max(files, key=extract_datetime)
+                        screenshot_path = latest_file
+                        print(f"새로고침: 최신 이미지 로드 - {latest_file}")
+                        break  # 찾았으면 루프 종료
+            
+            # 이미지 다시 로드
+            if screenshot_path and os.path.exists(screenshot_path):
+                img = Image.open(screenshot_path)
+                img = img.resize((240, 80), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                img_label.configure(image=photo)
+                img_label.image = photo  # 참조 유지
+                status_label.configure(text=f"파일: {screenshot_path} (새로고침됨)", fg="green")
+            else:
+                status_label.configure(text="이미지를 찾을 수 없습니다", fg="red")
+        except Exception as e:
+            status_label.configure(text=f"이미지 로드 오류: {str(e)}", fg="red")
+    
+    refresh_btn = tk.Button(image_header, text="새로고침", command=refresh_image, 
+                           font=("Arial", 10), bg="lightblue", relief=tk.RAISED)
+    refresh_btn.pack(side=tk.RIGHT, padx=(10, 0))
     
     # 실제 캡차 이미지 표시
     try:
-        # 스크린샷 경로 찾기
+        # 스크린샷 경로 찾기 (최신 이미지 우선)
         screenshot_path = None
-        possible_paths = [
-            f"cypress/screenshots/realtime-captcha-automation.cy.js/{captcha_image_path}",
-            f"cypress/screenshots/{captcha_image_path}",
-            captcha_image_path
+        
+        # 1. 사건번호+날짜+시간 형식의 최신 이미지 찾기
+        # 절대 경로로 스크린샷 디렉토리 설정
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # 두 개의 가능한 디렉토리 검색
+        screenshot_dirs = [
+            os.path.join(current_dir, "cypress", "screenshots"),  # 메인 스크린샷 디렉토리
+            os.path.join(current_dir, "cypress", "screenshots", "realtime-captcha-automation.cy.js")  # 하위 디렉토리
         ]
         
-        for path in possible_paths:
-            if os.path.exists(path):
-                screenshot_path = path
-                break
+        print(f"스크린샷 디렉토리들 검색:")
+        for dir_path in screenshot_dirs:
+            print(f"  - {dir_path} (존재: {os.path.exists(dir_path)})")
+        
+        for screenshot_dir in screenshot_dirs:
+            if os.path.exists(screenshot_dir):
+                import glob
+                # 사건번호로 시작하는 파일들 찾기
+                pattern = os.path.join(screenshot_dir, f"{case_number}-*.png")
+                files = glob.glob(pattern)
+                print(f"디렉토리 {screenshot_dir}에서 찾은 파일들: {files}")
+                
+                if files:
+                    # 파일명에서 날짜+시간 추출하여 최신 파일 찾기
+                    def extract_datetime(filename):
+                        try:
+                            # 파일명에서 날짜+시간 부분 추출 (예: 2024가합51101-20241201-143022.png)
+                            basename = os.path.basename(filename)
+                            parts = basename.split('-')
+                            if len(parts) >= 3:
+                                date_time = parts[1] + parts[2].split('.')[0]  # YYYYMMDDHHMMSS
+                                return int(date_time)
+                            return 0
+                        except:
+                            return 0
+                    
+                    latest_file = max(files, key=extract_datetime)
+                    screenshot_path = latest_file
+                    print(f"최신 캡차 이미지 발견: {latest_file}")
+                    break  # 찾았으면 루프 종료
+        
+        # 2. 기본 경로들도 확인
+        if not screenshot_path:
+            possible_paths = [
+                os.path.join(current_dir, "cypress", "screenshots", "realtime-captcha-automation.cy.js", f"{captcha_image_path}.png"),
+                os.path.join(current_dir, "cypress", "screenshots", f"{captcha_image_path}.png"),
+                os.path.join(current_dir, f"{captcha_image_path}.png"),
+                f"cypress/screenshots/realtime-captcha-automation.cy.js/{captcha_image_path}.png",
+                f"cypress/screenshots/{captcha_image_path}.png",
+                f"{captcha_image_path}.png"
+            ]
+            
+            print(f"대체 경로들 검색:")
+            for path in possible_paths:
+                print(f"  - {path} (존재: {os.path.exists(path)})")
+                if os.path.exists(path):
+                    screenshot_path = path
+                    break
         
         if screenshot_path and os.path.exists(screenshot_path):
             # 이미지 로드 및 리사이즈
@@ -64,19 +177,48 @@ def get_captcha_input(case_number, captcha_image_path):
             img = img.resize((240, 80), Image.Resampling.LANCZOS)  # 2배 확대
             photo = ImageTk.PhotoImage(img)
             
-            # 이미지 라벨
-            img_label = tk.Label(image_frame, image=photo, relief=tk.SUNKEN, bd=2)
-            img_label.image = photo  # 참조 유지
-            img_label.pack(pady=(5, 0))
+            # 이미지 라벨 (드래그 가능한 영역)
+            img_container = tk.Frame(image_frame, bg="white")
+            img_container.pack(fill=tk.X, padx=5, pady=5)
             
-            tk.Label(image_frame, text=f"파일: {screenshot_path}", 
-                    font=("Arial", 10), fg="green").pack(anchor=tk.W)
+            img_label = tk.Label(img_container, image=photo, relief=tk.SUNKEN, bd=2, bg="white")
+            img_label.image = photo  # 참조 유지
+            img_label.pack()
+            
+            # 드래그 이벤트 바인딩
+            def start_drag(event):
+                img_label.drag_data = {"x": event.x, "y": event.y}
+            
+            def on_drag(event):
+                if hasattr(img_label, 'drag_data'):
+                    dx = event.x - img_label.drag_data["x"]
+                    dy = event.y - img_label.drag_data["y"]
+                    img_label.place(x=img_label.winfo_x() + dx, y=img_label.winfo_y() + dy)
+                    img_label.drag_data = {"x": event.x, "y": event.y}
+            
+            def stop_drag(event):
+                if hasattr(img_label, 'drag_data'):
+                    del img_label.drag_data
+            
+            img_label.bind("<Button-1>", start_drag)
+            img_label.bind("<B1-Motion>", on_drag)
+            img_label.bind("<ButtonRelease-1>", stop_drag)
+            
+            status_label = tk.Label(image_frame, text=f"파일: {os.path.basename(screenshot_path)}", 
+                    font=("Arial", 10), fg="green", bg="white")
+            status_label.pack(anchor=tk.W, padx=5)
         else:
-            tk.Label(image_frame, text=f"이미지를 찾을 수 없습니다: {captcha_image_path}", 
-                    font=("Arial", 10), fg="red").pack(anchor=tk.W)
-            tk.Label(image_frame, text="가능한 경로들:", font=("Arial", 9), fg="gray").pack(anchor=tk.W)
+            img_container = tk.Frame(image_frame, bg="white")
+            img_container.pack(fill=tk.X, padx=5, pady=5)
+            
+            img_label = tk.Label(img_container, text="이미지를 찾을 수 없습니다", 
+                    font=("Arial", 10), fg="red", bg="white")
+            img_label.pack(pady=(5, 0))
+            status_label = tk.Label(img_container, text=f"가능한 경로들:", 
+                    font=("Arial", 9), fg="gray", bg="white")
+            status_label.pack(anchor=tk.W)
             for path in possible_paths:
-                tk.Label(image_frame, text=f"  - {path}", font=("Arial", 8), fg="gray").pack(anchor=tk.W)
+                tk.Label(img_container, text=f"  - {path}", font=("Arial", 8), fg="gray", bg="white").pack(anchor=tk.W)
                 
     except Exception as e:
         tk.Label(image_frame, text=f"이미지 로드 오류: {str(e)}", 
@@ -148,10 +290,23 @@ def get_captcha_input(case_number, captcha_image_path):
     return result["captcha"]
 
 if __name__ == "__main__":
-    # 테스트용
-    case_number = "2024가합51101"
-    captcha_image_path = "realtime-captcha-image.png"
+    # 명령행 인수로 사건번호 받기 (필수)
+    if len(sys.argv) < 2:
+        print("ERROR: 사건번호가 필요합니다. 사용법: python captcha_input.py <사건번호>")
+        sys.exit(1)
     
-    captcha_input = get_captcha_input(case_number, captcha_image_path)
-    # 인코딩 문제 해결을 위해 캡차만 출력
-    print(captcha_input)
+    case_number = sys.argv[1]
+    print(f"DEBUG: 사건번호 = '{case_number}'")
+    
+    captcha_input = get_captcha_input(case_number, None)
+    
+    # 입력값 검증 및 출력
+    print(f"DEBUG: captcha_input = '{captcha_input}'")
+    print(f"DEBUG: type = {type(captcha_input)}")
+    print(f"DEBUG: length = {len(captcha_input) if captcha_input else 'None'}")
+    
+    if captcha_input and len(captcha_input) == 6:
+        print(f"SUCCESS: {captcha_input}")
+    else:
+        print("ERROR: Invalid captcha input")
+        sys.exit(1)
