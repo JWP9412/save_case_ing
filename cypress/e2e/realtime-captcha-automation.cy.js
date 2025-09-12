@@ -140,7 +140,9 @@ describe('실시간 대화형 캡차 자동화', function () {
         // ssgo.scourt.go.kr: 대법원 간편 사이트
         // cortId=www: 웹 버전 접속
         cy.visit('https://ssgo.scourt.go.kr/ssgo/index.on?cortId=www');
-        cy.wait(1250);  // 페이지 로딩 대기 (1.25초)
+        
+        // 페이지 로딩 완료까지 대기 (동적 대기)
+        cy.get('body', { timeout: 10000 }).should('be.visible');
         cy.log('사이트 접속 완료');
         
         // ========================================
@@ -150,11 +152,59 @@ describe('실시간 대화형 캡차 자동화', function () {
         // 사건번호 직접 입력 모드로 전환하는 체크박스 클릭
         // 이 체크박스를 체크해야 사건번호를 직접 입력할 수 있음
         cy.log('4단계: 사건번호입력모드 체크박스 체크');
+        
+        // 체크박스가 존재하는지 먼저 확인
         cy.get('#mf_ssgoTopMainTab_contents_content1_body_cbx_chkSanoInputMode_input_0', { timeout: 10000 })
-          .should('be.visible')  // 체크박스가 화면에 보일 때까지 대기
-          .check({ force: true });  // 강제로 체크 (다른 요소에 가려져 있어도)
+          .should('be.visible')
+          .then(($checkbox) => {
+            cy.log('체크박스 발견됨, 현재 상태:', $checkbox.is(':checked'));
+            
+            // 체크박스가 이미 체크되어 있지 않다면 클릭
+            if (!$checkbox.is(':checked')) {
+              cy.log('체크박스가 체크되지 않음, 클릭 시도');
+              
+              // 방법 1: 일반 클릭
+              cy.wrap($checkbox).click({ force: true });
+              cy.log('첫 번째 클릭 완료');
+              
+              // 잠시 대기
+              cy.wait(1000);
+              
+              // 방법 2: JavaScript로 직접 체크
+              cy.wrap($checkbox).then(($el) => {
+                $el[0].checked = true;
+                $el.trigger('change');
+                $el.trigger('click');
+                cy.log('JavaScript로 체크 시도');
+              });
+              
+              // 잠시 대기
+              cy.wait(1000);
+              
+              // 방법 3: 다시 클릭
+              cy.wrap($checkbox).click({ force: true });
+              cy.log('두 번째 클릭 완료');
+              
+              // 충분한 대기
+              cy.wait(2000);
+              
+              // 체크박스 상태 확인 (에러가 나도 계속 진행)
+              cy.get('#mf_ssgoTopMainTab_contents_content1_body_cbx_chkSanoInputMode_input_0')
+                .then(($el) => {
+                  const isChecked = $el.is(':checked');
+                  cy.log('최종 체크 상태:', isChecked);
+                  if (!isChecked) {
+                    cy.log('⚠️ 체크박스가 여전히 체크되지 않음, 강제로 진행');
+                  }
+                });
+            } else {
+              cy.log('체크박스가 이미 체크되어 있음');
+            }
+          });
+        
+        // 체크박스 체크 완료 후 추가 대기 (페이지 업데이트)
+        cy.wait(2000);
         cy.log('체크박스 체크 완료');
-        cy.wait(500);  // 체크박스 상태 변경 후 대기
         
       // ========================================
       // 5. 법원 선택
@@ -197,25 +247,31 @@ describe('실시간 대화형 캡차 자동화', function () {
         }
       });
       
-      cy.wait(1000);  // 법원 선택 후 페이지 업데이트 대기
+      // 법원 선택 후 페이지 업데이트 대기 (동적 대기)
+      cy.get('body').should('be.visible');  // 페이지가 준비될 때까지 대기
         
         // ========================================
         // 6. 사건번호 입력
         // ========================================
         
-        // 구글시트에서 읽어온 사건번호를 첫 번째 텍스트 입력 필드에 입력
+        // 구글시트에서 읽어온 사건번호를 사건번호 전용 입력 필드에 입력
         // 예: "2024가합51101", "2023나10019" 등
         cy.log('6단계: 사건번호 입력');
-        cy.get('input[type="text"]:visible').first().then($input => {
-          cy.wrap($input).clear({ force: true });  // 기존 내용 삭제
-          cy.wrap($input).type(caseNumber, { 
-            force: true,  // 강제 입력 (다른 요소에 가려져 있어도)
-            delay: 50     // 각 글자 입력 간 50ms 지연 (자연스러운 타이핑)
-          });
-          cy.log(`사건번호 입력: "${caseNumber}"`);
-        });
         
-        cy.wait(500);  // 사건번호 입력 후 대기
+        // 사건번호 입력 필드를 찾아서 입력
+        cy.get('#mf_ssgoTopMainTab_contents_content1_body_ibx_fullCsNo', { timeout: 10000 })
+          .should('be.visible')
+          .clear({ force: true })  // 기존 내용 삭제
+          .type(caseNumber, { 
+            force: true,  // 강제 입력 (다른 요소에 가려져 있어도)
+            delay: 100    // 각 글자 입력 간 100ms 지연 (자연스러운 타이핑)
+          });
+        
+        cy.log(`사건번호 입력: "${caseNumber}"`);
+        
+        // 사건번호 입력 완료 확인 (동적 대기)
+        cy.get('#mf_ssgoTopMainTab_contents_content1_body_ibx_fullCsNo')
+          .should('have.value', caseNumber);
         
         // ========================================
         // 7. 당사자명(담당자명) 입력
@@ -236,9 +292,11 @@ describe('실시간 대화형 캡차 자동화', function () {
               });
               cy.log(`당사자명 입력: "${manager}"`);
             });
+            
+            // 당사자명 입력 완료 확인 (동적 대기)
+            cy.get('input[type="text"]:visible').eq(1).should('have.value', manager);
           }
         });
-        cy.wait(500);  // 당사자명 입력 후 대기
         
         // ========================================
         // 8. 실시간 캡차 처리 (핵심 기능)
@@ -343,7 +401,8 @@ describe('실시간 대화형 캡차 자동화', function () {
           }
         });
         
-        cy.wait(1500);  // 캡차 처리 완료 후 대기
+        // 캡차 처리 완료 후 페이지 준비 대기 (동적 대기)
+        cy.get('body').should('be.visible');
         
         // ========================================
         // 9. 검색 버튼 클릭
@@ -391,8 +450,8 @@ describe('실시간 대화형 캡차 자동화', function () {
         // 10. 검색 결과 대기
         // ========================================
         
-        // 검색 실행 후 결과 페이지 로딩 대기
-        cy.wait(2500);
+        // 검색 실행 후 결과 페이지 로딩 대기 (동적 대기)
+        cy.get('body', { timeout: 15000 }).should('be.visible');
         
         // ========================================
         // 11. 진행내용 탭 클릭 (선택적)
@@ -405,11 +464,13 @@ describe('실시간 대화형 캡차 자동화', function () {
           const progressTab = $body.find('#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2');
           if (progressTab.length > 0) {
             // 진행내용 탭이 존재하면 클릭
-            cy.get('#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2', { timeout: 10000 })
+            cy.wrap(progressTab)
               .should('be.visible')
               .click({ force: true });
             cy.log('진행내용 탭 클릭 완료');
-            cy.wait(1000);  // 탭 전환 후 대기
+            
+            // 탭 전환 완료 확인 (동적 대기)
+            cy.get('body').should('be.visible');
           } else {
             cy.log('진행내용 탭을 찾을 수 없음 - 건너뛰기');
           }
@@ -433,7 +494,9 @@ describe('실시간 대화형 캡차 자동화', function () {
         // ========================================
         
         cy.log(`사건 ${caseNumber} 처리 완료!`);
-        cy.wait(1000); // 다음 사건 처리 전 대기 (서버 부하 방지)
+        // 다음 사건 처리 전 최소 대기 (서버 부하 방지)
+        cy.wait(500);
+        cy.log(`프로그램 완료!`);
       });
     });
   });

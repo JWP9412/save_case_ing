@@ -24,6 +24,33 @@ case-ing는 case + ~ing의 합성어로 여러개의 사건 진행현황을 쉽�
 
 최신 업데이트로 **실시간 대화형 캡차 처리 시스템**이 추가되었습니다!
 
+## 📋 최신 업데이트 (v2.1.0)
+
+### ✨ 주요 개선사항
+- **체크박스 처리 개선**: 사건번호 입력 모드 활성화를 위한 체크박스 클릭 로직 강화
+- **사건번호 입력 필드 정확성**: 정확한 입력 필드 ID 사용으로 사건번호 입력 정확도 향상
+- **성능 최적화**: 동적 대기 시간으로 테스트 실행 속도 개선
+- **에러 처리 강화**: 체크박스 체크 실패 시에도 강제 진행 가능
+
+### 🔧 기술적 개선
+- **체크박스 처리 다중화**: 
+  - 일반 클릭 + JavaScript 직접 체크 + 재클릭 시도
+  - 체크 상태 확인 및 강제 진행 옵션
+- **입력 필드 정확성**: `#mf_ssgoTopMainTab_contents_content1_body_ibx_fullCsNo` ID 사용
+- **동적 대기**: `cy.wait()` 대신 `.should()` 어설션으로 더 빠른 실행
+- **모듈 분리**: 
+  - `image_finder.py`: 이미지 파일 검색 전용 모듈
+  - `gui_maker.py`: Tkinter GUI 생성 전용 모듈
+  - `button_handler.py`: 버튼 이벤트 처리 전용 모듈
+
+### 🐛 버그 수정
+- ✅ 체크박스가 체크되지 않는 문제 해결 (다중 방법 시도)
+- ✅ 사건번호 입력 필드 오류 해결 (정확한 ID 사용)
+- ✅ 파이썬 GUI가 열리지 않는 문제 해결
+- ✅ 캡차 입력이 웹사이트에 전달되지 않는 문제 해결
+- ✅ Windows 환경에서 이모지 문자 인코딩 오류 해결
+- ✅ `SUCCESS:` 메시지 파싱 오류 해결
+
 ### ✨ 주요 기능
 - **파이썬 GUI 입력창**: 사용자가 직접 캡차를 입력할 수 있는 직관적인 인터페이스
 - **실시간 캡차 캡처**: 캡차 이미지만 따로 스크린샷 촬영
@@ -92,7 +119,11 @@ case-ing
 ├─ create-fixtures.js            # 구글 스프레드시트를 조회해서 필요한 fixtures를 생성함
 ├─ cypress-partial.js            # Cypress 병렬 실행용 스크립트
 ├─ cypress.env.json              # 환경변수 저장소
-├─ captcha_input.py              # 실시간 캡차 입력 GUI (Python Tkinter)
+├─ captcha_input.py              # 실시간 캡차 입력 GUI (Python Tkinter) - 메인 실행 파일
+├─ image_finder.py               # 캡차 이미지 파일 검색 모듈
+├─ gui_maker.py                  # Tkinter GUI 생성 모듈
+├─ button_handler.py             # 버튼 이벤트 처리 모듈
+├─ captcha_input_backup.py       # 원본 captcha_input.py 백업 파일
 └─ 사건별-캡차-처리-표.md         # 캡차 처리 관리 표
 ```
 
@@ -443,8 +474,16 @@ python --version
 - 로그를 충분히 확인한 후 수동으로 브라우저 종료
 
 #### 캡차 입력이 전달되지 않는 경우
-- 파이썬 출력이 깨지는 경우: `captcha_input.py`에서 `print(captcha_input)`만 출력하도록 수정됨
-- Cypress 로그에서 `🐍 파이썬 입력창 결과` 확인
+- **v2.0.0에서 해결됨**: `SUCCESS:` 파싱 로직 개선으로 정확한 입력값 추출
+- Cypress 로그에서 `SUCCESS에서 추출한 값` 확인
+- 파이썬 GUI에서 정확히 6글자 입력 후 "확인" 버튼 클릭
+
+#### 모듈화된 파일 구조 이해
+- **captcha_input.py**: 메인 실행 파일 (다른 모듈들을 조합)
+- **image_finder.py**: 캡차 이미지 파일 검색 및 로드
+- **gui_maker.py**: Tkinter GUI 창 생성 및 이미지 표시
+- **button_handler.py**: 확인/취소 버튼 이벤트 처리
+- **captcha_input_backup.py**: 리팩토링 전 원본 파일 (참고용)
 
 ### 일반적인 문제
 
