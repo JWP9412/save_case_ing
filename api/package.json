@@ -1,9 +1,0 @@
-{
-  "name": "case-ing-api",
-  "dependencies": {
-    "serverless-python-requirements": "^5.4.0"
-  },
-  "devDependencies": {
-    "serverless-offline": "^11.0.3"
-  }
-}

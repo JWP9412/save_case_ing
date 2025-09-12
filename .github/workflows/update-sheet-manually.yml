@@ -1,90 +1,114 @@
+# 수동 실행 시트 업데이트 워크플로우
+# GitHub Actions 탭에서 수동으로 실행할 수 있는 워크플로우입니다
 name: Update Sheet Manually
-on: workflow_dispatch
+on: workflow_dispatch  # 수동 실행 트리거
 
+# 환경 변수 설정 (GitHub Secrets에서 가져옴)
 env:
-  CYPRESS_LAMBDA_API_URL: ${{ secrets.CYPRESS_LAMBDA_API_URL }}
-  CYPRESS_S3_BUCKET_URL: ${{ secrets.CYPRESS_S3_BUCKET_URL }}
+  CYPRESS_LAMBDA_API_URL: ${{ secrets.CYPRESS_LAMBDA_API_URL }}  # Lambda API 엔드포인트
+  CYPRESS_S3_BUCKET_URL: ${{ secrets.CYPRESS_S3_BUCKET_URL }}    # S3 버킷 URL
 
 jobs:
+  # 1단계: 테스트 데이터(fixtures) 생성
   create-fixtures:
     runs-on: ubuntu-latest
     steps:
+      # 코드 저장소 체크아웃
       - uses: actions/checkout@v3
+      # Node.js 16 버전 설치
       - uses: actions/setup-node@v3
         with:
           node-version: '16'
+      # Cypress 환경 설정 파일 생성
       - name: Write the cypress.env.json file 📝
-        # use quotes around the secret, as its value
-        # is simply inserted as a string into the command
+        # GitHub Secrets의 환경 변수를 cypress.env.json 파일로 저장
         run: |
           echo '${{ secrets.CYPRESS_ENV_CI }}' > cypress.env.json
+      # 의존성 패키지 설치
       - name: yarn install
         run: |
           yarn install --frozen-lockfile
+      # 사건 데이터 fixtures 생성 (create-fixtures.js 실행)
       - name: yarn fixture
         run: |
           yarn fixture
+      # 기존 시트 데이터 초기화
       - name: yarn clear
         run: |
           yarn clear
+      # 생성된 fixtures를 아티팩트로 업로드 (다음 job에서 사용)
       - uses: actions/upload-artifact@main
         with:
           name: fixtures
           path: cypress/fixtures
+      # 테스트 스펙 파일들을 아티팩트로 업로드
       - uses: actions/upload-artifact@main
         with:
           name: specs
           path: cypress/e2e
 
+  # 2단계: Cypress 테스트 실행 (병렬 처리)
   cypress-run:
     runs-on: ubuntu-latest
-    needs: create-fixtures
+    needs: create-fixtures  # create-fixtures job 완료 후 실행
     strategy:
-      fail-fast: false
+      fail-fast: false  # 하나의 컨테이너가 실패해도 다른 컨테이너는 계속 실행
       matrix:
+        # 50개의 컨테이너로 병렬 실행 (0~49번)
         containers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
     steps:
+      # 코드 저장소 체크아웃
       - uses: actions/checkout@v3
+      # Node.js 16 버전 설치
       - uses: actions/setup-node@v3
         with:
           node-version: '16'
+      # Cypress 환경 설정 파일 생성
       - name: Write the cypress.env.json file 📝
-        # use quotes around the secret, as its value
-        # is simply inserted as a string into the command
         run: |
           echo '${{ secrets.CYPRESS_ENV_CI }}' > cypress.env.json
+      # 이전 job에서 생성된 fixtures 다운로드
       - uses: actions/download-artifact@main
         with:
           name: fixtures
           path: cypress/fixtures
+      # 이전 job에서 생성된 테스트 스펙 다운로드
       - uses: actions/download-artifact@main
         with:
           name: specs
           path: cypress/e2e
+      # 의존성 패키지 설치
       - name: yarn install
         run: |
           yarn install --frozen-lockfile
+      # 현재 컨테이너에서 실행할 테스트 파일이 있는지 검증
       - name: Validate test filename
         id: validator
         shell: bash
         run: |
+          # cypress-partial.js로 50개 컨테이너 중 현재 컨테이너에 할당된 테스트 파일 확인
           if [ "$(node cypress-partial.js 50 ${{ matrix.containers }})" == "" ]; then
-            echo ::set-output name=should-run::false
+            echo ::set-output name=should-run::false  # 실행할 테스트가 없음
           else
-            echo ::set-output name=should-run::true
+            echo ::set-output name=should-run::true   # 실행할 테스트가 있음
           fi
+      # 검증 결과 출력
       - name: Get result
         run: echo "${{steps.validator.outputs.should-run}}"
+      # Cypress 테스트 실행 (실행할 테스트가 있을 때만)
       - name: Cypress run
         if: ${{ steps.validator.outputs.should-run == 'true' }}
         run: |
+          # headless 모드로 특정 테스트 파일만 실행
           yarn start --spec $(node cypress-partial.js 50 ${{ matrix.containers }})
 
+  # 3단계: 아티팩트 정리
   delete-artifacts:
     runs-on: ubuntu-latest
-    needs: cypress-run
-    if: ${{ always() }}
+    needs: cypress-run  # cypress-run job 완료 후 실행
+    if: ${{ always() }}  # 성공/실패 여부와 관계없이 항상 실행
     steps:
+      # 사용한 아티팩트들을 삭제하여 저장 공간 절약
       - uses: geekyeggo/delete-artifact@v1
         with:
           name: |

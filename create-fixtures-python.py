@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-구글시트에서 직접 데이터를 읽어와서 Cypress fixtures 생성
+구글시트 데이터 생성기 - 파이썬 버전
+=====================================
+
+역할: 구글 스프레드시트에서 사건 데이터를 읽어와서 Cypress 테스트용 fixtures 생성
+기능:
+- 구글 스프레드시트 연결 및 데이터 읽기
+- 사건 데이터를 5개씩 청크로 나누기
+- JSON 파일로 변환하여 cypress/fixtures/ 폴더에 저장
+- Cypress 병렬 실행을 위한 데이터 준비
+
+사용법: python create-fixtures-python.py
 """
 
 import gspread

@@ -1,7 +1,7 @@
 {
   "name": "case-ing",
   "version": "1.0.0",
-  "description": "Case-ing",
+  "description": "Case-ing - 대법원 나의 사건 조회 자동화 API & 크롤러",
   "main": "index.js",
   "scripts": {
     "start": "cypress run",

@@ -73,15 +73,22 @@ case-ing
 │   ├─ requirements.txt          # 구글 스프레드시트 handler 배포에 필요한 패키지 정의
 │   ├─ s3.py                     # s3 업로드 handler
 │   └─ serverless.yml            # 서버리스 설정파일
-└── cypress
-│   └──fixtures                  # 사건들이 create-fixtures.js 실행 후 여기에 생성됨
-│   └──e2e
-│   │   └─ spec.cy.js            # 자동화 메인 스크립트
-│   └──js
-│   │   ├─ caseTypes.js          # 대법원 홈페이지에서 추출한 사건 구분 데이터
-│   │   └─ courts.js             # 대법원 홈페이지에서 추출한 법원 데이터
-│   └──plugins
-│        └─ index.js
+└── cypress                      # Cypress 테스트 프레임워크 폴더
+│   ├──e2e/                      # 테스트 스크립트 폴더
+│   │   └─ realtime-captcha-automation.cy.js  # 실시간 캡차 처리 메인 테스트
+│   ├──fixtures/                 # 테스트 데이터 폴더
+│   │   └─ cases_chunk_*.json    # 구글 시트에서 가져온 사건 데이터 (5개씩 청크)
+│   ├──js/                       # 참조 데이터 폴더
+│   │   ├─ caseTypes.js          # 사건 유형 데이터 (2,500+ 항목)
+│   │   └─ courts.js             # 법원 데이터 (800+ 항목)
+│   ├──screenshots/              # 테스트 실행 중 캡처한 스크린샷
+│   │   └─ realtime-captcha-automation.cy.js/  # 캡차 처리 과정 스크린샷
+│   ├──downloads/                # 테스트 중 다운로드된 파일들
+│   ├──support/                  # Cypress 설정 및 커스텀 명령어
+│   │   ├─ commands.js           # 커스텀 명령어 정의
+│   │   └─ e2e.js                # 전역 설정 및 동작
+│   └──plugins/                  # Cypress 플러그인 설정
+│        └─ index.js             # 플러그인 설정 파일
 ├─ create-fixtures.js            # 구글 스프레드시트를 조회해서 필요한 fixtures를 생성함
 ├─ cypress-partial.js            # Cypress 병렬 실행용 스크립트
 ├─ cypress.env.json              # 환경변수 저장소
@@ -361,6 +368,57 @@ Lambda API에 캡챠 이미지를 전송하여 예측된 숫자를 입력함
 ### 6. S3에 스크린샷 업로드
 ### 7. 구글 시트 업데이트
 Lambda API를 통해 사건 별로 S3 이미지 링크를 시트에 업데이트
+
+## 📁 Cypress 폴더 구조 상세 설명
+
+### 핵심 폴더들 (절대 삭제 금지)
+
+#### `cypress/e2e/` - 테스트 스크립트
+- **realtime-captcha-automation.cy.js**: 실시간 캡차 처리 메인 테스트 파일
+- 구글 시트에서 사건 데이터를 가져와서 자동으로 처리하는 핵심 로직
+
+#### `cypress/fixtures/` - 테스트 데이터
+- **cases_chunk_*.json**: 구글 시트에서 가져온 실제 사건 데이터
+- 5개씩 청크로 나누어져 있어 병렬 처리에 최적화
+- 사건번호, 법원명, 진행상태 등 실제 처리할 데이터
+
+#### `cypress/js/` - 참조 데이터
+- **caseTypes.js**: 사건 유형 데이터 (2,500+ 항목)
+  - 감도, 감모, 감오, 그, 누, 다, 도 등 모든 사건 유형
+- **courts.js**: 법원 데이터 (800+ 항목)
+  - 가평군법원, 강릉지원, 대구고등법원 등 모든 법원 정보
+- 웹사이트 드롭다운에서 사용하는 정확한 값들
+
+#### `cypress/support/` - Cypress 설정
+- **commands.js**: 커스텀 명령어 정의
+- **e2e.js**: 전역 설정 및 동작 정의
+
+#### `cypress/plugins/` - 플러그인 설정
+- **index.js**: Cypress 플러그인 설정
+
+### 선택적 폴더들 (정리 가능)
+
+#### `cypress/screenshots/` - 스크린샷 저장소
+- **용도**: 테스트 실행 중 캡처한 이미지들
+- **파일명 형식**: `{사건번호}-{날짜시간}-{상태}.png`
+- **정리 권장**: 오래된 스크린샷은 주기적으로 삭제
+- **보존 권장**: 최근 실행 결과는 디버깅용으로 보관
+
+#### `cypress/downloads/` - 다운로드 폴더
+- **용도**: 테스트 중 다운로드된 파일들
+- **정리 가능**: 필요없는 파일들은 삭제해도 됨
+
+### 폴더별 중요도
+
+| 폴더 | 중요도 | 설명 |
+|------|--------|------|
+| `e2e/` | ⭐⭐⭐⭐⭐ | 메인 테스트 로직 |
+| `fixtures/` | ⭐⭐⭐⭐⭐ | 실제 처리할 사건 데이터 |
+| `js/` | ⭐⭐⭐⭐⭐ | 웹사이트 참조 데이터 |
+| `support/` | ⭐⭐⭐⭐ | Cypress 설정 |
+| `plugins/` | ⭐⭐⭐⭐ | 플러그인 설정 |
+| `screenshots/` | ⭐⭐ | 디버깅용 (정리 가능) |
+| `downloads/` | ⭐ | 임시 파일 (정리 가능) |
 
 ## 🔧 문제 해결
 
