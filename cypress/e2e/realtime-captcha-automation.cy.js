@@ -454,12 +454,12 @@ describe('실시간 대화형 캡차 자동화', function () {
         cy.get('body', { timeout: 15000 }).should('be.visible');
         
         // ========================================
-        // 11. 진행내용 탭 클릭 (선택적)
+        // 11. 진행내용 탭 클릭 및 데이터 추출
         // ========================================
         
         // 검색 결과에서 더 자세한 정보를 보기 위해 진행내용 탭 클릭 시도
         // 이 탭이 있으면 사건의 진행 상황을 더 자세히 볼 수 있음
-        cy.log('11단계: 진행내용 탭 클릭 시도');
+        cy.log('11단계: 진행내용 탭 클릭 및 데이터 추출');
         cy.get('body').then($body => {
           const progressTab = $body.find('#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2');
           if (progressTab.length > 0) {
@@ -471,6 +471,86 @@ describe('실시간 대화형 캡차 자동화', function () {
             
             // 탭 전환 완료 확인 (동적 대기)
             cy.get('body').should('be.visible');
+            
+            // ========================================
+            // 11-1. 진행내용 그리드 데이터 추출
+            // ========================================
+            
+            // 진행내용 그리드가 로드될 때까지 대기
+            cy.get('#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body_grd_csProgLst_main_div', { timeout: 10000 })
+              .should('be.visible')
+              .then(($grid) => {
+                cy.log('진행내용 그리드 발견됨, 데이터 추출 시작');
+                
+                // 그리드 내의 테이블 데이터 추출
+                const progressData = {
+                  caseNumber: caseNumber,
+                  extractedAt: new Date().toISOString(),
+                  rows: []
+                };
+                
+                // 테이블의 모든 행 찾기
+                const rows = $grid.find('tbody tr');
+                cy.log(`발견된 행 수: ${rows.length}`);
+                
+                // 각 행의 데이터 추출
+                rows.each((index, row) => {
+                  const $row = Cypress.$(row);
+                  const cells = $row.find('td');
+                  
+                  if (cells.length >= 4) {
+                    const rowData = {
+                      date: cells.eq(0).find('span').text().trim(),
+                      content: cells.eq(1).find('span').text().trim(),
+                      result: cells.eq(2).find('span').text().trim(),
+                      document: cells.eq(3).find('span').text().trim()
+                    };
+                    
+                    // 빈 행이 아닌 경우만 추가
+                    if (rowData.date || rowData.content) {
+                      progressData.rows.push(rowData);
+                    }
+                  }
+                });
+                
+                cy.log(`추출된 진행내용 행 수: ${progressData.rows.length}`);
+                
+                // ========================================
+                // 11-2. 추출된 데이터를 JSON 파일로 저장
+                // ========================================
+                
+                // JSON 데이터를 파일로 저장
+                const jsonData = JSON.stringify(progressData, null, 2);
+                const filename = `progress_data_${caseNumber}.json`;
+                
+                cy.writeFile(filename, jsonData).then(() => {
+                  cy.log(`진행내용 데이터 저장 완료: ${filename}`);
+                  
+                  // ========================================
+                  // 11-3. 구글 시트에 진행내용 데이터 저장
+                  // ========================================
+                  
+                  // 구글 시트 저장 시도 (선택적)
+                  cy.exec(`py progress-extractor.py ${caseNumber}`, { 
+                    failOnNonZeroExit: false,  // Python 스크립트 실패해도 테스트 계속 진행
+                    timeout: 30000            // 30초 타임아웃
+                  }).then((result) => {
+                    cy.log(`=== 진행내용 데이터 구글 시트 저장 결과 ===`);
+                    cy.log(`stdout: ${result.stdout}`);
+                    if (result.stderr) {
+                      cy.log(`stderr: ${result.stderr}`);
+                    }
+                    cy.log(`exitCode: ${result.code}`);
+                    
+                    if (result.code === 0) {
+                      cy.log('✅ 진행내용 데이터가 구글 시트에 성공적으로 저장되었습니다');
+                    } else {
+                      cy.log('⚠️ 구글 시트 저장에 실패했지만 JSON 파일은 저장되었습니다');
+                      cy.log('📁 JSON 파일 위치: progress_data_' + caseNumber + '.json');
+                    }
+                  });
+                });
+              });
           } else {
             cy.log('진행내용 탭을 찾을 수 없음 - 건너뛰기');
           }

@@ -63,7 +63,7 @@ def get_captcha_input(case_number, captcha_image_path=None):
     submit_btn, cancel_btn = gui.create_buttons(main_frame)
     
     # 이미지 표시
-    if not gui.show_image(image_path):
+    if not gui.show_image(image_path, image_frame):
         gui.show_error("이미지를 로드할 수 없습니다")
     
     print("INFO: GUI 생성 완료")

@@ -134,12 +134,13 @@ class CaptchaGUI:
         
         return submit_btn, cancel_btn
     
-    def show_image(self, image_path):
+    def show_image(self, image_path, image_frame):
         """
         이미지를 GUI에 표시
         
         Args:
             image_path (str): 이미지 파일 경로
+            image_frame: 이미지를 표시할 프레임
             
         Returns:
             bool: 성공 여부
@@ -152,7 +153,7 @@ class CaptchaGUI:
                 photo = ImageTk.PhotoImage(img)
                 
                 # 이미지 라벨 생성 (이미지 프레임 내부에 배치)
-                self.img_label = tk.Label(self.main_frame, image=photo, relief=tk.SUNKEN, bd=2, bg="white")
+                self.img_label = tk.Label(image_frame, image=photo, relief=tk.SUNKEN, bd=2, bg="white")
                 self.img_label.image = photo  # 참조 유지
                 self.img_label.pack(pady=10)
                 

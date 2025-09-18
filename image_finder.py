@@ -20,6 +20,7 @@ def find_latest_image(case_number):
     
     # 스크린샷이 저장될 수 있는 디렉토리들
     screenshot_dirs = [
+        os.path.join(current_dir, "screenshots"),  # Puppeteer 저장 경로
         os.path.join(current_dir, "cypress", "screenshots"),
         os.path.join(current_dir, "cypress", "screenshots", "realtime-captcha-automation.cy.js")
     ]
@@ -61,9 +62,11 @@ def find_image_by_pattern(case_number, captcha_image_path):
     
     # 가능한 모든 경로들
     possible_paths = [
+        os.path.join(current_dir, "screenshots", f"{captcha_image_path}.png"),  # Puppeteer 저장 경로
         os.path.join(current_dir, "cypress", "screenshots", "realtime-captcha-automation.cy.js", f"{captcha_image_path}.png"),
         os.path.join(current_dir, "cypress", "screenshots", f"{captcha_image_path}.png"),
         os.path.join(current_dir, f"{captcha_image_path}.png"),
+        f"screenshots/{captcha_image_path}.png",  # Puppeteer 저장 경로
         f"cypress/screenshots/realtime-captcha-automation.cy.js/{captcha_image_path}.png",
         f"cypress/screenshots/{captcha_image_path}.png",
         f"{captcha_image_path}.png"
