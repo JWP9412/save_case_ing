@@ -24,7 +24,39 @@ case-ing는 case + ~ing의 합성어로 여러개의 사건 진행현황을 쉽�
 
 최신 업데이트로 **실시간 대화형 캡차 처리 시스템**이 추가되었습니다!
 
-## 📋 최신 업데이트 (v2.1.0)
+## 📋 최신 업데이트 (v2.2.0)
+
+### ✨ 주요 개선사항
+- **Puppeteer 마이그레이션 완료**: Cypress → Puppeteer 전환으로 다중 브라우저 창 병렬 처리 가능
+- **구글 시트 연동**: 진행내용 데이터 자동 추출 및 구글 시트 저장
+- **워크시트 이름 자동 생성**: 구글 시트 데이터 기반 (피고_비고_법원_사건번호)
+- **캡차 처리 개선**: 이미지 캡처 및 Python GUI 입력 연동
+- **입력 속도 최적화**: JavaScript DOM 조작으로 타이핑 속도 향상
+- **WebSquare 프레임워크 호환성**: 법원 선택, 체크박스, 입력 필드 처리 개선
+
+### 🔧 기술적 개선
+- **다중 브라우저 처리**: `BrowserManager.js`로 여러 브라우저 인스턴스 관리
+- **병렬 처리**: `ParallelProcessor.js`로 여러 사건 동시 처리
+- **구글 시트 API**: `gspread` 라이브러리로 자동 데이터 저장
+- **캡차 이미지 캡처**: `takeElementScreenshot`으로 정확한 캡차 영역 캡처
+- **JavaScript DOM 조작**: `element.value` 및 `dispatchEvent`로 빠른 입력
+
+### 📁 새로운 파일 구조
+```
+src/
+├── BrowserManager.js      # 브라우저 인스턴스 관리
+├── PageController.js      # 페이지 자동화 로직
+├── ParallelProcessor.js   # 병렬 처리 오케스트레이션
+└── index.js              # 메인 진입점
+
+api/certification/
+└── service-account.json  # 구글 서비스 계정 키
+
+excel-based-sheets.py     # 구글 시트 연동 스크립트
+puppeteer-to-sheets.py    # Puppeteer 결과 → 구글 시트 변환
+```
+
+## 📋 이전 업데이트 (v2.1.0)
 
 ### ✨ 주요 개선사항
 - **체크박스 처리 개선**: 사건번호 입력 모드 활성화를 위한 체크박스 클릭 로직 강화
