@@ -250,6 +250,53 @@ class PageController {
   }
 
   /**
+   * 캡차 입력 (간단한 버전)
+   */
+  async inputCaptcha(captchaInput) {
+    try {
+      console.log(`🔐 [DEBUG] 캡차 입력 시작 (${this.browserId})`);
+      console.log(`📋 [DEBUG] 입력할 캡차 값: "${captchaInput}" (타입: ${typeof captchaInput}, 길이: ${captchaInput?.length})`);
+      
+      const captchaSelector = '#mf_ssgoTopMainTab_contents_content1_body_ibx_answer';
+      console.log(`🔍 [DEBUG] 캡차 입력 필드 대기 중: ${captchaSelector}`);
+      await this.page.waitForSelector(captchaSelector, { timeout: 10000 });
+      console.log(`✅ [DEBUG] 캡차 입력 필드 찾음`);
+      
+      // 캡차 입력 필드 클리어 후 입력
+      console.log(`🗑️ [DEBUG] 캡차 입력 필드 초기화 중...`);
+      await this.page.evaluate((selector) => {
+        const input = document.querySelector(selector);
+        if (input) {
+          input.value = '';
+          input.focus();
+        }
+      }, captchaSelector);
+      
+      console.log(`⌨️ [DEBUG] 캡차 입력 중: "${captchaInput}"`);
+      await this.page.type(captchaSelector, captchaInput, { delay: 100 });
+      
+      // 입력 후 실제로 입력된 값 확인
+      const actualValue = await this.page.evaluate((selector) => {
+        const input = document.querySelector(selector);
+        return input ? input.value : null;
+      }, captchaSelector);
+      
+      console.log(`🔍 [DEBUG] 입력 후 실제 값: "${actualValue}"`);
+      console.log(`🔍 [DEBUG] 입력 값 일치: ${actualValue === captchaInput}`);
+      
+      if (actualValue !== captchaInput) {
+        console.error(`⚠️ [경고] 캡차 입력 불일치! 예상: "${captchaInput}", 실제: "${actualValue}"`);
+      }
+      
+      console.log(`✅ 캡차 입력 완료: ${captchaInput} (${this.browserId})`);
+      return true;
+    } catch (error) {
+      console.error(`❌ 캡차 입력 실패 (${this.browserId}):`, error.message);
+      throw error;
+    }
+  }
+
+  /**
    * 캡차 처리
    */
   async handleCaptcha(caseNumber) {
@@ -283,6 +330,58 @@ class PageController {
       return captchaInput;
     } catch (error) {
       console.error(`❌ 캡차 처리 실패 (${this.browserId}):`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * 대화형 캡차 처리 (사용자 입력 대기)
+   */
+  async handleInteractiveCaptcha(caseNumber) {
+    try {
+      console.log(`🔐 대화형 캡차 처리 중... (${this.browserId})`);
+      
+      // 캡차 이미지 캡처
+      const captchaSelector = '#mf_ssgoTopMainTab_contents_content1_body_img_captcha';
+      await this.page.waitForSelector(captchaSelector, { timeout: 10000 });
+      
+      // 캡차 이미지만 따로 캡처
+      const screenshotPath = await this.takeElementScreenshot(captchaSelector, caseNumber, 'captcha');
+      
+      console.log(`📸 캡차 이미지 캡처 완료: ${screenshotPath}`);
+      console.log(`⏳ 사용자가 캡차를 입력할 때까지 대기 중...`);
+      console.log(`💡 브라우저 창에서 캡차를 확인하고 직접 입력하세요.`);
+      
+      // 캡차 입력 필드 선택자
+      const inputSelector = '#mf_ssgoTopMainTab_contents_content1_body_ibx_answer';
+      await this.page.waitForSelector(inputSelector, { timeout: 10000 });
+      
+      // 사용자가 캡차를 입력할 때까지 대기 (최대 5분)
+      const maxWaitTime = 300000; // 5분
+      const checkInterval = 1000; // 1초마다 확인
+      let waitTime = 0;
+      
+      while (waitTime < maxWaitTime) {
+        const captchaInput = await this.page.$eval(inputSelector, el => el.value);
+        
+        if (captchaInput && captchaInput.trim()) {
+          console.log(`✅ 캡차 입력 완료: ${captchaInput} (${this.browserId})`);
+          return captchaInput.trim();
+        }
+        
+        // 1초 대기
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+        waitTime += checkInterval;
+        
+        // 10초마다 상태 출력
+        if (waitTime % 10000 === 0) {
+          console.log(`⏳ 캡차 입력 대기 중... (${Math.floor(waitTime / 1000)}초 경과)`);
+        }
+      }
+      
+      throw new Error('캡차 입력 시간 초과 (5분)');
+    } catch (error) {
+      console.error(`❌ 대화형 캡차 처리 실패 (${this.browserId}):`, error.message);
       throw error;
     }
   }
@@ -322,38 +421,70 @@ class PageController {
    */
   async extractProgressData(caseNumber) {
     try {
-      console.log(`📊 진행내용 데이터 추출 중... (${this.browserId})`);
+      // 검색 결과 페이지 로딩 대기 (1초로 단축)
+      console.log(`⏳ [DEBUG] 검색 결과 로딩 대기 중... (1초)`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // 검색 결과 페이지 로딩 대기
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // 진행내용 탭 클릭
+      // 진행내용 탭 찾기
       const progressTabSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2';
+      console.log(`🔍 [DEBUG] 진행내용 탭 검색 중... (${this.browserId})`);
       const progressTab = await this.page.$(progressTabSelector);
       
       if (progressTab) {
-        console.log(`📋 진행내용 탭 클릭 중... (${this.browserId})`);
+        console.log(`📋 진행내용 탭 발견! (${this.browserId})`);
         await progressTab.click();
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(`✅ 진행내용 탭 클릭됨! (${this.browserId})`);
+        
+        // 탭 전환 후 데이터 로딩 대기 (1초로 단축)
+        console.log(`⏳ [DEBUG] 진행내용 데이터 로딩 대기 중... (1초)`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 탭 클릭 후 데이터 추출 시작
+        console.log(`📊 진행내용 데이터 추출 시작... (${this.browserId})`);
       } else {
         console.log(`⚠️ 진행내용 탭을 찾을 수 없습니다 (${this.browserId})`);
+        console.log(`📄 [DEBUG] 현재 페이지 URL: ${this.page.url()}`);
+        console.log(`📄 [DEBUG] 페이지 제목: ${await this.page.title()}`);
+        
+        // 디버그용 스크린샷
+        const debugPath = `screenshots/search_result_${caseNumber || 'unknown'}_${Date.now()}.png`;
+        await this.page.screenshot({ path: debugPath, fullPage: true });
+        console.log(`📸 [DEBUG] 검색 결과 페이지 스크린샷: ${debugPath}`);
+        
+        // 페이지 내용 일부 확인
+        const bodyText = await this.page.evaluate(() => {
+          return document.body.innerText.substring(0, 500);
+        });
+        console.log(`📄 [DEBUG] 페이지 내용 일부: ${bodyText}`);
+        
         return [];
       }
       
       // 진행내용 그리드에서 데이터 추출
       const gridSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body_grd_csProgLst_main_div';
       
+      console.log(`🔍 [DEBUG] 진행내용 그리드 검색 중... (최대 10초 대기)`);
       try {
         await this.page.waitForSelector(gridSelector, { timeout: 10000 });
-        console.log(`📊 진행내용 그리드 발견 (${this.browserId})`);
+        console.log(`✅ 진행내용 그리드 발견! (${this.browserId})`);
       } catch (error) {
         console.log(`⚠️ 진행내용 그리드를 찾을 수 없습니다: ${error.message} (${this.browserId})`);
+        
+        // 디버그: 페이지 상태 확인
+        console.log(`📄 [DEBUG] 현재 페이지 URL: ${this.page.url()}`);
+        const debugPath = `screenshots/grid_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
+        await this.page.screenshot({ path: debugPath, fullPage: true });
+        console.log(`📸 [DEBUG] 그리드 미발견 스크린샷: ${debugPath}`);
+        
         return [];
       }
       
+      console.log(`📋 [DEBUG] 그리드 데이터 파싱 시작... (${this.browserId})`);
+      
+      // 브라우저에서 데이터 추출
       const progressData = await this.page.evaluate((selector) => {
         const grid = document.querySelector(selector);
-        if (!grid) return null;
+        if (!grid) return { found: false, rows: 0, data: null };
         
         const rows = grid.querySelectorAll('tbody tr');
         const data = [];
@@ -361,23 +492,53 @@ class PageController {
         rows.forEach((row, index) => {
           const cells = row.querySelectorAll('td');
           if (cells.length >= 4) {
+            // 각 셀의 span에서 텍스트와 색상 추출
+            const dateSpan = cells[0]?.querySelector('span');
+            const contentSpan = cells[1]?.querySelector('span');
+            const resultSpan = cells[2]?.querySelector('span');
+            const documentSpan = cells[3]?.querySelector('span');
+            
+            // 색상 정보 추출 (computedStyle 사용)
+            const getColor = (element) => {
+              if (!element) return null;
+              const style = window.getComputedStyle(element);
+              return style.color; // "rgb(255, 0, 0)" 형식
+            };
+            
             data.push({
-              date: cells[0]?.querySelector('span')?.textContent?.trim() || '',
-              content: cells[1]?.querySelector('span')?.textContent?.trim() || '',
-              result: cells[2]?.querySelector('span')?.textContent?.trim() || '',
-              document: cells[3]?.querySelector('span')?.textContent?.trim() || ''
+              date: dateSpan?.textContent?.trim() || '',
+              content: contentSpan?.textContent?.trim() || '',
+              result: resultSpan?.textContent?.trim() || '',
+              document: documentSpan?.textContent?.trim() || '',
+              // 색상 정보 추가
+              dateColor: getColor(dateSpan),
+              contentColor: getColor(contentSpan),
+              resultColor: getColor(resultSpan),
+              documentColor: getColor(documentSpan)
             });
           }
         });
         
-        return data;
+        return { found: true, rows: rows.length, data: data };
       }, gridSelector);
       
-      if (progressData && progressData.length > 0) {
-        console.log(`✅ 진행내용 데이터 추출 완료: ${progressData.length}개 행 (${this.browserId})`);
-        return progressData;
+      // Node.js에서 결과 로그 출력
+      console.log(`📊 [DEBUG] 그리드 발견: ${progressData.found ? 'O' : 'X'}`);
+      console.log(`📊 [DEBUG] 전체 행 수: ${progressData.rows}`);
+      console.log(`📊 [DEBUG] 파싱된 데이터 수: ${progressData.data ? progressData.data.length : 0}`);
+      
+      if (progressData.found && progressData.data && progressData.data.length > 0) {
+        console.log(`✅ 진행내용 데이터 추출 완료: ${progressData.data.length}개 행 (${this.browserId})`);
+        console.log(`📊 [DEBUG] 첫 번째 행: ${JSON.stringify(progressData.data[0])}`);
+        return progressData.data;
       } else {
         console.log(`⚠️ 진행내용 데이터가 없습니다 (${this.browserId})`);
+        
+        // 디버그: 스크린샷 저장
+        const noDataPath = `screenshots/no_data_${caseNumber || 'unknown'}_${Date.now()}.png`;
+        await this.page.screenshot({ path: noDataPath, fullPage: true });
+        console.log(`📸 [DEBUG] 데이터 없음 스크린샷: ${noDataPath}`);
+        
         return [];
       }
     } catch (error) {
@@ -423,21 +584,71 @@ class PageController {
       // 스크린샷 디렉토리 생성
       await fs.mkdir(this.screenshotsDir, { recursive: true });
       
-      // 요소가 보일 때까지 대기
-      await this.page.waitForSelector(selector, { timeout: 10000 });
+      console.log(`🔍 캡차 요소 찾는 중: ${selector} (${this.browserId})`);
       
-      // 요소만 캡처
+      // 요소가 보일 때까지 대기 (더 긴 시간)
+      await this.page.waitForSelector(selector, { timeout: 15000 });
+      
+      // 요소가 실제로 보이는지 확인
       const element = await this.page.$(selector);
-      if (element) {
-        await element.screenshot({ path: filepath });
-        console.log(`📸 요소 스크린샷 저장: ${filename} (${this.browserId})`);
-        return filepath;
-      } else {
+      if (!element) {
         throw new Error(`요소를 찾을 수 없습니다: ${selector}`);
       }
+      
+      // 요소가 화면에 보이는지 확인
+      const isVisible = await element.isIntersectingViewport();
+      console.log(`👁️ 요소 가시성 확인: ${isVisible} (${this.browserId})`);
+      
+      if (!isVisible) {
+        // 요소가 보이지 않으면 스크롤해서 보이게 함
+        await element.scrollIntoView();
+        await this.page.waitForTimeout(1000); // 스크롤 후 대기
+      }
+      
+      // 요소 크기 확인
+      const boundingBox = await element.boundingBox();
+      console.log(`📏 요소 크기: ${JSON.stringify(boundingBox)} (${this.browserId})`);
+      
+      if (!boundingBox || boundingBox.width === 0 || boundingBox.height === 0) {
+        throw new Error(`요소 크기가 0입니다: ${JSON.stringify(boundingBox)}`);
+      }
+      
+      // 요소만 캡처
+      await element.screenshot({ 
+        path: filepath,
+        type: 'png'
+      });
+      
+      // 파일이 실제로 생성되었는지 확인
+      const fileExists = await fs.access(filepath).then(() => true).catch(() => false);
+      if (!fileExists) {
+        throw new Error(`스크린샷 파일이 생성되지 않았습니다: ${filepath}`);
+      }
+      
+      const stats = await fs.stat(filepath);
+      console.log(`📸 요소 스크린샷 저장: ${filename} (${stats.size} bytes) (${this.browserId})`);
+      return filepath;
     } catch (error) {
       console.error(`❌ 요소 스크린샷 촬영 실패 (${this.browserId}):`, error.message);
-      throw error;
+      
+      // 전체 페이지 스크린샷으로 대체 시도
+      try {
+        console.log(`🔄 전체 페이지 스크린샷으로 대체 시도 (${this.browserId})`);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `${caseNumber}-${timestamp}-${type}-fullpage.png`;
+        const filepath = path.join(this.screenshotsDir, filename);
+        
+        await this.page.screenshot({ 
+          path: filepath,
+          fullPage: true 
+        });
+        
+        console.log(`📸 전체 페이지 스크린샷 저장: ${filename} (${this.browserId})`);
+        return filepath;
+      } catch (fallbackError) {
+        console.error(`❌ 전체 페이지 스크린샷도 실패 (${this.browserId}):`, fallbackError.message);
+        throw error;
+      }
     }
   }
 

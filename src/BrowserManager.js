@@ -82,6 +82,25 @@ class BrowserManager {
   }
 
   /**
+   * 브라우저 가져오기 (간단한 버전)
+   */
+  async getBrowser() {
+    return this.getAvailableBrowser();
+  }
+
+  /**
+   * 페이지 가져오기
+   */
+  async getPage(browserId) {
+    if (!this.browsers.has(browserId)) {
+      throw new Error(`브라우저를 찾을 수 없습니다: ${browserId}`);
+    }
+
+    const browserInfo = this.browsers.get(browserId);
+    return await browserInfo.browser.newPage();
+  }
+
+  /**
    * 브라우저 해제
    */
   async releaseBrowser(browserId) {

@@ -2,13 +2,13 @@
   "success": true,
   "caseId": "2025나10816-미진",
   "caseData": {
-    "id": 2,
+    "id": 5,
     "courtName": "대구고등법원",
     "caseNumber": "2025나10816",
     "partyName": "미진",
-    "status": ""
+    "status": "옥포미진(항소)"
   },
-  "captchaInput": "845920",
+  "captchaInput": "574764",
   "progressData": [
     {
       "date": "2025.06.25",
@@ -169,10 +169,46 @@
     {
       "date": "2025.09.18",
       "content": "변론기일(10:30) [쌍방 화상장치]",
+      "result": "변론종결",
+      "document": ""
+    },
+    {
+      "date": "2025.10.31",
+      "content": "원고 소송대리인 법OOOOOOOOOOO 참고서면 제출",
+      "result": "",
+      "document": ""
+    },
+    {
+      "date": "2025.10.31",
+      "content": "피고(피항소인) 소송대리인 변호사 염OOOOOO에게 참고서면부본(25.10.31.자) 송달",
+      "result": "위의 '확인' 항목 체크",
+      "document": ""
+    },
+    {
+      "date": "2025.11.13",
+      "content": "판결선고기일(법정동 42호 10:00)",
+      "result": "판결선고",
+      "document": ""
+    },
+    {
+      "date": "2025.11.13",
+      "content": "원고(항소인) 소송대리인 법무법인 아크로 담당변호사 송OOOOOOOOOO에게 판결정본 송달",
+      "result": "",
+      "document": ""
+    },
+    {
+      "date": "2025.11.13",
+      "content": "피고(피항소인) 소송대리인 변호사 염OOOOOO에게 판결정본 송달",
+      "result": "",
+      "document": ""
+    },
+    {
+      "date": "2025.11.13",
+      "content": "종국 : 원고일부승",
       "result": "",
       "document": ""
     }
   ],
-  "extractedAt": "2025-09-17T06:02:26.070Z",
-  "browserId": "browser_1758088927401_a1aub6s8o"
+  "extractedAt": "2025-11-13T02:55:12.940Z",
+  "browserId": "browser_1763002452598_yhqsneyn2"
 }
