@@ -25,6 +25,7 @@ class PuppeteerAutomation {
       this.browserManager = new BrowserManager({
         maxInstances: 3, // 최대 3개 브라우저 인스턴스
         headless: true, // 백그라운드에서 실행 (Python GUI 사용)
+        userDataDir: path.join(process.cwd(), 'user_data'), // 쿠키 저장을 위한 사용자 데이터 폴더
         browserOptions: {
           devtools: false, // 개발자 도구 닫기 (속도 향상)
           slowMo: 0 // 지연 없음 (최고 속도)
@@ -33,8 +34,12 @@ class PuppeteerAutomation {
 
       await this.browserManager.initialize();
 
-      // 사건 데이터 로드
-      await this.loadCaseData();
+      // 사건 데이터 로드 (파일이 존재할 때만 로드)
+      try {
+        await this.loadCaseData();
+      } catch (error) {
+        console.log('⚠️ 사건 데이터 파일 로드 실패 (단일 처리 모드에서는 무시됨):', error.message);
+      }
 
       console.log('✅ 초기화 완료');
       return true;
