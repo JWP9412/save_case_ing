@@ -94,6 +94,62 @@ class PageController {
   }
 
   /**
+   * 사건검색 결과 저장 체크박스 체크
+   */
+  async checkSaveSearchResult() {
+    try {
+      console.log(`💾 사건검색 결과 저장 체크박스 처리 중... (${this.browserId})`);
+      
+      const checkboxId = 'mf_ssgoTopMainTab_contents_content1_body_cbx_saveCsRsltYn_input_0';
+      const checkboxSelector = `#${checkboxId}`;
+      
+      // 체크박스가 보일 때까지 대기
+      await this.page.waitForSelector(checkboxSelector, { timeout: 10000 });
+      
+      // 현재 체크 상태 확인
+      const isChecked = await this.page.$eval(checkboxSelector, el => el.checked);
+      
+      if (!isChecked) {
+        // 체크박스 클릭 시도
+        // 1. Label 클릭 (WebSquare에서 더 안정적일 수 있음)
+        try {
+          await this.page.click(`label[for="${checkboxId}"]`);
+        } catch (e) {
+          // 2. 실패 시 체크박스 직접 클릭
+          await this.page.click(checkboxSelector);
+        }
+        
+        // 잠시 대기
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 체크 상태 재확인
+        const newChecked = await this.page.$eval(checkboxSelector, el => el.checked);
+        console.log(`클릭 후 '결과 저장' 체크 상태: ${newChecked} (${this.browserId})`);
+        
+        if (!newChecked) {
+          // 3. JavaScript로 강제 체크 (최후의 수단)
+          await this.page.evaluate((selector) => {
+            const checkbox = document.querySelector(selector);
+            if (checkbox) {
+              checkbox.checked = true;
+              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }, checkboxSelector);
+          console.log(`JavaScript로 강제 체크 완료 (${this.browserId})`);
+        }
+      } else {
+        console.log(`'결과 저장'이 이미 체크되어 있음 (${this.browserId})`);
+      }
+      
+      console.log(`✅ 사건검색 결과 저장 체크 완료 (${this.browserId})`);
+      return true;
+    } catch (error) {
+      console.error(`❌ '결과 저장' 체크박스 처리 실패 (${this.browserId}):`, error.message);
+      throw error;
+    }
+  }
+
+  /**
    * 법원 선택
    */
   async selectCourt(courtName) {
