@@ -66,6 +66,29 @@ import glob
 # datetime: 날짜와 시간을 다루기 위한 라이브러리
 from datetime import datetime
 
+# ============================================================================
+# UI 테마 설정 (2026 Modern Design)
+# ============================================================================
+THEME = {
+    "bg_primary": "#F8F9FA",  # 앱 배경 (아주 연한 회색)
+    "bg_white": "#FFFFFF",  # 카드 배경 (흰색)
+    "bg_header": "#2C3E50",  # 헤더 배경 (다크 블루 그레이)
+    "text_header": "#FFFFFF",  # 헤더 텍스트 (흰색)
+    "text_main": "#2C3E50",  # 본문 텍스트 (다크 블루 그레이)
+    "text_sub": "#7F8C8D",  # 보조 텍스트 (회색)
+    "accent": "#3498DB",  # 포인트 컬러 (밝은 파랑)
+    "success": "#27AE60",  # 성공/완료 (초록)
+    "warning": "#F39C12",  # 경고/처리중 (오렌지)
+    "error": "#E74C3C",  # 에러 (빨강)
+    "row_odd": "#FFFFFF",  # 홀수 행 배경
+    "row_even": "#F8F9FA",  # 짝수 행 배경 (미세한 구분)
+    "border": "#E0E0E0",  # 테두리 색상
+    "font_main": ("Segoe UI", 10),
+    "font_bold": ("Segoe UI", 10, "bold"),
+    "font_header": ("Segoe UI", 11, "bold"),
+    "font_small": ("Segoe UI", 9),
+}
+
 # ThreadPoolExecutor: 여러 작업을 병렬로 처리하기 위한 클래스
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -306,6 +329,18 @@ class BatchProcessingGUI:
         # retry_delay: 재시도 전 대기 시간(초) (기본값: 2초)
         self.retry_delay = None
 
+    def on_closing(self):
+        """종료 처리"""
+        if messagebox.askokcancel("종료", "프로그램을 종료하시겠습니까?"):
+            if hasattr(self, "puppeteer_service"):
+                # 실행 중인 모든 프로세스 종료
+                for process in list(self.puppeteer_service.running_processes.values()):
+                    try:
+                        process.terminate()
+                    except:
+                        pass
+            self.root.destroy()
+
     def create_window(self):
         """메인 윈도우 생성"""
         self.root = tk.Tk()
@@ -316,6 +351,9 @@ class BatchProcessingGUI:
 
         # 배경색 설정 (현대적인 다크 테마)
         self.root.configure(bg="#2C3E50")
+
+        # 종료 이벤트 바인딩
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # 중앙에 배치
         self.root.eval("tk::PlaceWindow . center")
@@ -676,7 +714,292 @@ class BatchProcessingGUI:
             self.log_message(f"❌ 구글 시트 로드 실패: {e}")
             messagebox.showerror("오류", f"구글 시트 로드 실패: {e}")
 
+    def create_list_header(self):
+        """사건 목록 헤더 생성 (2026 Modern Design)"""
+        # 기존 헤더 제거
+        for widget in self.header_container.winfo_children():
+            widget.destroy()
+
+        # 컬럼 정의
+        col_names = [
+            "선택",
+            "사건번호",
+            "피고",
+            "법원",
+            "비고",
+            "캡차 이미지",
+            "캡차 입력",
+            "상태",
+            "최근 업데이트",
+        ]
+
+        # 헤더 프레임
+        header_frame = tk.Frame(self.header_container, bg=THEME["bg_header"])
+        header_frame.pack(fill=tk.BOTH, expand=True)
+
+        for col_idx, (name, width) in enumerate(zip(col_names, self.col_widths)):
+            # 셀 프레임
+            cell = tk.Frame(header_frame, bg=THEME["bg_header"], width=width, height=40)
+            cell.pack(side=tk.LEFT)
+            cell.pack_propagate(False)
+
+            # 라벨
+            label = tk.Label(
+                cell,
+                text=name,
+                font=THEME["font_header"],
+                bg=THEME["bg_header"],
+                fg=THEME["text_header"],
+                anchor=tk.CENTER,
+            )
+            label.pack(fill=tk.BOTH, expand=True)
+
+            # 구분선 (우측)
+            if col_idx < len(col_names) - 1:
+                sep = tk.Frame(cell, bg="#ECF0F1", width=1)  # 밝은 구분선
+                sep.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
+
+    def create_case_row(self, parent, case, index, total_width):
+        """단일 사건 행 위젯 생성 (2026 Modern Design)"""
+        # 배경색 (얼터네이트)
+        bg_color = THEME["row_odd"] if index % 2 == 0 else THEME["row_even"]
+
+        # 사건 행 컨테이너 (case_frame + 가로 구분선)
+        row_container = tk.Frame(parent, bg=THEME["bg_white"], bd=0)
+        row_container.pack(fill=tk.X, pady=0, padx=0)
+
+        case_frame = tk.Frame(
+            row_container, bg=bg_color, height=60, width=total_width, bd=0
+        )
+        case_frame.pack(fill=tk.X)
+        case_frame.pack_propagate(False)
+
+        # 가로 구분선 (하단)
+        separator = tk.Frame(
+            row_container, bg=THEME["border"], height=1, width=total_width
+        )
+        separator.pack(fill=tk.X)
+
+        # 컴포넌트 저장용 딕셔너리
+        components = {}
+
+        # 1. 체크박스
+        var = tk.BooleanVar()
+        checkbox_frame = tk.Frame(
+            case_frame, bg=bg_color, width=self.col_widths[0], height=60
+        )
+        checkbox_frame.pack(side=tk.LEFT)
+        checkbox_frame.pack_propagate(False)
+
+        checkbox = tk.Checkbutton(
+            checkbox_frame,
+            variable=var,
+            bg=bg_color,
+            activebackground=bg_color,
+            command=lambda idx=index: self.on_checkbox_change(idx),
+        )
+        checkbox.pack(anchor=tk.CENTER, expand=True)
+        components["checkbox_var"] = var
+
+        # 2. 텍스트 정보 (사건번호, 피고, 법원, 비고)
+        info_keys = ["사건번호", "피고", "법원", "비고"]
+        for i, key in enumerate(info_keys, start=1):
+            text = case.get(key, "")
+            frame = tk.Frame(
+                case_frame, bg=bg_color, width=self.col_widths[i], height=60
+            )
+            frame.pack(side=tk.LEFT)
+            frame.pack_propagate(False)
+
+            # 텍스트 라벨 (왼쪽 정렬, 패딩)
+            label = tk.Label(
+                frame,
+                text=text,
+                font=THEME["font_main"],
+                bg=bg_color,
+                fg=THEME["text_main"],
+                anchor=tk.W,
+                padx=10,
+            )
+            label.pack(fill=tk.BOTH, expand=True)
+            components[f"label_{key}"] = label
+
+        # 3. 캡차 이미지 (5번)
+        image_frame = tk.Frame(
+            case_frame, bg=bg_color, width=self.col_widths[5], height=60
+        )
+        image_frame.pack(side=tk.LEFT)
+        image_frame.pack_propagate(False)
+
+        image_label = tk.Label(
+            image_frame,
+            text="대기중",
+            font=THEME["font_small"],
+            fg=THEME["text_sub"],
+            bg=THEME["bg_primary"],
+            relief=tk.FLAT,
+        )
+        image_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        components["image_label"] = image_label
+
+        # 4. 캡차 입력 (6번)
+        captcha_frame = tk.Frame(
+            case_frame, bg=bg_color, width=self.col_widths[6], height=60
+        )
+        captcha_frame.pack(side=tk.LEFT)
+        captcha_frame.pack_propagate(False)
+
+        captcha_var = tk.StringVar()
+        captcha_entry = tk.Entry(
+            captcha_frame,
+            textvariable=captcha_var,
+            font=THEME["font_bold"],
+            justify=tk.CENTER,
+            bg=THEME["bg_white"],
+            fg=THEME["text_main"],
+            relief=tk.FLAT,
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=THEME["border"],
+            highlightcolor=THEME["accent"],
+        )
+        captcha_entry.pack(fill=tk.X, expand=True, padx=5, pady=15)
+
+        # 입력 검증
+        def validate(char):
+            return char.isdigit() and len(captcha_var.get()) < 6
+
+        captcha_entry.config(
+            validate="key", validatecommand=(captcha_entry.register(validate), "%S")
+        )
+        captcha_entry.bind("<Return>", lambda e, idx=index: self.on_captcha_enter(idx))
+
+        components["captcha_var"] = captcha_var
+        components["captcha_entry"] = captcha_entry
+
+        # 5. 상태 (7번)
+        status_frame = tk.Frame(
+            case_frame, bg=bg_color, width=self.col_widths[7], height=60
+        )
+        status_frame.pack(side=tk.LEFT)
+        status_frame.pack_propagate(False)
+
+        status_label = tk.Label(
+            status_frame,
+            text="⏸️ 대기",
+            font=THEME["font_main"],
+            fg=THEME["text_sub"],
+            bg=bg_color,
+            anchor=tk.CENTER,
+        )
+        status_label.pack(fill=tk.BOTH, expand=True)
+        components["status_label"] = status_label
+
+        # 6. 최근 업데이트 (8번)
+        update_frame = tk.Frame(
+            case_frame, bg=bg_color, width=self.col_widths[8], height=60
+        )
+        update_frame.pack(side=tk.LEFT)
+        update_frame.pack_propagate(False)
+
+        # 컨테이너 (날짜 + D-day)
+        u_container = tk.Frame(update_frame, bg=bg_color)
+        u_container.pack(expand=True)
+
+        # 데이터 로드
+        history = self.load_update_history()
+        c_data = history.get(case.get("사건번호", ""), {})
+        last_date = (
+            c_data.get("last_update", "-") if isinstance(c_data, dict) else c_data
+        )
+        days_since = self.get_days_since_update(case)
+
+        date_label = tk.Label(
+            u_container,
+            text=last_date,
+            font=THEME["font_small"],
+            fg=THEME["text_sub"],
+            bg=bg_color,
+        )
+        date_label.pack(anchor=tk.CENTER)
+
+        if days_since < 0:
+            d_text = "-"
+            d_fg = THEME["text_sub"]
+        else:
+            d_text = f"D+{days_since}"
+            d_fg = THEME["error"] if days_since >= 3 else THEME["success"]
+        d_label = tk.Label(
+            u_container, text=d_text, font=THEME["font_bold"], fg=d_fg, bg=bg_color
+        )
+        d_label.pack(anchor=tk.CENTER)
+
+        components["update_date_label"] = date_label
+        components["update_d_label"] = d_label
+
+        # 프레임 저장
+        self.case_frames[index] = case_frame
+
+        return row_container, components
+
     def update_case_list_ui(self):
+        """사건 목록 UI 업데이트 (Refactored 2026)"""
+        try:
+            self.log_message(f"🔄 [DEBUG] UI 업데이트 시작: {len(self.case_list)}건")
+
+            # 기존 위젯 제거
+            for widget in self.case_list_frame.winfo_children():
+                widget.destroy()
+
+            # 초기화
+            self.case_checkboxes = {}
+            self.case_inputs = {}
+            self.case_entries = {}
+            self.case_status = {}
+            self.case_images = {}
+            self.case_image_photos = {}
+            self.case_frames = {}
+            self.case_update_labels = {}
+            self.case_update_date_labels = {}
+            self.case_start_times = {}
+
+            # 컬럼 설정 (픽셀)
+            self.col_widths = [50, 120, 90, 140, 110, 180, 90, 90, 120]
+
+            # 헤더 생성
+            self.create_list_header()
+
+            # 전체 너비
+            total_width = sum(self.col_widths)
+
+            # 사건 목록 생성
+            for i, case in enumerate(self.case_list):
+                row, comps = self.create_case_row(
+                    self.case_list_frame, case, i, total_width
+                )
+
+                # 컴포넌트 등록
+                self.case_checkboxes[i] = comps["checkbox_var"]
+                self.case_images[i] = comps["image_label"]
+                self.case_inputs[i] = comps["captcha_var"]
+                self.case_entries[i] = comps["captcha_entry"]
+                self.case_status[i] = comps["status_label"]
+                self.case_update_date_labels[i] = comps["update_date_label"]
+                self.case_update_labels[i] = comps["update_d_label"]
+
+            # 스크롤 영역 업데이트
+            self.case_list_frame.update_idletasks()
+            self.case_canvas.config(scrollregion=self.case_canvas.bbox("all"))
+            self.case_canvas.yview_moveto(0)
+            self.log_message("✅ UI 구성 완료 (Modern Style)")
+
+        except Exception as e:
+            self.log_message(f"❌ [ERROR] UI 업데이트 오류: {e}")
+            import traceback
+
+            print(traceback.format_exc())
+
+    def _deprecated_update_case_list_ui(self):
         """사건 목록 UI 업데이트"""
         try:
             self.log_message(
@@ -1249,6 +1572,18 @@ class BatchProcessingGUI:
             elapsed_time = int(time.time() - self.case_start_times[case_index])
 
             if result_data:
+                # [SMART SKIP] 캡차 스킵 모드 처리
+                if result_data == "__CLICK__":
+                    # 캡차 입력란에 "CLICK" 자동 입력
+                    if case_index in self.case_inputs:
+                        self.case_inputs[case_index].set("CLICK")
+
+                    self.update_case_status(case_index, "입력완료", "green", "⚡")
+                    self.log_message(
+                        f"⚡ 캡차 스킵: {case_number} (자동 클릭 준비 완료)"
+                    )
+                    return True
+
                 # 캡차 이미지 로드만 완료된 상태 (실제 크롤링은 "캡차 입력 완료" 버튼 클릭 후 실행)
                 self.update_case_status(case_index, "입력대기", "blue", "⏳")
                 self.log_message(
@@ -1475,8 +1810,11 @@ class BatchProcessingGUI:
                         self.log_message(
                             f"📋 [DEBUG] GUI에서 가져온 캡차 입력: '{captcha_input}' (타입: {type(captcha_input).__name__}, 길이: {len(captcha_input)})"
                         )
-                        # 입력 형식 검증
-                        if len(captcha_input) == 6 and captcha_input.isdigit():
+                        # 입력 형식 검증 ("CLICK" 허용)
+                        is_click = (captcha_input == "CLICK")
+                        is_valid_captcha = (len(captcha_input) == 6 and captcha_input.isdigit())
+                        
+                        if is_click or is_valid_captcha:
                             self.log_message(
                                 f"✅ [DEBUG] 캡차 형식 검증 통과: {captcha_input}"
                             )
@@ -1855,7 +2193,7 @@ class BatchProcessingGUI:
                 self.root.after(0, lambda: self.complete_btn.config(state=tk.NORMAL))
                 self.log_message(f"✅ 캡차 입력 완료 버튼 활성화됨")
 
-                return True
+                return image_path
             else:
                 self.log_message(f"❌ 캡차 이미지 캡처 실패: {case_number}")
                 return False
@@ -2041,7 +2379,7 @@ class BatchProcessingGUI:
             self.log_message(f"⚠️ 업데이트 기록 실패: {e}")
 
     def get_days_since_update(self, case):
-        """최근 업데이트 이후 경과일수 조회 (D+n 형식)"""
+        """최근 업데이트 이후 경과일수 조회 (정수 반환, 없으면 -1)"""
         try:
             history = self.load_update_history()
             case_number = case.get("사건번호", "")
@@ -2061,11 +2399,11 @@ class BatchProcessingGUI:
                     )
                     current = datetime.now()
                     days_diff = (current - last_update).days
-                    return f"D+{days_diff}"
+                    return days_diff
 
-            return "-"
+            return -1
         except Exception as e:
-            return "-"
+            return -1
 
     def format_update_timestamp_rows(self, worksheet, start_row):
         """
@@ -2180,6 +2518,20 @@ class BatchProcessingGUI:
                     return
 
                 image_label = self.case_images[case_index]
+
+                if image_path == "__CLICK__":
+                    image_label.config(
+                        image="",
+                        text="최근검색 (자동클릭)",
+                        fg="blue",
+                        font=("맑은 고딕", 10, "bold"),
+                    )
+                    if case_index in self.case_image_photos:
+                        del self.case_image_photos[case_index]
+                    self.log_message(
+                        f"⚡ [DEBUG] 캡차 스킵 모드 표시: 인덱스 {case_index}"
+                    )
+                    return
 
                 if image_path and os.path.exists(image_path):
                     # 파일 크기 확인

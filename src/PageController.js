@@ -154,6 +154,9 @@ class PageController {
     try {
       console.log(`🏛️ 법원 선택 중: ${courtName} (${this.browserId})`);
 
+      // select 요소가 로드될 때까지 대기 (최대 15초)
+      await this.page.waitForSelector('select', { timeout: 15000 });
+
       // 모든 select 요소 찾기
       const selects = await this.page.$$('select');
       console.log(`🔍 발견된 select 요소 수: ${selects.length} (${this.browserId})`);
@@ -237,6 +240,7 @@ class PageController {
    * 사건번호 입력
    */
   async inputCaseNumber(caseNumber) {
+    this.caseNumber = caseNumber; // [SMART SKIP] 사건번호 저장
     try {
       console.log(`📝 사건번호 입력 중: ${caseNumber} (${this.browserId})`);
 
@@ -307,6 +311,10 @@ class PageController {
    * 캡차 입력 (간단한 버전)
    */
   async inputCaptcha(captchaInput) {
+    if (captchaInput === "CLICK") {
+      console.log(`⚡ [SMART SKIP] 캡차 입력 건너뜀 (${this.browserId})`);
+      return;
+    }
     try {
       console.log(`🔐 [DEBUG] 캡차 입력 시작 (${this.browserId})`);
       console.log(`📋 [DEBUG] 입력할 캡차 값: "${captchaInput}" (타입: ${typeof captchaInput}, 길이: ${captchaInput?.length})`);
@@ -441,23 +449,100 @@ class PageController {
   }
 
   /**
+   * 최근 검색 결과 클릭 (캡차 스킵용)
+   */
+  async clickRecentCase(caseNumber) {
+    try {
+      console.log(`🖱️ [SMART SKIP] 최근 검색 결과 클릭 시도: ${caseNumber} (${this.browserId})`);
+
+      const clicked = await this.page.evaluate((targetNo) => {
+        const elements = document.querySelectorAll('a');
+        for (const el of elements) {
+          if (el.textContent.trim() === targetNo) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      }, caseNumber);
+
+      if (clicked) {
+        console.log(`✅ [SMART SKIP] 최근 검색 결과 클릭 성공 (${this.browserId})`);
+
+        // 클릭 후 로딩 대기
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return true;
+      } else {
+        throw new Error(`최근 검색 목록에서 사건번호(${caseNumber})를 찾을 수 없습니다.`);
+      }
+    } catch (error) {
+      console.error(`❌ [SMART SKIP] 클릭 실패 (${this.browserId}):`, error.message);
+      throw error;
+    }
+  }
+
+  /**
    * 검색 실행
    */
-  async performSearch() {
+  async performSearch(captchaInput) {
     try {
+      // [SMART SKIP] "CLICK" 신호 처리
+      if (captchaInput === "CLICK") {
+        console.log(`⚡ [SMART SKIP] 검색 버튼 클릭 대신 링크 클릭 모드 진입 (${this.browserId})`);
+        return await this.clickRecentCase(this.caseNumber);
+      }
+
       console.log(`🔍 검색 실행 중... (${this.browserId})`);
 
       // 검색 버튼 클릭 시도
       const searchButtonSelector = 'input[type="button"][value*="검색"]';
       const searchButton = await this.page.$(searchButtonSelector);
 
+      // [CRITICAL FIX] 사건번호 인식 문제 해결을 위한 재클릭 및 포커스
+      try {
+        console.log(`🖱️ [DEBUG] 사건번호 입력 필드 재확인 (Focus & Click)`);
+        const caseNoSelector = '#mf_ssgoTopMainTab_contents_content1_body_ibx_fullCsNo';
+        await this.page.evaluate((selector) => {
+          const input = document.querySelector(selector);
+          if (input) {
+            input.click(); // 클릭
+            input.focus(); // 포커스
+            input.dispatchEvent(new Event('input', { bubbles: true })); // 입력 이벤트
+            input.dispatchEvent(new Event('change', { bubbles: true })); // 변경 이벤트
+          }
+        }, caseNoSelector);
+
+        console.log(`🖱️ [DEBUG] 당사자명 입력 필드 재확인 (Focus & Click)`);
+        const partyNameSelector = '#mf_ssgoTopMainTab_contents_content1_body_ibx_btprNm';
+        await this.page.evaluate((selector) => {
+          const input = document.querySelector(selector);
+          if (input) {
+            input.click(); // 클릭
+            input.focus(); // 포커스
+            input.dispatchEvent(new Event('input', { bubbles: true })); // 입력 이벤트
+            input.dispatchEvent(new Event('change', { bubbles: true })); // 변경 이벤트
+          }
+        }, partyNameSelector);
+      } catch (e) {
+        console.log(`⚠️ 입력 필드 재클릭 실패 (무시됨): ${e.message}`);
+      }
+
       if (searchButton) {
-        await searchButton.click();
+        // [SIMPLIFY] Enter 키 입력 로직 제거 & 오직 클릭만 수행
+        // Puppeteer click 대신 JS click 우선 사용 (WebSquare 이벤트 핸들링 보장)
+        console.log(`🖱️ [DEBUG] 검색 버튼 클릭 시도 (JS Click)`);
+        
+        await this.page.evaluate((selector) => {
+          const btn = document.querySelector(selector);
+          if (btn) {
+            btn.click();
+          }
+        }, searchButtonSelector);
+
         console.log(`✅ 검색 버튼 클릭 완료 (${this.browserId})`);
       } else {
-        // Enter 키로 검색 시도
+        console.warn(`⚠️ 검색 버튼을 찾을 수 없습니다. Enter 키로 대체 시도.`);
         await this.page.keyboard.press('Enter');
-        console.log(`✅ Enter 키로 검색 실행 (${this.browserId})`);
       }
 
       // 검색 결과 로딩 대기
@@ -475,61 +560,70 @@ class PageController {
    */
   async extractProgressData(caseNumber) {
     try {
-      // 검색 결과 페이지 로딩 대기 (1초로 단축)
+      // 검색 결과 페이지 로딩 대기 (1초)
       console.log(`⏳ [DEBUG] 검색 결과 로딩 대기 중... (1초)`);
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // 진행내용 탭 찾기
-      const progressTabSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2';
-      console.log(`🔍 [DEBUG] 진행내용 탭 검색 중... (${this.browserId})`);
-      const progressTab = await this.page.$(progressTabSelector);
+      // 1. "진행내용" 탭 클릭 (듀얼 전략)
+      console.log(`🔍 [DEBUG] "진행내용" 탭 찾는 중... (ID/텍스트 방식 병행) (${this.browserId})`);
+      
+      let tabClicked = false;
 
-      if (progressTab) {
-        console.log(`📋 진행내용 탭 발견! (${this.browserId})`);
-        await progressTab.click();
-        console.log(`✅ 진행내용 탭 클릭됨! (${this.browserId})`);
-
-        // 탭 전환 후 데이터 로딩 대기 (1초로 단축)
-        console.log(`⏳ [DEBUG] 진행내용 데이터 로딩 대기 중... (1초)`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // 탭 클릭 후 데이터 추출 시작
-        console.log(`📊 진행내용 데이터 추출 시작... (${this.browserId})`);
-      } else {
-        console.log(`⚠️ 진행내용 탭을 찾을 수 없습니다 (${this.browserId})`);
-        console.log(`📄 [DEBUG] 현재 페이지 URL: ${this.page.url()}`);
-        console.log(`📄 [DEBUG] 페이지 제목: ${await this.page.title()}`);
-
-        // 디버그용 스크린샷
-        const debugPath = `screenshots/search_result_${caseNumber || 'unknown'}_${Date.now()}.png`;
-        await this.page.screenshot({ path: debugPath, fullPage: true });
-        console.log(`📸 [DEBUG] 검색 결과 페이지 스크린샷: ${debugPath}`);
-
-        // 페이지 내용 일부 확인
-        const bodyText = await this.page.evaluate(() => {
-          return document.body.innerText.substring(0, 500);
-        });
-        console.log(`📄 [DEBUG] 페이지 내용 일부: ${bodyText}`);
-
-        return [];
+      // [전략 1] ID 기반 검색 (기존 방식)
+      try {
+        const progressTabSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2';
+        const progressTab = await this.page.$(progressTabSelector);
+        if (progressTab) {
+          console.log(`📋 [전략 1] ID로 탭 발견! 클릭 시도... (${this.browserId})`);
+          await progressTab.click();
+          tabClicked = true;
+          console.log(`✅ [전략 1] 탭 클릭 성공!`);
+        }
+      } catch (e) {
+        console.log(`⚠️ [전략 1] ID 검색 실패: ${e.message}`);
       }
 
-      // 진행내용 그리드에서 데이터 추출
-      const gridSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body_grd_csProgLst_main_div';
+      // [전략 2] 텍스트 기반 검색 (실패 시 폴백)
+      if (!tabClicked) {
+        console.log(`🔄 [전략 2] 텍스트 기반 검색 시도...`);
+        tabClicked = await this.page.evaluate(() => {
+          // li, a, span 태그 중에서 "진행내용" 텍스트를 포함한 요소 찾기
+          const elements = document.querySelectorAll('li, a, span');
+          for (const el of elements) {
+            if (el.textContent.trim() === '진행내용' && el.offsetParent !== null) { // 보이는 요소만
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (tabClicked) {
+          console.log(`✅ [전략 2] 텍스트로 탭 클릭 성공!`);
+        }
+      }
 
-      console.log(`🔍 [DEBUG] 진행내용 그리드 검색 중... (최대 10초 대기)`);
+      if (tabClicked) {
+        // 탭 전환 대기 (1초)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else {
+        console.log(`⚠️ "진행내용" 탭을 찾을 수 없습니다. (ID/텍스트 모두 실패) (${this.browserId})`);
+        
+        // 디버그: 스크린샷
+        const debugPath = `screenshots/tab_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
+        await this.page.screenshot({ path: debugPath, fullPage: true });
+        console.log(`📸 [DEBUG] 탭 미발견 스크린샷: ${debugPath}`);
+      }
+
+      // 2. 진행내용 그리드 대기 및 추출
+      const gridSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body_grd_csProgLst_main_div';
+      console.log(`🔍 [DEBUG] 진행내용 그리드(#${gridSelector}) 대기 중... (최대 10초)`);
+
       try {
         await this.page.waitForSelector(gridSelector, { timeout: 10000 });
         console.log(`✅ 진행내용 그리드 발견! (${this.browserId})`);
       } catch (error) {
         console.log(`⚠️ 진행내용 그리드를 찾을 수 없습니다: ${error.message} (${this.browserId})`);
-
-        // 디버그: 페이지 상태 확인
-        console.log(`📄 [DEBUG] 현재 페이지 URL: ${this.page.url()}`);
-        const debugPath = `screenshots/grid_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
-        await this.page.screenshot({ path: debugPath, fullPage: true });
-        console.log(`📸 [DEBUG] 그리드 미발견 스크린샷: ${debugPath}`);
-
         return [];
       }
 
@@ -540,17 +634,23 @@ class PageController {
         const grid = document.querySelector(selector);
         if (!grid) return { found: false, rows: 0, data: null };
 
-        const rows = grid.querySelectorAll('tbody tr');
+        // w2grid_dataLayer 내부의 테이블 찾기 (사용자가 제공한 구조)
+        const dataLayer = grid.querySelector('.w2grid_dataLayer');
+        const targetTable = dataLayer ? dataLayer.querySelector('table') : grid.querySelector('table');
+        
+        if (!targetTable) return { found: true, rows: 0, data: [] };
+
+        const rows = targetTable.querySelectorAll('tbody tr');
         const data = [];
 
         rows.forEach((row, index) => {
           const cells = row.querySelectorAll('td');
           if (cells.length >= 4) {
             // 각 셀의 span에서 텍스트와 색상 추출
-            const dateSpan = cells[0]?.querySelector('span');
-            const contentSpan = cells[1]?.querySelector('span');
-            const resultSpan = cells[2]?.querySelector('span');
-            const documentSpan = cells[3]?.querySelector('span');
+            const dateSpan = cells[0]?.querySelector('span') || cells[0];
+            const contentSpan = cells[1]?.querySelector('span') || cells[1];
+            const resultSpan = cells[2]?.querySelector('span') || cells[2];
+            const documentSpan = cells[3]?.querySelector('span') || cells[3];
 
             // 색상 정보 추출 (computedStyle 사용)
             const getColor = (element) => {
@@ -576,23 +676,15 @@ class PageController {
         return { found: true, rows: rows.length, data: data };
       }, gridSelector);
 
-      // Node.js에서 결과 로그 출력
+      // 결과 처리
       console.log(`📊 [DEBUG] 그리드 발견: ${progressData.found ? 'O' : 'X'}`);
-      console.log(`📊 [DEBUG] 전체 행 수: ${progressData.rows}`);
       console.log(`📊 [DEBUG] 파싱된 데이터 수: ${progressData.data ? progressData.data.length : 0}`);
 
       if (progressData.found && progressData.data && progressData.data.length > 0) {
         console.log(`✅ 진행내용 데이터 추출 완료: ${progressData.data.length}개 행 (${this.browserId})`);
-        console.log(`📊 [DEBUG] 첫 번째 행: ${JSON.stringify(progressData.data[0])}`);
         return progressData.data;
       } else {
         console.log(`⚠️ 진행내용 데이터가 없습니다 (${this.browserId})`);
-
-        // 디버그: 스크린샷 저장
-        const noDataPath = `screenshots/no_data_${caseNumber || 'unknown'}_${Date.now()}.png`;
-        await this.page.screenshot({ path: noDataPath, fullPage: true });
-        console.log(`📸 [DEBUG] 데이터 없음 스크린샷: ${noDataPath}`);
-
         return [];
       }
     } catch (error) {

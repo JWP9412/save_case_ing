@@ -25,7 +25,7 @@ class PuppeteerAutomation {
       this.browserManager = new BrowserManager({
         maxInstances: 3, // 최대 3개 브라우저 인스턴스
         headless: true, // 백그라운드에서 실행 (Python GUI 사용)
-        userDataDir: path.join(process.cwd(), 'user_data'), // 쿠키 저장을 위한 사용자 데이터 폴더
+        userDataDir: path.join(process.cwd(), 'user_data', 'captcha_session'), // 쿠키 저장을 위한 사용자 데이터 폴더
         browserOptions: {
           devtools: false, // 개발자 도구 닫기 (속도 향상)
           slowMo: 0 // 지연 없음 (최고 속도)
@@ -143,6 +143,14 @@ class PuppeteerAutomation {
         page = browserInfo.page;
       }
 
+      // 다이얼로그(Alert) 이벤트 리스너 등록
+      page.on('dialog', async dialog => {
+        console.log(`🚨 [ALERT] 다이얼로그 감지: ${dialog.message()} (${browserId})`);
+        try {
+          await dialog.dismiss();
+        } catch (e) { console.log('Alert dismiss failed', e); }
+      });
+
       const PageController = require('./PageController');
       const pageController = new PageController(page, browserId);
 
@@ -258,26 +266,32 @@ class PuppeteerAutomation {
       // 사이트 접속
       await pageController.navigateToSite();
 
-      // 법원 선택
-      await pageController.selectCourt(court);
+      if (!browserWsUrl) {
+        // 법원 선택
+        await pageController.selectCourt(court);
 
-      // 사건번호 입력 모드 체크
-      await pageController.checkCaseNumberInputMode();
+        // 사건번호 입력 모드 체크
+        await pageController.checkCaseNumberInputMode();
 
-      // 결과 저장 체크박스 체크
-      await pageController.checkSaveSearchResult();
+        // 결과 저장 체크박스 체크
+        await pageController.checkSaveSearchResult();
 
-      // 사건번호 입력
-      await pageController.inputCaseNumber(caseNumber);
+        // 사건번호 입력
+        await pageController.inputCaseNumber(caseNumber);
 
-      // 당사자명 입력
-      await pageController.inputPartyName(defendant);
+        // 당사자명 입력
+        await pageController.inputPartyName(defendant);
+      } else {
+        console.log('🔗 재연결 모드: 초기 입력 단계 건너뜀 (캡차 새로고침 방지)');
+        // Smart Skip을 위해 caseNumber 설정
+        pageController.caseNumber = caseNumber;
+      }
 
       // 캡차 처리 (Python GUI 자동 실행)
       const captchaInput = await pageController.handleCaptcha(caseNumber);
 
       // 검색 실행
-      await pageController.performSearch();
+      await pageController.performSearch(captchaInput);
 
       // 진행내용 데이터 추출
       const progressData = await pageController.extractProgressData();

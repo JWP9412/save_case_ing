@@ -36,17 +36,15 @@ async function captureCaptchaForCase(caseNumber) {
 
         // 브라우저 실행 (화면에 보이도록 설정)
         browser = await puppeteer.launch({
-            headless: false,  // 브라우저를 화면에 표시 (디버깅용)
-            devtools: false,
-            slowMo: 0,
-            userDataDir: userDataDir, // 쿠키 저장을 위한 사용자 데이터 폴더
+            headless: false, // 캡차는 화면에 보여야 함
+            userDataDir: userDataDir, // 쿠키 저장
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-web-security',
-                '--disable-features=VizDisplayCompositor',
-                '--disable-gpu',
-                '--disable-dev-shm-usage',
+                '--window-size=1280,1024',
+                '--disable-blink-features=AutomationControlled', // 자동화 탐지 방지
+                '--disable-infobars',
+                '--remote-debugging-port=0', // 랜덤 포트 사용
                 '--max-old-space-size=4096',  // Node.js 메모리 제한 4GB
                 '--js-flags=--max-old-space-size=4096',  // V8 메모리 제한 4GB
                 '--disable-dev-shm-usage',  // /dev/shm 사용 안 함 (메모리 문제 방지)
@@ -72,6 +70,36 @@ async function captureCaptchaForCase(caseNumber) {
             waitUntil: 'networkidle2',
             timeout: 60000  // 60초로 증가 (네트워크 지연 고려)
         });
+
+        // ------------------------------------------------------------
+        // [SMART SKIP] 최근 검색 결과 스캔
+        // ------------------------------------------------------------
+        console.log(`🔍 [DEBUG] 최근 검색 결과 스캔 중: ${caseNumber}`);
+        const foundInRecent = await page.evaluate((targetNo) => {
+            // 모든 a 태그와 td 태그를 검사
+            const elements = document.querySelectorAll('a, td');
+            for (const el of elements) {
+                if (el.textContent.trim() === targetNo) {
+                    return true;
+                }
+            }
+            return false;
+        }, caseNumber);
+
+        if (foundInRecent) {
+            console.log(`✅ [DEBUG] 최근 검색 목록에서 사건 발견: ${caseNumber}`);
+
+            // 스킵 신호 출력
+            console.log('CAPTCHA_STATUS: SKIP_AND_CLICK');
+
+            // WS URL 출력 (Python 재연결용)
+            const wsEndpoint = browser.wsEndpoint();
+            console.log(`🔗 BROWSER_WS_URL: ${wsEndpoint}`);
+
+            // 더미 경로 반환 (이미지 캡처 건너뜀)
+            return "__CLICK__";
+        }
+        // ------------------------------------------------------------
 
         // 사건번호입력모드 체크박스 클릭
         console.log('📋 [DEBUG] 사건번호입력모드 체크박스 처리 시작...');
@@ -229,48 +257,30 @@ async function captureCaptchaForCase(caseNumber) {
             await page.waitForTimeout(1000);
         }
 
-        // 요소 크기 확인
-        const boundingBox = await element.boundingBox();
-        console.log(`📏 캡차 요소 크기: ${JSON.stringify(boundingBox)}`);
-
-        if (!boundingBox || boundingBox.width === 0 || boundingBox.height === 0) {
-            throw new Error('캡차 요소 크기가 0입니다');
-        }
-
-        // 캡차 이미지 캡처
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        const filename = `${caseNumber}-${timestamp}-captcha.png`;
+        // 이미지 캡처
+        const filename = `${caseNumber}-${new Date().toISOString().replace(/[:.]/g, '-')}-captcha.png`;
         const filepath = path.join(screenshotsDir, filename);
 
-        await element.screenshot({
-            path: filepath,
-            type: 'png'
-        });
-
-        // 파일 생성 확인
-        const stats = await fs.stat(filepath);
-        console.log(`📸 캡차 이미지 캡처 완료: ${filename} (${stats.size} bytes)`);
-
-        // GUI에 즉시 전달하기 위해 이미지 경로 출력
+        await element.screenshot({ path: filepath });
         console.log(`🖼️ GUI_IMAGE_PATH: ${filepath}`);
 
-        // 브라우저 WebSocket URL 출력 (재연결용)
+        // 브라우저 접속 정보 출력 (Python에서 재접속하기 위해)
         const wsEndpoint = browser.wsEndpoint();
         console.log(`🔗 BROWSER_WS_URL: ${wsEndpoint}`);
-        console.log(`📸 캡차 이미지 캡처 완료 - 브라우저 유지 중`);
 
         return filepath;
 
     } catch (error) {
-        console.error(`❌ 캡차 이미지 캡처 실패: ${error.message}`);
-        console.error(`❌ 에러 스택: ${error.stack}`);
-        console.error(`❌ 사건번호: ${caseNumber}`);
+        console.error(`❌ [ERROR] 캡처 실패: ${error.message}`);
+        // 에러 발생 시에도 브라우저는 닫지 않고 유지 (디버깅 위해)
+        if (browser) {
+            console.log('🔒 브라우저 유지 (에러 발생)');
+            // 에러 상황에서도 WS URL 출력 시도
+            try {
+                console.log(`🔗 BROWSER_WS_URL: ${browser.wsEndpoint()}`);
+            } catch (e) { }
+        }
         throw error;
-    } finally {
-        // 브라우저를 종료하지 않고 유지
-        console.log('🔒 브라우저 유지 (캡차 입력 대기)');
-        console.log('🌐 브라우저 상태: 활성화됨');
-        console.log('⏳ 사용자 캡차 입력 대기 중...');
     }
 }
 
@@ -306,34 +316,20 @@ async function main() {
 }
 
 // Signal handler: 프로세스 종료 시 브라우저도 함께 종료
-process.on('SIGTERM', async () => {
-    console.log('🔄 SIGTERM 수신 - 브라우저 종료 중...');
-    if (globalBrowser) {
-        try {
-            await globalBrowser.close();
-            console.log('✅ 브라우저 종료 완료');
-        } catch (error) {
-            console.error('❌ 브라우저 종료 실패:', error.message);
-        }
-    }
-    process.exit(0);
-});
-
 process.on('SIGINT', async () => {
-    console.log('🔄 SIGINT 수신 - 브라우저 종료 중...');
+    console.log('🛑 SIGINT 수신: 브라우저 종료...');
     if (globalBrowser) {
-        try {
-            await globalBrowser.close();
-            console.log('✅ 브라우저 종료 완료');
-        } catch (error) {
-            console.error('❌ 브라우저 종료 실패:', error.message);
-        }
+        await globalBrowser.close();
     }
     process.exit(0);
 });
 
-if (require.main === module) {
-    main();
-}
+process.on('SIGTERM', async () => {
+    console.log('🛑 SIGTERM 수신: 브라우저 종료...');
+    if (globalBrowser) {
+        await globalBrowser.close();
+    }
+    process.exit(0);
+});
 
-module.exports = { captureCaptchaForCase };
+main();
