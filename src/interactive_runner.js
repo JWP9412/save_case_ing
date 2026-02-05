@@ -6,7 +6,8 @@
  * 단일 프로세스로 브라우저를 실행하고, Python과 통신하며 사건 처리를 수행합니다.
  * 브라우저 재연결 없이 세션을 유지하므로 캡차 이미지가 변경되지 않습니다.
  * 
- * 사용법: node src/interactive_runner.js <사건번호> <피고> <법원>
+ * 사용법: node src/interactive_runner.js <사건번호> <피고> <법원> [인스턴스번호]
+ * 인스턴스번호(0~N): cookie_data_for_save/instance_N 사용. 생략 시 0.
  */
 
 const puppeteer = require('puppeteer');
@@ -18,11 +19,12 @@ const PageController = require('./PageController');
 // 명령행 인수 파싱
 const args = process.argv.slice(2);
 if (args.length < 3) {
-    console.error('사용법: node src/interactive_runner.js <사건번호> <피고> <법원>');
+    console.error('사용법: node src/interactive_runner.js <사건번호> <피고> <법원> [인스턴스번호]');
     process.exit(1);
 }
 
 const [caseNumber, defendant, court] = args;
+const instanceIndex = args.length >= 4 ? parseInt(args[3], 10) || 0 : 0;
 
 // Readline 인터페이스 설정
 const rl = readline.createInterface({
@@ -48,8 +50,8 @@ async function main() {
     try {
         console.log(`🚀 [Interactive] 사건 처리 시작: ${caseNumber}`);
 
-        // 1. 브라우저 실행 (세션 유지)
-        const userDataDir = path.join(process.cwd(), 'user_data', 'captcha_session');
+        // 1. 브라우저 실행 (전용 차로: cookie_data_for_save/instance_N)
+        const userDataDir = path.join(process.cwd(), 'cookie_data_for_save', `instance_${instanceIndex}`);
         await fs.mkdir(userDataDir, { recursive: true }).catch(() => { });
 
         browser = await puppeteer.launch({
@@ -70,10 +72,18 @@ async function main() {
         const pages = await browser.pages();
         const page = pages[0];
 
-        // 알림창 자동 처리 리스너
+        // 캡차 오입력 시 재시도용 플래그
+        let wrongCaptchaOccurred = false;
+
+        // 알림창 자동 처리 리스너 (자동입력방지 불일치 시 재시도 플래그 설정)
         page.on('dialog', async dialog => {
-            console.log(`💬 [Interactive] 알림창 감지: ${dialog.message()} (${dialog.type()})`);
+            const msg = dialog.message();
+            console.log(`💬 [Interactive] 알림창 감지: ${msg} (${dialog.type()})`);
             try {
+                if (msg.includes('자동입력방지') || msg.includes('일치하지')) {
+                    wrongCaptchaOccurred = true;
+                    console.log('⚠️ [Interactive] 캡차 불일치 - 재입력 대기 모드');
+                }
                 await dialog.accept();
                 console.log('✅ [Interactive] 알림창 닫음 (수락)');
             } catch (error) {
@@ -129,22 +139,50 @@ async function main() {
             console.log(`🖼️ GUI_IMAGE_PATH: ${filepath}`);
         }
 
-        // 5. 입력 대기 (Python으로부터 캡차 코드 또는 "CLICK" 수신)
-        console.log('⏳ [Interactive] 입력 대기 중...');
-        const input = await waitForInput();
-        console.log(`📥 [Interactive] 입력 수신: ${input}`);
+        // 5~7. 입력 대기 -> 액션 실행 (캡차 불일치 시 재시도 루프)
+        let progressData = null;
+        while (true) {
+            console.log('⏳ [Interactive] 입력 대기 중...');
+            const input = await waitForInput();
+            console.log(`📥 [Interactive] 입력 수신: ${input}`);
 
-        // 6. 액션 실행
-        if (input === "CLICK") {
-            await controller.clickRecentCase(caseNumber);
-        } else {
-            // 캡차 입력 및 검색
+            if (input === "CLICK") {
+                await controller.clickRecentCase(caseNumber);
+                progressData = await controller.extractProgressData(caseNumber);
+                break;
+            }
+
+            wrongCaptchaOccurred = false;
             await controller.inputCaptcha(input);
             await controller.performSearch(input);
-        }
 
-        // 7. 결과 추출
-        const progressData = await controller.extractProgressData(caseNumber);
+            if (wrongCaptchaOccurred) {
+                // 캡차 새로고침: 이미지 클릭으로 갱신 시도
+                const captchaSelector = '#mf_ssgoTopMainTab_contents_content1_body_img_captcha';
+                try {
+                    await page.waitForSelector(captchaSelector, { timeout: 5000 });
+                    await page.click(captchaSelector);
+                    await new Promise(r => setTimeout(r, 1500));
+                } catch (e) {
+                    console.error('⚠️ [Interactive] 캡차 새로고침 클릭 실패:', e.message);
+                }
+                const screenshotsDir = path.join(process.cwd(), 'screenshots');
+                await fs.mkdir(screenshotsDir, { recursive: true }).catch(() => {});
+                const filename = `${caseNumber}-${Date.now()}-captcha-retry.png`;
+                const filepath = path.join(screenshotsDir, filename);
+                try {
+                    const el = await page.$(captchaSelector);
+                    if (el) await el.screenshot({ path: filepath });
+                } catch (e) {
+                    console.error('⚠️ [Interactive] 재시도 캡차 스크린샷 실패:', e.message);
+                }
+                console.log(`WRONG_CAPTCHA_IMAGE: ${filepath}`);
+                continue;
+            }
+
+            progressData = await controller.extractProgressData(caseNumber);
+            break;
+        }
 
         // 8. 결과 출력 (JSON)
         const result = {

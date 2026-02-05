@@ -23,7 +23,40 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 import os
 import json
+import time
+import functools
+import threading
 import config
+
+
+def retry_on_quota_error(max_retries=5, base_delay=2.0):
+    """
+    429 (Quota Exceeded) 발생 시 지수 백오프로 재시도하는 데코레이터.
+    대기 시간: base_delay * (2 ** attempt) 초 (2, 4, 8, 16, 32초).
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except gspread.exceptions.APIError as e:
+                    last_exc = e
+                    msg = str(e).lower()
+                    if "429" not in msg and "quota" not in msg:
+                        raise
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        if args and hasattr(args[0], "_log"):
+                            args[0]._log(f"⚠️ 구글 시트 할당량 초과(429). {delay}초 후 재시도 ({attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                    else:
+                        raise
+            if last_exc:
+                raise last_exc
+        return wrapper
+    return decorator
 
 
 class GoogleSheetsService:
@@ -44,6 +77,8 @@ class GoogleSheetsService:
         self.log_callback = log_callback
         self._client = None
         self._spreadsheet = None
+        # 저장 직렬화용 락 (429 할당량 초과 방지: 동시 쓰기 제한)
+        self._save_lock = threading.Lock()
 
     def _log(self, message):
         """로그 메시지 출력 (콜백 함수 사용)"""
@@ -188,6 +223,7 @@ class GoogleSheetsService:
             self._log(f"[ERROR] 상세 오류: {traceback.format_exc()}")
             return None
 
+    @retry_on_quota_error(max_retries=5, base_delay=2.0)
     def save_progress_data(self, case, result_data, log_callback=None):
         """
         구글 시트에 진행내용 데이터를 저장하는 함수
@@ -226,190 +262,197 @@ class GoogleSheetsService:
         if result_data is True:
             result_data = []
 
-        try:
-            case_number = case.get("사건번호", "")
-            self._log(f"💾 [DEBUG] save_progress_data 시작: {case_number}")
-            self._log(
-                f"💾 [DEBUG] result_data 타입: {type(result_data)}, 길이: {len(result_data) if isinstance(result_data, list) else 'N/A'}"
-            )
-            self._log(f"💾 구글 시트에 저장 중: {case_number}")
-
-            # ============================================================
-            # 1단계: 구글 시트 연결 (인증)
-            # ============================================================
-            self._log(f"💾 [DEBUG] 구글 시트 모듈 import 중")
-            client = self._get_client()
-
-            # ============================================================
-            # 2단계: 스프레드시트 열기
-            # ============================================================
-            self._log(f"💾 [DEBUG] 스프레드시트 열기 중")
-            spreadsheet = self._get_spreadsheet()
-
-            # ============================================================
-            # 3단계: 워크시트 찾기 또는 생성
-            # ============================================================
-            # 시트명 규칙: 피고_비고_사건번호_법원
-            # 예: "에이스_광교타워_2023가합10019_수원지방법원"
-            defendant = case.get("피고", "")  # 피고 이름
-            remark = case.get("비고", "")  # 비고 (옵션)
-            court = case.get("법원", "")  # 법원 이름
-
-            # 비고가 있으면 포함, 없으면 제외
-            if remark:
-                worksheet_name = f"{defendant}_{remark}_{case_number}_{court}"
-            else:
-                worksheet_name = f"{defendant}_{case_number}_{court}"
-
-            self._log(f"💾 [DEBUG] 워크시트 찾기/생성 중: {worksheet_name}")
+        with self._save_lock:
             try:
-                worksheet = spreadsheet.worksheet(worksheet_name)
-                self._log(f"💾 [DEBUG] 기존 워크시트 사용")
-            except gspread.WorksheetNotFound:
-                worksheet = spreadsheet.add_worksheet(
-                    title=worksheet_name, rows=100, cols=10
-                )
-                self._log(f"💾 [DEBUG] 새 워크시트 생성됨")
-
-            # ============================================================
-            # 4단계: 기존 데이터에서 마지막 업데이트 시간 추출 (초기화 전)
-            # ============================================================
-            self._log(f"💾 [DEBUG] 이전 업데이트 시간 확인 중")
-            previous_update_time = None
-            try:
-                # 모든 행 읽기
-                all_values = worksheet.get_all_values()
-                if len(all_values) > 0:
-                    # 뒤에서부터 "업데이트 일시" 찾기
-                    for row in reversed(all_values):
-                        if len(row) >= 2 and row[0] == "업데이트 일시" and row[1]:
-                            previous_update_time = str(row[1]).strip()
-                            self._log(
-                                f"💾 [DEBUG] 이전 업데이트 시간: {previous_update_time}"
-                            )
-                            break
-            except Exception as e:
-                self._log(f"💾 [DEBUG] 이전 업데이트 시간 확인 실패: {e}")
-
-            # ============================================================
-            # 5단계: 워크시트 초기화 (기존 데이터 삭제)
-            # ============================================================
-            self._log(f"💾 [DEBUG] 워크시트 초기화 중")
-            worksheet.clear()
-
-            # ============================================================
-            # 6단계: 헤더 추가 (진행내용 형식: 일자, 내용, 결과, 공시문)
-            # ============================================================
-            self._log(f"💾 [DEBUG] 헤더 추가 중")
-            headers = ["일자", "내용", "결과", "공시문"]
-            worksheet.append_row(headers)
-            self._log(f"💾 [DEBUG] 헤더 추가 완료")
-
-            # ============================================================
-            # 7단계: 진행내용 데이터가 있는 경우 상세 저장
-            # ============================================================
-            if isinstance(result_data, list) and len(result_data) > 0:
+                case_number = case.get("사건번호", "")
+                self._log(f"💾 [DEBUG] save_progress_data 시작: {case_number}")
                 self._log(
-                    f"💾 [DEBUG] 진행내용 데이터 저장 시작: {len(result_data)}개 행"
+                    f"💾 [DEBUG] result_data 타입: {type(result_data)}, 길이: {len(result_data) if isinstance(result_data, list) else 'N/A'}"
                 )
+                self._log(f"💾 구글 시트에 저장 중: {case_number}")
 
-                # 모든 행을 한 번에 저장 (API 요청 1번으로 최적화)
-                all_rows = []
-                color_info = []  # 색상 정보 저장
+                # ============================================================
+                # 1단계: 구글 시트 연결 (인증)
+                # ============================================================
+                self._log(f"💾 [DEBUG] 구글 시트 모듈 import 중")
+                client = self._get_client()
 
-                for idx, progress_row in enumerate(result_data):
-                    row_data = [
-                        progress_row.get("date", ""),  # 일자
-                        progress_row.get("content", ""),  # 내용
-                        progress_row.get("result", ""),  # 결과
-                        progress_row.get("document", ""),  # 공시문
-                    ]
-                    all_rows.append(row_data)
+                # ============================================================
+                # 2단계: 스프레드시트 열기
+                # ============================================================
+                self._log(f"💾 [DEBUG] 스프레드시트 열기 중")
+                spreadsheet = self._get_spreadsheet()
 
-                    # 색상 정보 저장 (행 번호는 헤더 다음부터이므로 idx+2)
-                    color_info.append(
-                        {
-                            "row": idx + 2,
-                            "dateColor": progress_row.get("dateColor"),
-                            "contentColor": progress_row.get("contentColor"),
-                            "resultColor": progress_row.get("resultColor"),
-                            "documentColor": progress_row.get("documentColor"),
-                        }
+                # ============================================================
+                # 3단계: 워크시트 찾기 또는 생성
+                # ============================================================
+                # 시트명 규칙: 피고_비고_사건번호_법원
+                # 예: "에이스_광교타워_2023가합10019_수원지방법원"
+                defendant = case.get("피고", "")  # 피고 이름
+                remark = case.get("비고", "")  # 비고 (옵션)
+                court = case.get("법원", "")  # 법원 이름
+
+                # 비고가 있으면 포함, 없으면 제외
+                if remark:
+                    worksheet_name = f"{defendant}_{remark}_{case_number}_{court}"
+                else:
+                    worksheet_name = f"{defendant}_{case_number}_{court}"
+
+                self._log(f"💾 [DEBUG] 워크시트 찾기/생성 중: {worksheet_name}")
+                try:
+                    worksheet = spreadsheet.worksheet(worksheet_name)
+                    self._log(f"💾 [DEBUG] 기존 워크시트 사용")
+                except gspread.WorksheetNotFound:
+                    worksheet = spreadsheet.add_worksheet(
+                        title=worksheet_name, rows=100, cols=10
+                    )
+                    self._log(f"💾 [DEBUG] 새 워크시트 생성됨")
+
+                # ============================================================
+                # 4단계: 기존 데이터에서 마지막 업데이트 시간 추출 (초기화 전)
+                # ============================================================
+                self._log(f"💾 [DEBUG] 이전 업데이트 시간 확인 중")
+                previous_update_time = None
+                try:
+                    # 모든 행 읽기
+                    all_values = worksheet.get_all_values()
+                    if len(all_values) > 0:
+                        # 뒤에서부터 "업데이트 일시" 찾기
+                        for row in reversed(all_values):
+                            if len(row) >= 2 and row[0] == "업데이트 일시" and row[1]:
+                                previous_update_time = str(row[1]).strip()
+                                self._log(
+                                    f"💾 [DEBUG] 이전 업데이트 시간: {previous_update_time}"
+                                )
+                                break
+                except Exception as e:
+                    self._log(f"💾 [DEBUG] 이전 업데이트 시간 확인 실패: {e}")
+
+                # ============================================================
+                # 5단계: 워크시트 초기화 (기존 데이터 삭제)
+                # ============================================================
+                self._log(f"💾 [DEBUG] 워크시트 초기화 중")
+                worksheet.clear()
+
+                # ============================================================
+                # 6단계: 헤더 추가 (진행내용 형식: 일자, 내용, 결과, 공시문)
+                # ============================================================
+                self._log(f"💾 [DEBUG] 헤더 추가 중")
+                headers = ["일자", "내용", "결과", "공시문"]
+                worksheet.append_row(headers)
+                self._log(f"💾 [DEBUG] 헤더 추가 완료")
+
+                # ============================================================
+                # 7단계: 진행내용 데이터가 있는 경우 상세 저장
+                # ============================================================
+                if isinstance(result_data, list) and len(result_data) > 0:
+                    self._log(
+                        f"💾 [DEBUG] 진행내용 데이터 저장 시작: {len(result_data)}개 행"
                     )
 
-                # 한 번에 저장 (append_rows - 복수형!)
-                self._log(f"💾 [DEBUG] 한 번에 {len(all_rows)}개 행 저장 중...")
-                worksheet.append_rows(all_rows, value_input_option="USER_ENTERED")
-                self._log(f"💾 [DEBUG] 모든 행 한 번에 저장 완료")
+                    # 모든 행을 한 번에 저장 (API 요청 1번으로 최적화)
+                    all_rows = []
+                    color_info = []  # 색상 정보 저장
 
-                # 색상 적용
-                self._log(f"🎨 [DEBUG] 텍스트 색상 적용 중...")
-                self._apply_text_colors(worksheet, color_info)
-                self._log(f"🎨 [DEBUG] 텍스트 색상 적용 완료")
+                    for idx, progress_row in enumerate(result_data):
+                        row_data = [
+                            progress_row.get("date", ""),  # 일자
+                            progress_row.get("content", ""),  # 내용
+                            progress_row.get("result", ""),  # 결과
+                            progress_row.get("document", ""),  # 공시문
+                        ]
+                        all_rows.append(row_data)
 
-                self._log(f"✅ 진행내용 {len(result_data)}개 행 저장 완료")
-            else:
-                # 데이터가 없는 경우
-                self._log(f"⚠️ 진행내용 데이터가 없습니다")
+                        # 색상 정보 저장 (행 번호는 헤더 다음부터이므로 idx+2)
+                        color_info.append(
+                            {
+                                "row": idx + 2,
+                                "dateColor": progress_row.get("dateColor"),
+                                "contentColor": progress_row.get("contentColor"),
+                                "resultColor": progress_row.get("resultColor"),
+                                "documentColor": progress_row.get("documentColor"),
+                            }
+                        )
 
-            # ============================================================
-            # 8단계: 하단에 업데이트 시간 기록 추가
-            # ============================================================
-            self._log(f"💾 [DEBUG] 업데이트 시간 기록 추가 중")
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    # 한 번에 저장 (append_rows - 복수형!)
+                    self._log(f"💾 [DEBUG] 한 번에 {len(all_rows)}개 행 저장 중...")
+                    worksheet.append_rows(all_rows, value_input_option="USER_ENTERED")
+                    self._log(f"💾 [DEBUG] 모든 행 한 번에 저장 완료")
 
-            # 빈 줄 5개 추가
-            empty_rows = [
-                ["", "", "", ""] for _ in range(config.EMPTY_ROWS_BEFORE_UPDATE)
-            ]
-            worksheet.append_rows(empty_rows, value_input_option="USER_ENTERED")
+                    # 색상 적용
+                    self._log(f"🎨 [DEBUG] 텍스트 색상 적용 중...")
+                    self._apply_text_colors(worksheet, color_info)
+                    self._log(f"🎨 [DEBUG] 텍스트 색상 적용 완료")
 
-            # 현재 행 번호 계산 (헤더 1 + 데이터 + 빈 줄 5)
-            current_row = 1 + len(result_data) + config.EMPTY_ROWS_BEFORE_UPDATE + 1
+                    self._log(f"✅ 진행내용 {len(result_data)}개 행 저장 완료")
+                else:
+                    # 데이터가 없는 경우
+                    self._log(f"⚠️ 진행내용 데이터가 없습니다")
 
-            # 업데이트 일시 추가
-            update_rows = [
-                ["업데이트 일시", current_time, "", ""],
-                [
-                    "최근 과거 업데이트",
-                    previous_update_time if previous_update_time else "",
-                    "",
-                    "",
-                ],
-            ]
-            worksheet.append_rows(update_rows, value_input_option="USER_ENTERED")
+                # ============================================================
+                # 8단계: 하단에 업데이트 시간 기록 추가
+                # ============================================================
+                self._log(f"💾 [DEBUG] 업데이트 시간 기록 추가 중")
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # 업데이트 일시 행 좌측 정렬
-            self._format_update_timestamp_rows(worksheet, current_row)
+                # 빈 줄 5개 추가
+                empty_rows = [
+                    ["", "", "", ""] for _ in range(config.EMPTY_ROWS_BEFORE_UPDATE)
+                ]
+                worksheet.append_rows(empty_rows, value_input_option="USER_ENTERED")
 
-            if previous_update_time:
-                self._log(f"💾 [DEBUG] 이전 업데이트 시간 기록: {previous_update_time}")
-            else:
-                self._log(f"💾 [DEBUG] 이전 업데이트 없음 (빈 칸)")
+                # 현재 행 번호 계산 (헤더 1 + 데이터 + 빈 줄 5)
+                current_row = 1 + len(result_data) + config.EMPTY_ROWS_BEFORE_UPDATE + 1
 
-            self._log(f"💾 [DEBUG] 업데이트 시간 기록 완료")
+                # 업데이트 일시 추가
+                update_rows = [
+                    ["업데이트 일시", current_time, "", ""],
+                    [
+                        "최근 과거 업데이트",
+                        previous_update_time if previous_update_time else "",
+                        "",
+                        "",
+                    ],
+                ]
+                worksheet.append_rows(update_rows, value_input_option="USER_ENTERED")
 
-            # ============================================================
-            # 9단계: 열 너비 자동 조정
-            # ============================================================
-            self._log(f"📏 [DEBUG] 열 너비 자동 조정 중...")
-            self._auto_resize_columns(worksheet)
-            self._log(f"📏 [DEBUG] 열 너비 자동 조정 완료")
+                # 포맷 적용 전 그리드 행 수 확보 (repeatCell가 "exceeds grid limits" 되지 않도록)
+                # 업데이트 일시 2행을 포맷하므로 최소 current_row + 1 행 필요
+                self._ensure_worksheet_rows(worksheet, current_row + 1)
 
-            self._log(f"💾 [DEBUG] save_progress_data 완료 직전")
-            self._log(f"✅ 구글 시트 저장 완료: {worksheet_name}")
-            self._log(
-                f"💾 [DEBUG] save_progress_data 반환 전 - 행 개수: {len(result_data)}"
-            )
-            return len(result_data)  # 저장된 행 개수 반환
+                # 업데이트 일시 행 좌측 정렬
+                self._format_update_timestamp_rows(worksheet, current_row)
 
-        except Exception as e:
-            self._log(f"❌ 구글 시트 저장 실패: {e}")
-            self._log(f"❌ [DEBUG] 예외 타입: {type(e).__name__}")
-            import traceback
+                if previous_update_time:
+                    self._log(f"💾 [DEBUG] 이전 업데이트 시간 기록: {previous_update_time}")
+                else:
+                    self._log(f"💾 [DEBUG] 이전 업데이트 없음 (빈 칸)")
 
-            self._log(f"❌ [DEBUG] 예외 스택: {traceback.format_exc()}")
-            return False
+                self._log(f"💾 [DEBUG] 업데이트 시간 기록 완료")
+
+                # ============================================================
+                # 9단계: 열 너비 자동 조정
+                # ============================================================
+                self._log(f"📏 [DEBUG] 열 너비 자동 조정 중...")
+                self._auto_resize_columns(worksheet)
+                self._log(f"📏 [DEBUG] 열 너비 자동 조정 완료")
+
+                self._log(f"💾 [DEBUG] save_progress_data 완료 직전")
+                self._log(f"✅ 구글 시트 저장 완료: {worksheet_name}")
+                self._log(
+                    f"💾 [DEBUG] save_progress_data 반환 전 - 행 개수: {len(result_data)}"
+                )
+                return len(result_data)  # 저장된 행 개수 반환
+
+            except gspread.exceptions.APIError:
+                raise  # 재시도 데코레이터가 처리
+            except Exception as e:
+                self._log(f"❌ 구글 시트 저장 실패: {e}")
+                self._log(f"❌ [DEBUG] 예외 타입: {type(e).__name__}")
+                import traceback
+
+                self._log(f"❌ [DEBUG] 예외 스택: {traceback.format_exc()}")
+                return False
 
     def _apply_text_colors(self, worksheet, color_info):
         """
@@ -475,6 +518,32 @@ class GoogleSheetsService:
 
         except Exception as e:
             self._log(f"⚠️ 색상 적용 실패: {e}")
+
+    def _ensure_worksheet_rows(self, worksheet, min_rows):
+        """
+        워크시트 그리드 행 수가 min_rows 이상이 되도록 확장 (내부 함수).
+        repeatCell 등이 'exceeds grid limits' 되지 않도록 호출한다.
+        """
+        try:
+            current = worksheet.row_count
+            if current < min_rows:
+                worksheet.spreadsheet.batch_update(
+                    {
+                        "requests": [
+                            {
+                                "updateSheetProperties": {
+                                    "properties": {
+                                        "sheetId": worksheet.id,
+                                        "gridProperties": {"rowCount": min_rows},
+                                    },
+                                    "fields": "gridProperties.rowCount",
+                                }
+                            }
+                        ]
+                    }
+                )
+        except Exception as e:
+            self._log(f"⚠️ 그리드 행 수 확장 실패(무시): {e}")
 
     def _format_update_timestamp_rows(self, worksheet, start_row):
         """

@@ -146,6 +146,9 @@ class BatchProcessingGUI:
         # 예: {0: BooleanVar(True), 1: BooleanVar(False), ...}
         # 키는 사건 인덱스, 값은 체크박스 상태
         self.case_checkboxes = {}
+        # header_select_all_var: 헤더 "전체 선택" 토글 체크박스 상태 (True=전체 선택, False=전체 해제)
+        # create_window()에서 tk.Tk() 생성 후 초기화됨
+        self.header_select_all_var = None
         # processing_thread: 백그라운드에서 처리 작업을 실행하는 스레드
         self.processing_thread = None
 
@@ -192,9 +195,10 @@ class BatchProcessingGUI:
     def create_window(self):
         """메인 윈도우 생성"""
         self.root = tk.Tk()
-        self.root.title("사건 일괄 처리 시스템 v2.0")
+        self.root.title(f"{config.APP_TITLE} v{config.APP_VERSION}")
         # config.py에서 창 크기 가져오기
-        self.root.geometry(f"{config.WINDOW_WIDTH}x{config.WINDOW_HEIGHT}")
+        w, h = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
+        self.root.geometry(f"{w}x{h}")
         self.root.resizable(True, True)
 
         # 배경색 설정 (현대적인 다크 테마)
@@ -203,10 +207,17 @@ class BatchProcessingGUI:
         # 종료 이벤트 바인딩
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # 중앙에 배치
-        self.root.eval("tk::PlaceWindow . center")
+        # 모니터 정중앙 배치 (tk::PlaceWindow . center는 Windows/다중모니터에서 불안정하므로 수동 계산)
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         # Tkinter 변수 초기화 (root 생성 후)
+        self.header_select_all_var = tk.BooleanVar(value=False)
+
         # config.py에서 기본값 가져오기
         self.max_parallel = tk.IntVar(value=config.DEFAULT_MAX_PARALLEL)
         self.max_retry = tk.IntVar(value=config.DEFAULT_MAX_RETRY)
@@ -232,20 +243,20 @@ class BatchProcessingGUI:
         header_frame.pack(fill=tk.X, padx=0, pady=0)
         header_frame.pack_propagate(False)
 
-        # 제목
+        # 제목 (config.APP_TITLE 사용)
         title_label = tk.Label(
             header_frame,
-            text="⚖️ 사건 일괄 처리 시스템",
+            text=f"⚖️ {config.APP_TITLE}",
             font=("맑은 고딕", 24, "bold"),
             bg="#34495E",
             fg="#ECF0F1",
         )
         title_label.pack(pady=(20, 5))
 
-        # 부제목 ("대법원" 제거)
+        # 부제목 (config.APP_SUBTITLE, config.APP_VERSION 사용)
         subtitle_label = tk.Label(
             header_frame,
-            text="사건 조회 자동화 시스템 v2.0",
+            text=f"{config.APP_SUBTITLE} v{config.APP_VERSION}",
             font=("맑은 고딕", 11),
             bg="#34495E",
             fg="#BDC3C7",
@@ -287,39 +298,6 @@ class BatchProcessingGUI:
             command=self.load_google_sheet,
         )
         load_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        # 전체 선택/해제 버튼
-        select_all_btn = tk.Button(
-            button_frame,
-            text="✅ 전체 선택",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#3498DB",
-            fg="white",
-            width=18,
-            height=2,
-            relief=tk.RAISED,
-            bd=3,
-            activebackground="#2980B9",
-            cursor="hand2",
-            command=self.select_all_cases,
-        )
-        select_all_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        deselect_all_btn = tk.Button(
-            button_frame,
-            text="❌ 전체 해제",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#95A5A6",
-            fg="white",
-            width=18,
-            height=2,
-            relief=tk.RAISED,
-            bd=3,
-            activebackground="#7F8C8D",
-            cursor="hand2",
-            command=self.deselect_all_cases,
-        )
-        deselect_all_btn.pack(side=tk.LEFT, padx=(0, 10))
 
         # 캡차 이미지 로드 버튼 (이름 변경)
         self.start_btn = tk.Button(
@@ -642,7 +620,9 @@ class BatchProcessingGUI:
                     "⚠️ 고성능 모드: 인스턴스 폴더가 10개 이상 사용됩니다. 디스크/RAM 사용량이 늘어날 수 있습니다."
                 )
 
-            self.log_message(f"✅ {len(google_data)}개 사건 로드 완료 (병렬 처리: {smart_parallel}개)")
+            self.log_message(
+                f"✅ {len(google_data)}개 사건 로드 완료 (병렬 처리: {smart_parallel}개)"
+            )
 
             # 사건 목록 UI 업데이트
             self.update_case_list_ui()
@@ -681,8 +661,29 @@ class BatchProcessingGUI:
             cell.pack(side=tk.LEFT)
             cell.pack_propagate(False)
 
-            if col_idx in sortable_cols:
-                arrow = " ▼" if (self.sort_column_index == col_idx and self.sort_reverse) else " ▲"
+            if col_idx == 0:
+                # "선택" 열: 전체 선택/해제 토글 체크박스 하나
+                header_cb = tk.Checkbutton(
+                    cell,
+                    text="전체",
+                    variable=self.header_select_all_var,
+                    font=THEME["font_small"],
+                    bg=THEME["bg_header"],
+                    fg=THEME["text_header"],
+                    activebackground=THEME["bg_header"],
+                    activeforeground=THEME["text_header"],
+                    selectcolor=THEME["bg_header"],
+                    relief=tk.FLAT,
+                    cursor="hand2",
+                    command=self._on_header_select_toggle,
+                )
+                header_cb.pack(fill=tk.BOTH, expand=True)
+            elif col_idx in sortable_cols:
+                arrow = (
+                    " ▼"
+                    if (self.sort_column_index == col_idx and self.sort_reverse)
+                    else " ▲"
+                )
                 if self.sort_column_index != col_idx:
                     arrow = ""
                 display_text = name + arrow
@@ -715,8 +716,11 @@ class BatchProcessingGUI:
                 sep = tk.Frame(cell, bg="#ECF0F1", width=1)
                 sep.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
 
-    def create_case_row(self, parent, case, index, total_width):
-        """단일 사건 행 위젯 생성 (2026 Modern Design)"""
+    def create_case_row(self, parent, case, index, total_width, initial_status=None):
+        """
+        단일 사건 행 위젯 생성 (2026 Modern Design).
+        initial_status: 저장된 직전 상태가 있으면 {"status", "color", "emoji"} 로 전달.
+        """
         # 배경색 (얼터네이트)
         bg_color = THEME["row_odd"] if index % 2 == 0 else THEME["row_even"]
 
@@ -833,18 +837,27 @@ class BatchProcessingGUI:
         components["captcha_var"] = captcha_var
         components["captcha_entry"] = captcha_entry
 
-        # 5. 상태 (7번)
+        # 5. 상태 (7번) - 저장된 직전 상태가 있으면 표시 (저장 실패/완료 등)
         status_frame = tk.Frame(
             case_frame, bg=bg_color, width=self.col_widths[7], height=60
         )
         status_frame.pack(side=tk.LEFT)
         status_frame.pack_propagate(False)
 
+        if initial_status and isinstance(initial_status, dict):
+            st = initial_status.get("status", "대기")
+            em = initial_status.get("emoji", "⏸️")
+            status_text = f"{em} {st}" if em else st
+            status_fg = initial_status.get("color", THEME["text_sub"])
+        else:
+            status_text = "⏸️ 대기"
+            status_fg = THEME["text_sub"]
+
         status_label = tk.Label(
             status_frame,
-            text="⏸️ 대기",
+            text=status_text,
             font=THEME["font_main"],
-            fg=THEME["text_sub"],
+            fg=status_fg,
             bg=bg_color,
             anchor=tk.CENTER,
         )
@@ -951,10 +964,19 @@ class BatchProcessingGUI:
             # 전체 너비
             total_width = sum(self.col_widths)
 
+            # 저장된 직전 상태 로드 (저장 실패/완료 등 유지)
+            status_history = self.load_status_history()
+
             # 사건 목록 생성
             for i, case in enumerate(self.case_list):
+                case_number = case.get("사건번호", "")
+                initial_status = status_history.get(case_number)
                 row, comps = self.create_case_row(
-                    self.case_list_frame, case, i, total_width
+                    self.case_list_frame,
+                    case,
+                    i,
+                    total_width,
+                    initial_status=initial_status,
                 )
 
                 # 컴포넌트 등록
@@ -965,6 +987,14 @@ class BatchProcessingGUI:
                 self.case_status[i] = comps["status_label"]
                 self.case_update_date_labels[i] = comps["update_date_label"]
                 self.case_update_labels[i] = comps["update_d_label"]
+
+            # 리스트 갱신 후 헤더 토글을 행 선택 상태에 맞춤 (전부 선택이면 체크, 아니면 해제)
+            if self.case_checkboxes:
+                n = len(self.case_checkboxes)
+                selected_count = sum(
+                    1 for v in self.case_checkboxes.values() if v.get()
+                )
+                self.header_select_all_var.set(selected_count == n)
 
             # 스크롤 영역 업데이트
             self.case_list_frame.update_idletasks()
@@ -980,17 +1010,24 @@ class BatchProcessingGUI:
 
     # _deprecated_update_case_list_ui 는 legacy/deprecated_code.py 로 옮겨 두었습니다 (참고용, 호출 안 함).
 
+    def _on_header_select_toggle(self):
+        """헤더 '전체' 체크박스 클릭 시: 체크면 전체 선택, 해제면 전체 해제."""
+        if self.header_select_all_var.get():
+            self.select_all_cases()
+        else:
+            self.deselect_all_cases()
+
     def select_all_cases(self):
         """전체 사건 선택"""
         for var in self.case_checkboxes.values():
             var.set(True)
-        self.log_message("✅ 전체 사건 선택 완료")
+        # 로그는 헤더 토글 사용 시 한 번만 남기도록 생략 (반복 스팸 방지)
 
     def deselect_all_cases(self):
         """전체 사건 해제"""
         for var in self.case_checkboxes.values():
             var.set(False)
-        self.log_message("✅ 전체 사건 해제 완료")
+        # 로그는 헤더 토글 사용 시 한 번만 남기도록 생략 (반복 스팸 방지)
 
     def get_selected_cases(self):
         """선택된 사건 목록 반환 (인덱스 포함)"""
@@ -1011,10 +1048,15 @@ class BatchProcessingGUI:
         return selected
 
     def on_checkbox_change(self, index):
-        """체크박스 변경 이벤트 핸들러"""
+        """체크박스 변경 이벤트 핸들러. 행 선택 개수에 따라 헤더 토글도 동기화."""
         is_checked = self.case_checkboxes[index].get()
         case_number = self.case_list[index].get("사건번호", "")
         print(f"[DEBUG] 체크박스 변경: {case_number} - 체크됨: {is_checked}")
+        # 헤더 토글 반영: 모두 선택이면 헤더 체크, 아니면 헤더 해제
+        if self.case_checkboxes:
+            n = len(self.case_checkboxes)
+            selected_count = sum(1 for v in self.case_checkboxes.values() if v.get())
+            self.header_select_all_var.set(selected_count == n)
 
     def start_batch_processing(self):
         """
@@ -1103,7 +1145,7 @@ class BatchProcessingGUI:
     def cleanup_case_process(self, case_number):
         """
         개별 사건의 브라우저 프로세스 정리
-        
+
         Args:
             case_number: 사건번호
         """
@@ -1121,19 +1163,20 @@ class BatchProcessingGUI:
                         self.log_message(f"✅ 프로세스 종료 완료: {case_number}")
                 except Exception as e:
                     self.log_message(f"⚠️ 프로세스 종료 실패: {case_number} - {e}")
-                
+
                 # 딕셔너리에서 제거
                 del self.browser_processes[case_number]
-            
+
             if case_number in self.browser_ws_urls:
                 del self.browser_ws_urls[case_number]
-                
+
         except Exception as e:
             self.log_message(f"⚠️ 프로세스 정리 오류: {case_number} - {e}")
 
     def _lane_for_case(self, case_number, n_lanes):
         """전용 차로: 사건번호 기준으로 고정된 방(0~n_lanes-1) 반환"""
         import hashlib
+
         h = int(hashlib.md5(case_number.encode("utf-8")).hexdigest(), 16)
         return h % n_lanes
 
@@ -1192,30 +1235,35 @@ class BatchProcessingGUI:
     def _process_auto_case(self, case, case_index):
         """
         자동 클릭 케이스 즉시 처리 (Smart Auto-Pass)
-        
+
         Args:
             case: 사건 정보 딕셔너리
             case_index: 사건 인덱스
-            
+
         Returns:
             bool: 처리 성공 여부
         """
         case_number = case.get("사건번호", "")
         import time
-        
+
         try:
             self.log_message(f"⚡ 캡차 스킵: 자동 처리 시작 - {case_number}")
-            
+
             # 자동 클릭 처리 실행
             result_data = self.execute_case_processing(case, "CLICK")
-            
-            if isinstance(result_data, dict) and result_data.get("status") == "WRONG_CAPTCHA":
+
+            if (
+                isinstance(result_data, dict)
+                and result_data.get("status") == "WRONG_CAPTCHA"
+            ):
                 self.log_message("⚠️ 자동 클릭 중 캡차 불일치 - 재시도 필요")
                 self.update_case_status(case_index, "재입력대기", "red", "⚠️")
                 return False
-            
+
             if result_data and not isinstance(result_data, dict):
-                elapsed_time = int(time.time() - self.case_start_times.get(case_index, time.time()))
+                elapsed_time = int(
+                    time.time() - self.case_start_times.get(case_index, time.time())
+                )
                 row_count = None
                 try:
                     row_count = self.save_to_google_sheets(case, result_data)
@@ -1226,8 +1274,13 @@ class BatchProcessingGUI:
                     self.update_case_status(case_index, "저장 실패", "red", "❌")
                     self.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
                     return False
-                self.update_case_status(case_index, "완료", "green", "✅")
-                self.update_case_timestamp(case, case_index, row_count if row_count else 0)
+                if row_count == 0:
+                    self.update_case_status(case_index, "데이터 없음", "#7F8C8D", "📭")
+                else:
+                    self.update_case_status(case_index, "완료", "green", "✅")
+                self.update_case_timestamp(
+                    case, case_index, row_count if row_count else 0
+                )
                 if row_count > 0:
                     self.add_to_search_log(case_number)
                 if hasattr(self, "processed_cases"):
@@ -1238,20 +1291,24 @@ class BatchProcessingGUI:
                 return True
             else:
                 # 실패 처리
-                elapsed_time = int(time.time() - self.case_start_times.get(case_index, time.time()))
+                elapsed_time = int(
+                    time.time() - self.case_start_times.get(case_index, time.time())
+                )
                 self.update_case_status(case_index, "실패", "red", "❌")
                 self.log_message(f"❌ 자동 처리 실패: {case_number}")
                 return False
-                
+
         except Exception as e:
-            elapsed_time = int(time.time() - self.case_start_times.get(case_index, time.time()))
+            elapsed_time = int(
+                time.time() - self.case_start_times.get(case_index, time.time())
+            )
             self.update_case_status(case_index, f"오류 ({elapsed_time}초)", "red", "⚠️")
             self.log_message(f"❌ 자동 처리 오류: {case_number} - {e}")
             return False
         finally:
             # 항상 프로세스 정리
             self.cleanup_case_process(case_number)
-            
+
             # 이벤트 해제
             ev = getattr(self, "lane_events", {}).pop(case_number, None)
             if ev:
@@ -1454,9 +1511,7 @@ class BatchProcessingGUI:
                 f"📋 [DEBUG] GUI에서 가져온 캡차 입력: '{captcha_input}' (타입: {type(captcha_input).__name__}, 길이: {len(captcha_input)})"
             )
             is_click = captcha_input == "CLICK"
-            is_valid_captcha = (
-                len(captcha_input) == 6 and captcha_input.isdigit()
-            )
+            is_valid_captcha = len(captcha_input) == 6 and captcha_input.isdigit()
             if not (is_click or is_valid_captcha):
                 self.log_message(
                     f"⚠️ 캡차 입력 형식 오류: {case_number} (입력: {captcha_input}, 길이: {len(captcha_input)})"
@@ -1478,13 +1533,18 @@ class BatchProcessingGUI:
 
             try:
                 # 캡차 불일치: 재입력 대기 (프로세스 유지, 이벤트 유지)
-                if isinstance(result_data, dict) and result_data.get("status") == "WRONG_CAPTCHA":
+                if (
+                    isinstance(result_data, dict)
+                    and result_data.get("status") == "WRONG_CAPTCHA"
+                ):
                     self.log_message("⚠️ 캡차 불일치 - 재시도 필요")
                     new_path = result_data.get("image_path")
                     if new_path:
                         self.root.after(
                             0,
-                            lambda p=new_path, i=original_index: self.update_captcha_image(i, p),
+                            lambda p=new_path, i=original_index: self.update_captcha_image(
+                                i, p
+                            ),
                         )
                     self.update_case_status(original_index, "재입력대기", "red", "⚠️")
                     should_cleanup_and_release = False
@@ -1504,9 +1564,14 @@ class BatchProcessingGUI:
                         )
                         self.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
                         return (0, 1)
-                    self.update_case_status(
-                        original_index, f"완료 ({elapsed_time}초)", "green", "✅"
-                    )
+                    if row_count == 0:
+                        self.update_case_status(
+                            original_index, "데이터 없음", "#7F8C8D", "📭"
+                        )
+                    else:
+                        self.update_case_status(
+                            original_index, f"완료 ({elapsed_time}초)", "green", "✅"
+                        )
                     self.update_case_timestamp(
                         case, original_index, row_count if row_count else 0
                     )
@@ -1566,7 +1631,7 @@ class BatchProcessingGUI:
             self.processing = True
             self.puppeteer_service.processing_flag = lambda: self.processing
             self.log_message("🔄 모든 캡차 입력 처리 시작")
-            
+
             # 완료 버튼 명시적으로 비활성화 (처리 시작 시)
             self.root.after(0, lambda: self.complete_btn.config(state=tk.DISABLED))
 
@@ -1608,11 +1673,15 @@ class BatchProcessingGUI:
             )
 
             # Wave Processing: 남은 사건 수 계산
-            pending_count = len(selected_cases) - len(getattr(self, "processed_cases", set()))
-            
+            pending_count = len(selected_cases) - len(
+                getattr(self, "processed_cases", set())
+            )
+
             if pending_count > 0:
                 # 다음 파도 대기 중
-                self.log_message(f"⏳ 다음 파도 대기 중... (남은 사건: {pending_count}건)")
+                self.log_message(
+                    f"⏳ 다음 파도 대기 중... (남은 사건: {pending_count}건)"
+                )
                 # "Captcha Input Complete" 버튼 재활성화 (다음 파도 준비)
                 self.root.after(0, lambda: self.complete_btn.config(state=tk.NORMAL))
                 # processing 플래그는 유지 (아직 처리 중)
@@ -1620,7 +1689,7 @@ class BatchProcessingGUI:
             else:
                 # 모든 사건 처리 완료
                 self.log_message("🎉 모든 사건 처리 완료!")
-                
+
                 # Chrome 프로세스 정리
                 try:
                     import subprocess as sp
@@ -1639,7 +1708,8 @@ class BatchProcessingGUI:
                             ):
                                 cmdline = proc.info.get("cmdline", [])
                                 if cmdline and any(
-                                    "--remote-debugging-port" in str(arg) for arg in cmdline
+                                    "--remote-debugging-port" in str(arg)
+                                    for arg in cmdline
                                 ):
                                     self.log_message(
                                         f"🔄 [DEBUG] Chrome 프로세스 종료: PID {proc.info['pid']}"
@@ -1654,7 +1724,9 @@ class BatchProcessingGUI:
                             pass
 
                     if chrome_killed > 0:
-                        self.log_message(f"✅ Chrome 프로세스 {chrome_killed}개 종료 완료")
+                        self.log_message(
+                            f"✅ Chrome 프로세스 {chrome_killed}개 종료 완료"
+                        )
                     else:
                         self.log_message(f"ℹ️ 종료할 Chrome 프로세스 없음")
 
@@ -1958,7 +2030,11 @@ class BatchProcessingGUI:
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data if isinstance(data, list) else list(data.keys()) if isinstance(data, dict) else []
+                    return (
+                        data
+                        if isinstance(data, list)
+                        else list(data.keys()) if isinstance(data, dict) else []
+                    )
             return []
         except Exception as e:
             self.log_message(f"⚠️ 검색 이력 로드 실패: {e}")
@@ -1985,7 +2061,9 @@ class BatchProcessingGUI:
         로컬 업데이트 기록 로드 (services.update_history 사용)
         """
         try:
-            return update_history_service.load_update_history(config.UPDATE_HISTORY_FILE)
+            return update_history_service.load_update_history(
+                config.UPDATE_HISTORY_FILE
+            )
         except Exception as e:
             self.log_message(f"⚠️ 업데이트 기록 로드 실패: {e}")
             return {}
@@ -2077,6 +2155,33 @@ class BatchProcessingGUI:
         history = self.load_update_history()
         return update_history_service.get_days_since_update(case, history)
 
+    def load_status_history(self):
+        """
+        상태 열 영구 보존용 JSON 로드.
+        반환: { 사건번호: {"status": str, "color": str, "emoji": str}, ... }
+        """
+        path = getattr(config, "STATUS_HISTORY_FILE", "status_history.json")
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def save_status_history(self, case_number, status, color, emoji=""):
+        """
+        상태 변경 시 JSON에 기록 (직전 상태 유지: 완료/저장 실패 등).
+        """
+        path = getattr(config, "STATUS_HISTORY_FILE", "status_history.json")
+        try:
+            history = self.load_status_history()
+            history[case_number] = {"status": status, "color": color, "emoji": emoji}
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log_message(f"⚠️ 상태 기록 저장 실패: {e}")
+
     def format_update_timestamp_rows(self, worksheet, start_row):
         """
         업데이트 일시 행 포맷팅 (좌측 정렬)
@@ -2122,12 +2227,17 @@ class BatchProcessingGUI:
         )
 
     def update_case_status(self, case_index, status, color, emoji=""):
-        """사건 상태 업데이트 (이모지 포함) (Thread-Safe)"""
+        """사건 상태 업데이트 (이모지 포함) (Thread-Safe). 상태 열 영구 보존용 JSON에도 기록."""
 
         def _update():
             if case_index in self.case_status:
                 display_text = f"{emoji} {status}" if emoji else status
                 self.case_status[case_index].config(text=display_text, fg=color)
+                # 직전 상태 기록 (저장 실패/완료 등 유지)
+                if 0 <= case_index < len(self.case_list):
+                    case_number = self.case_list[case_index].get("사건번호", "")
+                    if case_number:
+                        self.save_status_history(case_number, status, color, emoji)
 
                 # 처리 중인 사건 하이라이트 (처리중* 모두 노란 배경)
                 if case_index in self.case_frames:

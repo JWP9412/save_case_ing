@@ -30,17 +30,18 @@ class PuppeteerService:
         else:
             print(message)
 
-    def capture_captcha_image(self, case_number, defendant, court):
+    def capture_captcha_image(self, case_number, defendant, court, instance_index=0):
         """
-        1단계: 프로세스 시작 및 캡차 캡처 (또는 스마트 스킵 확인)
+        1단계: 프로세스 시작 및 캡차 캡처 (또는 스마트 스킵 확인).
+        instance_index: 전용 차로제용. cookie_data_for_save/instance_N 사용.
         """
         try:
-            self._log(f"🚀 [Interactive] 프로세스 시작: {case_number} ({court})")
+            self._log(f"🚀 [Interactive] 프로세스 시작: {case_number} ({court}) [instance_{instance_index}]")
 
             # 기존 프로세스 정리
             self.cleanup_process(case_number)
 
-            cmd = ["node", "src/interactive_runner.js", case_number, defendant, court]
+            cmd = ["node", "src/interactive_runner.js", case_number, defendant, court, str(instance_index)]
 
             # 프로세스 실행 (stdin 파이프 연결 필수)
             process = subprocess.Popen(
@@ -129,6 +130,7 @@ class PuppeteerService:
             self._log(f"❌ 실행 중인 프로세스 없음: {case_number} (재시작 필요)")
             return False
 
+        skip_cleanup = False
         try:
             self._log(f"📤 Node.js로 입력 전송: {captcha_input}")
 
@@ -140,7 +142,7 @@ class PuppeteerService:
                 self._log("❌ 프로세스가 이미 종료되어 있습니다.")
                 return False
 
-            # 결과 JSON 수신 대기
+            # 결과 JSON 수신 대기 (WRONG_CAPTCHA_IMAGE 선처리)
             json_lines = []
             capture_json = False
             result_found = False
@@ -157,6 +159,13 @@ class PuppeteerService:
                     continue
 
                 line = line.strip()
+
+                # 캡차 불일치 재시도: 새 이미지 경로 수신 시 즉시 반환 (프로세스 유지)
+                if "WRONG_CAPTCHA_IMAGE:" in line:
+                    wrong_captcha_path = line.split("WRONG_CAPTCHA_IMAGE:")[1].strip()
+                    self._log(f"⚠️ 캡차 불일치 - 재입력용 이미지: {wrong_captcha_path}")
+                    skip_cleanup = True
+                    return {"status": "WRONG_CAPTCHA", "image_path": wrong_captcha_path}
 
                 # 결과 JSON 블록 캡처
                 if line == "JSON_RESULT_START":
@@ -199,8 +208,9 @@ class PuppeteerService:
             self._log(f"❌ 실행 오류: {e}")
             return False
         finally:
-            # 작업 완료 후 프로세스 정리
-            self.cleanup_process(case_number)
+            # WRONG_CAPTCHA 시 프로세스 유지(재입력 대기), 그 외에는 정리
+            if not skip_cleanup:
+                self.cleanup_process(case_number)
 
     def cleanup_process(self, case_number):
         """프로세스 안전하게 종료"""
