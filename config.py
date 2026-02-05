@@ -46,8 +46,8 @@ CAPTCHA_INPUT_TIMEOUT = 300
 # 기본 병렬 처리 수 (동시에 처리할 수 있는 최대 사건 수)
 DEFAULT_MAX_PARALLEL = 3
 
-# 최대 병렬 처리 수 (제한)
-MAX_PARALLEL_LIMIT = 10
+# 최대 병렬 처리 수 (제한) - cookie_data_for_save/instance_N 폴더 최대 개수
+MAX_PARALLEL_LIMIT = 20
 
 # ============================================================================
 # 재시도 설정
@@ -69,6 +69,9 @@ SCREENSHOTS_DIR = 'screenshots'
 
 # 업데이트 기록 파일
 UPDATE_HISTORY_FILE = 'update_history.json'
+
+# 검색 성공 이력 파일 (캡차 입력 성공한 사건번호 목록, '기록' 열 표시용)
+SEARCH_LOG_FILE = 'search_log.json'
 
 # ============================================================================
 # 구글 시트 포맷팅 설정
@@ -96,3 +99,26 @@ CASE_ROW_HEIGHT = 60
 # 헤더 높이
 HEADER_HEIGHT = 40
 
+# UI 테마 (색상, 폰트 등) - batch_gui_maker 사건 목록/헤더 등에서 사용
+THEME = {
+    "bg_primary": "#F8F9FA",   # 앱 배경 (아주 연한 회색)
+    "bg_white": "#FFFFFF",    # 카드 배경 (흰색)
+    "bg_header": "#2C3E50",   # 헤더 배경 (다크 블루 그레이)
+    "text_header": "#FFFFFF", # 헤더 텍스트 (흰색)
+    "text_main": "#2C3E50",   # 본문 텍스트 (다크 블루 그레이)
+    "text_sub": "#7F8C8D",    # 보조 텍스트 (회색)
+    "accent": "#3498DB",      # 포인트 컬러 (밝은 파랑)
+    "success": "#27AE60",     # 성공/완료 (초록)
+    "warning": "#F39C12",     # 경고/처리중 (오렌지)
+    "error": "#E74C3C",       # 에러 (빨강)
+    "row_odd": "#FFFFFF",     # 홀수 행 배경
+    "row_even": "#F8F9FA",    # 짝수 행 배경 (미세한 구분)
+    "border": "#E0E0E0",      # 테두리 색상
+    "font_main": ("Segoe UI", 10),
+    "font_bold": ("Segoe UI", 10, "bold"),
+    "font_header": ("Segoe UI", 11, "bold"),
+    "font_small": ("Segoe UI", 9),
+}
+
+# 사건 목록 테이블 컬럼 너비 (픽셀) - 순서: 선택, 사건번호, 피고, 법원, 비고, 캡차이미지, 캡차입력, 상태, 쿠키(기록), 최근업데이트
+COL_WIDTHS = [50, 120, 90, 140, 110, 180, 90, 90, 80, 120]
