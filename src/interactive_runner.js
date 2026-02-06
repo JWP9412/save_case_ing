@@ -15,6 +15,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const readline = require('readline');
 const PageController = require('./PageController');
+const maintenance = require('../maintenance.js');
 
 // 명령행 인수 파싱
 const args = process.argv.slice(2);
@@ -55,7 +56,7 @@ async function main() {
         await fs.mkdir(userDataDir, { recursive: true }).catch(() => { });
 
         browser = await puppeteer.launch({
-            headless: false, // 캡차 확인을 위해 헤드리스 끔 (필요시 변경 가능)
+            headless: maintenance.browserHeadless,
             userDataDir: userDataDir,
             args: [
                 '--no-sandbox',

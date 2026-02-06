@@ -10,6 +10,7 @@
 const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs').promises;
+const maintenance = require('../maintenance.js');
 
 // 전역 브라우저 변수 (signal handler에서 접근하기 위해)
 let globalBrowser = null;
@@ -34,9 +35,9 @@ async function captureCaptchaForCase(caseNumber) {
 
         console.log(`📂 사용자 데이터 디렉토리 설정: ${userDataDir}`);
 
-        // 브라우저 실행 (화면에 보이도록 설정)
+        // 브라우저 실행 (maintenance.js 에서 표시 여부 설정)
         browser = await puppeteer.launch({
-            headless: false, // 캡차는 화면에 보여야 함
+            headless: maintenance.browserHeadless,
             userDataDir: userDataDir, // 쿠키 저장
             args: [
                 '--no-sandbox',

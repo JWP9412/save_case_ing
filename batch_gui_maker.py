@@ -166,9 +166,15 @@ class BatchProcessingGUI:
 
         # 정렬 상태 (사건 목록 컬럼 정렬용)
         # sort_column_index: 정렬 기준 컬럼 인덱스 (기본 9 = 최근 업데이트)
-        self.sort_column_index = 9
+        self.sort_column_index = 10  # 최근 업데이트 (사건명 추가 후 인덱스 시프트)
         # sort_reverse: False = 오름차순(과거 날짜가 위), True = 내림차순
         self.sort_reverse = False
+        # 열 너비 리사이즈 드래그 상태
+        self._resize_col = None
+        self._resize_start_x = None
+        self._resize_start_width = None
+        self._resize_current_width = None
+        self.resize_guide_line = None
 
         # ============================================================
         # 설정 옵션 변수들 (root 생성 후 초기화됨)
@@ -231,6 +237,11 @@ class BatchProcessingGUI:
         # Puppeteer 서비스 (로그 콜백 함수 연결)
         # processing_flag는 나중에 설정 (self.processing이 아직 생성되지 않았음)
         self.puppeteer_service = PuppeteerService(log_callback=self.log_message)
+        # 증분 업데이트용 마지막 저장 항목 관리
+        self.history_manager = update_history_service.HistoryManager()
+        # 사건번호별 고정 프로필(인스턴스) 사용 시 동일 프로필 동시 접근 방지
+        max_profiles = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+        self.profile_locks = [threading.Lock() for _ in range(max_profiles)]
 
         # processing_flag를 나중에 설정하기 위한 참조 저장
         # (start_processing에서 설정)
@@ -302,11 +313,10 @@ class BatchProcessingGUI:
         # 캡차 이미지 로드 버튼 (이름 변경)
         self.start_btn = tk.Button(
             button_frame,
-            text="🖼️ 캡차 이미지 로드",
+            text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)",
             font=("맑은 고딕", 10, "bold"),
             bg="#E67E22",
             fg="white",
-            width=18,
             height=2,
             relief=tk.RAISED,
             bd=3,
@@ -449,40 +459,52 @@ class BatchProcessingGUI:
         main_container = tk.Frame(case_frame, bg="white", bd=0, padx=0, pady=0)
         main_container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        # 고정 헤더
-        self.header_container = tk.Frame(main_container, bg="#34495E", height=40, bd=0)
-        self.header_container.pack(fill=tk.X, side=tk.TOP, padx=0, pady=0)
-        self.header_container.pack_propagate(False)
-
-        # 스크롤 영역 (Canvas) - 인스턴스 변수로 저장
+        # 스크롤 영역 (Canvas) - 헤더와 리스트를 함께 담을 inner_frame 사용
         self.case_canvas = tk.Canvas(
             main_container, bg="white", highlightthickness=0, bd=0
         )
-        scrollbar = ttk.Scrollbar(
+        v_scrollbar = ttk.Scrollbar(
             main_container, orient="vertical", command=self.case_canvas.yview
         )
-        self.case_list_frame = tk.Frame(
+        h_scrollbar = ttk.Scrollbar(
+            main_container, orient="horizontal", command=self.case_canvas.xview
+        )
+
+        # 헤더와 리스트를 함께 스크롤하기 위한 내부 프레임
+        self.case_inner_frame = tk.Frame(
             self.case_canvas, bg="white", bd=0, padx=0, pady=0
         )
-
-        self.case_list_frame.bind(
-            "<Configure>",
-            lambda e: self.case_canvas.configure(
-                scrollregion=self.case_canvas.bbox("all")
-            ),
+        self.header_container = tk.Frame(
+            self.case_inner_frame, bg="#34495E", height=40, bd=0
         )
+        self.header_container.pack(fill=tk.X, side=tk.TOP, padx=0, pady=0)
+        self.header_container.pack_propagate(False)
 
-        self.case_canvas.create_window((0, 0), window=self.case_list_frame, anchor="nw")
-        self.case_canvas.configure(yscrollcommand=scrollbar.set)
+        self.case_list_frame = tk.Frame(
+            self.case_inner_frame, bg="white", bd=0, padx=0, pady=0
+        )
+        self.case_list_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 마우스 휠 스크롤
+        def _update_scroll_region(_=None):
+            self.case_canvas.update_idletasks()
+            self.case_canvas.configure(scrollregion=self.case_canvas.bbox("all"))
+
+        self.case_inner_frame.bind("<Configure>", _update_scroll_region)
+        self.case_canvas.create_window(
+            (0, 0), window=self.case_inner_frame, anchor="nw"
+        )
+        self.case_canvas.configure(yscrollcommand=v_scrollbar.set)
+        self.case_canvas.configure(xscrollcommand=h_scrollbar.set)
+
+        # 마우스 휠: 세로 스크롤 (Shift+휠은 가로는 별도 바인딩 가능)
         def on_mousewheel(event):
             self.case_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         self.case_canvas.bind_all("<MouseWheel>", on_mousewheel)
 
+        v_scrollbar.pack(side="right", fill="y", padx=0, pady=0)
+        h_scrollbar.pack(side="bottom", fill="x", padx=0, pady=0)
         self.case_canvas.pack(side="left", fill="both", expand=True, padx=0, pady=0)
-        scrollbar.pack(side="right", fill="y", padx=0, pady=0)
 
         return case_frame
 
@@ -557,11 +579,13 @@ class BatchProcessingGUI:
             if self.sort_column_index == 3:
                 return case.get("법원", "")
             if self.sort_column_index == 4:
+                return case.get("사건명", "")
+            if self.sort_column_index == 5:
                 return case.get("비고", "")
-            if self.sort_column_index == 8:
+            if self.sort_column_index == 9:
                 # 기록(쿠키): search_log 기준, 있으면 1 없으면 0
                 return 1 if cn in search_log else 0
-            if self.sort_column_index == 9:
+            if self.sort_column_index == 10:
                 # 최근 업데이트: 날짜 문자열, 없으면 과거로
                 data = history.get(cn, {})
                 if isinstance(data, dict):
@@ -573,7 +597,7 @@ class BatchProcessingGUI:
 
     def on_header_click(self, col_idx):
         """헤더 클릭 시 정렬 기준 변경 후 목록 재정렬 및 UI 갱신."""
-        sortable = (1, 2, 3, 4, 8, 9)
+        sortable = (1, 2, 3, 4, 5, 9, 10)
         if col_idx not in sortable:
             return
         if self.sort_column_index == col_idx:
@@ -637,12 +661,15 @@ class BatchProcessingGUI:
         for widget in self.header_container.winfo_children():
             widget.destroy()
 
-        # 컬럼 정의 (정렬 가능: 1=사건번호, 2=피고, 3=법원, 4=비고, 8=기록, 9=최근 업데이트)
+        self.header_cell_frames = []
+
+        # 컬럼 정의 (정렬 가능: 1=사건번호, 2=피고, 3=법원, 4=사건명, 5=비고, 9=기록, 10=최근 업데이트)
         col_names = [
             "선택",
             "사건번호",
             "피고",
             "법원",
+            "사건명",
             "비고",
             "캡차 이미지",
             "캡차 입력",
@@ -650,7 +677,7 @@ class BatchProcessingGUI:
             "기록",
             "최근 업데이트",
         ]
-        sortable_cols = (1, 2, 3, 4, 8, 9)
+        sortable_cols = (1, 2, 3, 4, 5, 9, 10)
 
         # 헤더 프레임
         header_frame = tk.Frame(self.header_container, bg=THEME["bg_header"])
@@ -660,6 +687,7 @@ class BatchProcessingGUI:
             cell = tk.Frame(header_frame, bg=THEME["bg_header"], width=width, height=40)
             cell.pack(side=tk.LEFT)
             cell.pack_propagate(False)
+            self.header_cell_frames.append(cell)
 
             if col_idx == 0:
                 # "선택" 열: 전체 선택/해제 토글 체크박스 하나
@@ -712,9 +740,106 @@ class BatchProcessingGUI:
                 )
                 label.pack(fill=tk.BOTH, expand=True)
 
+            # 열 너비 리사이즈 핸들 (시인성: 16px, 밝은 색, 구분선 강화)
+            HANDLE_BG = "#95A5A6"
+            handle = tk.Frame(cell, bg=HANDLE_BG, width=16, height=40)
+            handle.pack(side=tk.RIGHT, fill=tk.Y)
+            handle.pack_propagate(False)
+            # 핸들 내부 구분선 (3px, 밝은 회색)
+            line = tk.Frame(handle, bg="#BDC3C7", width=3, height=40)
+            line.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 6))
+            line.pack_propagate(False)
+            handle.bind(
+                "<Enter>",
+                lambda e, h=handle: h.config(bg="#BDC3C7"),
+            )
+            handle.bind(
+                "<Leave>",
+                lambda e, h=handle: h.config(bg=HANDLE_BG)
+                if self._resize_col is None
+                else None,
+            )
+            handle.config(cursor="sb_h_double_arrow")
+            handle.bind(
+                "<ButtonPress-1>",
+                lambda e, c=col_idx: self._on_resize_press(c, e),
+            )
+            handle.bind(
+                "<B1-Motion>",
+                lambda e, c=col_idx: self._on_resize_motion(c, e),
+            )
+            handle.bind(
+                "<ButtonRelease-1>",
+                lambda e: self._on_resize_release(e),
+            )
+
             if col_idx < len(col_names) - 1:
                 sep = tk.Frame(cell, bg="#ECF0F1", width=1)
                 sep.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
+
+    def _on_resize_press(self, col_idx, event):
+        self._resize_col = col_idx
+        self._resize_start_x = event.x_root
+        self._resize_start_width = self.col_widths[col_idx]
+        self._resize_current_width = self.col_widths[col_idx]
+        # 가이드라인: 리스트 영역에 세로선 표시 (드래그 중만)
+        if hasattr(self, "case_inner_frame") and self.case_inner_frame.winfo_exists():
+            if self.resize_guide_line and self.resize_guide_line.winfo_exists():
+                self.resize_guide_line.destroy()
+            x_pos = sum(self.col_widths[: col_idx + 1])
+            self.resize_guide_line = tk.Frame(
+                self.case_inner_frame, width=1, bg="#2C3E50", height=10000
+            )
+            self.resize_guide_line.place(x=x_pos, y=0, anchor=tk.NW)
+
+    def _on_resize_motion(self, col_idx, event):
+        if self._resize_col is None:
+            return
+        delta = event.x_root - self._resize_start_x
+        new_w = max(30, min(500, self._resize_start_width + delta))
+        self._resize_current_width = new_w
+        # 가이드라인만 이동 (col_widths는 release 시 반영)
+        if self.resize_guide_line and self.resize_guide_line.winfo_exists():
+            x_pos = sum(self.col_widths[:col_idx]) + new_w
+            self.resize_guide_line.place_configure(x=x_pos)
+
+    def _on_resize_release(self, event):
+        if self._resize_col is not None:
+            col_idx = self._resize_col
+            self._resize_col = None
+            self._resize_start_x = None
+            self._resize_start_width = None
+            if self.resize_guide_line and self.resize_guide_line.winfo_exists():
+                self.resize_guide_line.destroy()
+                self.resize_guide_line = None
+            if self._resize_current_width is not None:
+                self.col_widths[col_idx] = int(self._resize_current_width)
+                self._resize_current_width = None
+            self._save_column_widths()
+            self.apply_column_width(col_idx)
+
+    def apply_column_width(self, col_idx):
+        """리사이즈 후 해당 열 너비만 적용 (전체 UI 리빌드 없이)."""
+        if not hasattr(self, "col_widths") or col_idx >= len(self.col_widths):
+            return
+        w = self.col_widths[col_idx]
+        if hasattr(self, "header_cell_frames") and col_idx < len(self.header_cell_frames):
+            self.header_cell_frames[col_idx].config(width=w)
+        if hasattr(self, "case_cell_frames"):
+            for row_cells in self.case_cell_frames.values():
+                if col_idx < len(row_cells):
+                    row_cells[col_idx].config(width=w)
+        total_width = sum(self.col_widths)
+        if hasattr(self, "case_inner_frame") and self.case_inner_frame.winfo_exists():
+            self.case_inner_frame.config(width=total_width)
+        if hasattr(self, "case_frames"):
+            for case_frame in self.case_frames.values():
+                if case_frame.winfo_exists():
+                    case_frame.config(width=total_width)
+        if hasattr(self, "case_separators"):
+            for sep in self.case_separators.values():
+                if sep.winfo_exists():
+                    sep.config(width=total_width)
 
     def create_case_row(self, parent, case, index, total_width, initial_status=None):
         """
@@ -739,9 +864,11 @@ class BatchProcessingGUI:
             row_container, bg=THEME["border"], height=1, width=total_width
         )
         separator.pack(fill=tk.X)
+        self.case_separators[index] = separator
 
-        # 컴포넌트 저장용 딕셔너리
+        # 컴포넌트 저장용 딕셔너리 + 열 셀 프레임 (리사이즈 시 width만 갱신용)
         components = {}
+        cell_frames = []
 
         # 1. 체크박스
         var = tk.BooleanVar()
@@ -750,6 +877,7 @@ class BatchProcessingGUI:
         )
         checkbox_frame.pack(side=tk.LEFT)
         checkbox_frame.pack_propagate(False)
+        cell_frames.append(checkbox_frame)
 
         checkbox = tk.Checkbutton(
             checkbox_frame,
@@ -761,35 +889,39 @@ class BatchProcessingGUI:
         checkbox.pack(anchor=tk.CENTER, expand=True)
         components["checkbox_var"] = var
 
-        # 2. 텍스트 정보 (사건번호, 피고, 법원, 비고)
-        info_keys = ["사건번호", "피고", "법원", "비고"]
+        # 2. 텍스트 정보 (사건번호, 피고, 법원, 사건명, 비고)
+        info_keys = ["사건번호", "피고", "법원", "사건명", "비고"]
         for i, key in enumerate(info_keys, start=1):
-            text = case.get(key, "")
+            text = str(case.get(key, "") or "")
             frame = tk.Frame(
                 case_frame, bg=bg_color, width=self.col_widths[i], height=60
             )
             frame.pack(side=tk.LEFT)
             frame.pack_propagate(False)
+            cell_frames.append(frame)
 
-            # 텍스트 라벨 (왼쪽 정렬, 패딩)
-            label = tk.Label(
+            # 텍스트: Entry(readonly)로 드래그 선택·복사 가능 (생성 시 normal로 삽입 후 readonly)
+            entry = tk.Entry(
                 frame,
-                text=text,
                 font=THEME["font_main"],
                 bg=bg_color,
                 fg=THEME["text_main"],
-                anchor=tk.W,
-                padx=10,
+                relief=tk.FLAT,
+                bd=0,
+                highlightthickness=0,
             )
-            label.pack(fill=tk.BOTH, expand=True)
-            components[f"label_{key}"] = label
+            entry.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
+            entry.insert(0, text)
+            entry.config(state="readonly")
+            components[f"label_{key}"] = entry
 
-        # 3. 캡차 이미지 (5번)
+        # 3. 캡차 이미지 (6번)
         image_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[5], height=60
+            case_frame, bg=bg_color, width=self.col_widths[6], height=60
         )
         image_frame.pack(side=tk.LEFT)
         image_frame.pack_propagate(False)
+        cell_frames.append(image_frame)
 
         image_label = tk.Label(
             image_frame,
@@ -802,12 +934,13 @@ class BatchProcessingGUI:
         image_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         components["image_label"] = image_label
 
-        # 4. 캡차 입력 (6번)
+        # 4. 캡차 입력 (7번)
         captcha_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[6], height=60
+            case_frame, bg=bg_color, width=self.col_widths[7], height=60
         )
         captcha_frame.pack(side=tk.LEFT)
         captcha_frame.pack_propagate(False)
+        cell_frames.append(captcha_frame)
 
         captcha_var = tk.StringVar()
         captcha_entry = tk.Entry(
@@ -825,8 +958,10 @@ class BatchProcessingGUI:
         )
         captcha_entry.pack(fill=tk.X, expand=True, padx=5, pady=15)
 
-        # 입력 검증
+        # 입력 검증 (빈 문자열 = Backspace/Delete 허용)
         def validate(char):
+            if char == "":
+                return True
             return char.isdigit() and len(captcha_var.get()) < 6
 
         captcha_entry.config(
@@ -837,12 +972,13 @@ class BatchProcessingGUI:
         components["captcha_var"] = captcha_var
         components["captcha_entry"] = captcha_entry
 
-        # 5. 상태 (7번) - 저장된 직전 상태가 있으면 표시 (저장 실패/완료 등)
+        # 5. 상태 (8번) - 저장된 직전 상태가 있으면 표시 (저장 실패/완료 등)
         status_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[7], height=60
+            case_frame, bg=bg_color, width=self.col_widths[8], height=60
         )
         status_frame.pack(side=tk.LEFT)
         status_frame.pack_propagate(False)
+        cell_frames.append(status_frame)
 
         if initial_status and isinstance(initial_status, dict):
             st = initial_status.get("status", "대기")
@@ -864,13 +1000,14 @@ class BatchProcessingGUI:
         status_label.pack(fill=tk.BOTH, expand=True)
         components["status_label"] = status_label
 
-        # 6. 기록(쿠키) (8번) - 캡차 입력 성공 이력만 표시 (search_log.json 기준)
+        # 6. 기록(쿠키) (9번) - 캡차 입력 성공 이력만 표시 (search_log.json 기준)
         search_log = self.load_search_log()
         record_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[8], height=60
+            case_frame, bg=bg_color, width=self.col_widths[9], height=60
         )
         record_frame.pack(side=tk.LEFT)
         record_frame.pack_propagate(False)
+        cell_frames.append(record_frame)
         cn = case.get("사건번호", "")
         if cn in search_log:
             record_text, record_fg = "🍪 검색함", THEME["success"]
@@ -887,12 +1024,13 @@ class BatchProcessingGUI:
         record_label.pack(fill=tk.BOTH, expand=True)
         components["record_label"] = record_label
 
-        # 7. 최근 업데이트 (9번)
+        # 7. 최근 업데이트 (10번)
         update_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[9], height=60
+            case_frame, bg=bg_color, width=self.col_widths[10], height=60
         )
         update_frame.pack(side=tk.LEFT)
         update_frame.pack_propagate(False)
+        cell_frames.append(update_frame)
 
         # 컨테이너 (날짜 + D-day)
         u_container = tk.Frame(update_frame, bg=bg_color)
@@ -932,7 +1070,7 @@ class BatchProcessingGUI:
         # 프레임 저장
         self.case_frames[index] = case_frame
 
-        return row_container, components
+        return row_container, components, cell_frames
 
     def update_case_list_ui(self):
         """사건 목록 UI 업데이트 (Refactored 2026)"""
@@ -951,18 +1089,26 @@ class BatchProcessingGUI:
             self.case_images = {}
             self.case_image_photos = {}
             self.case_frames = {}
+            self.case_cell_frames = {}
+            self.case_separators = {}
             self.case_update_labels = {}
             self.case_update_date_labels = {}
             self.case_start_times = {}
 
-            # 컬럼 설정 (픽셀) - config.COL_WIDTHS 사용
-            self.col_widths = list(COL_WIDTHS)
+            # 컬럼 설정 (픽셀) - 저장된 값 우선, 없으면 기본값 또는 세션 리사이즈 유지
+            loaded = self.load_column_widths()
+            if loaded is not None and len(loaded) == len(COL_WIDTHS):
+                self.col_widths = list(loaded)
+            elif not hasattr(self, "col_widths") or len(self.col_widths) != len(COL_WIDTHS):
+                self.col_widths = list(COL_WIDTHS)
+
+            # 전체 너비 (가로 스크롤용 inner_frame 너비 설정에 사용)
+            total_width = sum(self.col_widths)
+            if hasattr(self, "case_inner_frame") and self.case_inner_frame.winfo_exists():
+                self.case_inner_frame.config(width=total_width)
 
             # 헤더 생성
             self.create_list_header()
-
-            # 전체 너비
-            total_width = sum(self.col_widths)
 
             # 저장된 직전 상태 로드 (저장 실패/완료 등 유지)
             status_history = self.load_status_history()
@@ -971,13 +1117,14 @@ class BatchProcessingGUI:
             for i, case in enumerate(self.case_list):
                 case_number = case.get("사건번호", "")
                 initial_status = status_history.get(case_number)
-                row, comps = self.create_case_row(
+                row, comps, cell_frames = self.create_case_row(
                     self.case_list_frame,
                     case,
                     i,
                     total_width,
                     initial_status=initial_status,
                 )
+                self.case_cell_frames[i] = cell_frames
 
                 # 컴포넌트 등록
                 self.case_checkboxes[i] = comps["checkbox_var"]
@@ -996,10 +1143,12 @@ class BatchProcessingGUI:
                 )
                 self.header_select_all_var.set(selected_count == n)
 
-            # 스크롤 영역 업데이트
+            # 스크롤 영역 업데이트 (가로/세로)
             self.case_list_frame.update_idletasks()
+            self.case_canvas.update_idletasks()
             self.case_canvas.config(scrollregion=self.case_canvas.bbox("all"))
             self.case_canvas.yview_moveto(0)
+            self.case_canvas.xview_moveto(0)
             self.log_message("✅ UI 구성 완료 (Modern Style)")
 
         except Exception as e:
@@ -1180,6 +1329,14 @@ class BatchProcessingGUI:
         h = int(hashlib.md5(case_number.encode("utf-8")).hexdigest(), 16)
         return h % n_lanes
 
+    def get_case_profile_index(self, case_number):
+        """사건번호에 따른 고정 프로필(인스턴스) 번호 반환. 쿠키/스마트스킵 유지용."""
+        import hashlib
+
+        max_profiles = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+        h = int(hashlib.md5(case_number.encode("utf-8")).hexdigest(), 16)
+        return h % max_profiles
+
     def execute_actual_processing(self, cases):
         """실제 처리 실행 (전용 차로제: 그룹별 순차, 그룹끼리 병렬)"""
         if not cases:
@@ -1227,7 +1384,7 @@ class BatchProcessingGUI:
         self.root.after(
             0,
             lambda: self.start_btn.config(
-                text="🖼️ 캡차 이미지 로드", state=tk.NORMAL, bg="#E67E22"
+                text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)", state=tk.NORMAL, bg="#E67E22"
             ),
         )
         self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
@@ -1260,13 +1417,37 @@ class BatchProcessingGUI:
                 self.update_case_status(case_index, "재입력대기", "red", "⚠️")
                 return False
 
-            if result_data and not isinstance(result_data, dict):
+            if isinstance(result_data, list):
                 elapsed_time = int(
                     time.time() - self.case_start_times.get(case_index, time.time())
                 )
+                try:
+                    last_entry = self.google_sheets_service.get_last_entry_from_sheet(case)
+                    if last_entry is not None:
+                        self.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                except Exception as e:
+                    self.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
+                    last_entry = self.history_manager.get_last_entry(case_number)
+                new_data = self.filter_new_data(result_data, last_entry)
+                if not new_data:
+                    self.log_message(f"📭 변경없음: {case_number}")
+                    self.update_case_status(
+                        case_index, "완료 (변경없음)", "#7F8C8D", "✅"
+                    )
+                    history = self.load_update_history()
+                    prev_total = 0
+                    if isinstance(history.get(case_number), dict):
+                        prev_total = history.get(case_number, {}).get("row_count", 0)
+                    self.update_case_timestamp(case, case_index, prev_total)
+                    if hasattr(self, "processed_cases"):
+                        self.processed_cases.add(case_index)
+                    self.log_message(
+                        f"✅ 자동 처리 완료: {case_number} (소요 시간: {elapsed_time}초)"
+                    )
+                    return True
                 row_count = None
                 try:
-                    row_count = self.save_to_google_sheets(case, result_data)
+                    row_count = self.save_to_google_sheets(case, new_data)
                 except Exception as save_err:
                     self.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
                     row_count = False
@@ -1277,10 +1458,19 @@ class BatchProcessingGUI:
                 if row_count == 0:
                     self.update_case_status(case_index, "데이터 없음", "#7F8C8D", "📭")
                 else:
-                    self.update_case_status(case_index, "완료", "green", "✅")
-                self.update_case_timestamp(
-                    case, case_index, row_count if row_count else 0
-                )
+                    self.history_manager.update_last_entry(case_number, new_data[-1])
+                    self.google_sheets_service.update_main_remark(
+                        case_number, row_count
+                    )
+                    self.update_case_status(
+                        case_index, f"완료 (+{row_count}건)", "green", "✅"
+                    )
+                history = self.load_update_history()
+                old_total = 0
+                if isinstance(history.get(case_number), dict):
+                    old_total = history.get(case_number, {}).get("row_count", 0)
+                total_rows = (old_total + row_count) if row_count else old_total
+                self.update_case_timestamp(case, case_index, total_rows)
                 if row_count > 0:
                     self.add_to_search_log(case_number)
                 if hasattr(self, "processed_cases"):
@@ -1315,22 +1505,21 @@ class BatchProcessingGUI:
                 ev.set()
 
     def process_single_case_parallel(self, case, case_index, instance_index=0):
-        """병렬 처리용 단일 사건 처리 (전용 차로: instance_index 사용)"""
+        """병렬 처리용 단일 사건 처리. 사건번호별 고정 프로필(인스턴스) 사용 + 프로필 락."""
         case_number = case.get("사건번호", "")
+        profile_index = self.get_case_profile_index(case_number)
 
         try:
-            # 처리 시작 시간 기록
             import time
 
             self.case_start_times[case_index] = time.time()
-
-            # 상태 업데이트: 캡차 이미지 캡처 중 (병렬 처리용)
             self.update_case_status(case_index, "처리중(캡차로딩)", "orange", "🔄")
 
-            # 실제 처리 실행 (Puppeteer에서 캡차 캡처 및 처리, 전용 인스턴스 사용)
-            result_data = self.execute_case_processing_with_captcha(
-                case, case_index, instance_index
-            )
+            # 동일 프로필 폴더 동시 사용 방지 (같은 사건번호는 항상 같은 instance_N 사용)
+            with self.profile_locks[profile_index]:
+                result_data = self.execute_case_processing_with_captcha(
+                    case, case_index, profile_index
+                )
 
             # 처리 시간 계산
             elapsed_time = int(time.time() - self.case_start_times[case_index])
@@ -1550,11 +1739,33 @@ class BatchProcessingGUI:
                     should_cleanup_and_release = False
                     return (0, 0)
 
-                if result_data and not isinstance(result_data, dict):
-                    # 저장 시도 (실패 시 False 반환 또는 예외)
+                if isinstance(result_data, list):
+                    # 증분 저장: 구글 시트 실제 마지막 행 기준 비교, 없으면 로컬 캐시
+                    try:
+                        last_entry = self.google_sheets_service.get_last_entry_from_sheet(case)
+                        if last_entry is not None:
+                            self.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                    except Exception as e:
+                        self.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
+                        last_entry = self.history_manager.get_last_entry(case_number)
+                    new_data = self.filter_new_data(result_data, last_entry)
+                    if not new_data:
+                        self.log_message(f"📭 변경없음: {case_number}")
+                        self.update_case_status(
+                            original_index, "완료 (변경없음)", "#7F8C8D", "✅"
+                        )
+                        history = self.load_update_history()
+                        prev_total = 0
+                        if isinstance(history.get(case_number), dict):
+                            prev_total = history.get(case_number, {}).get("row_count", 0)
+                        self.update_case_timestamp(case, original_index, prev_total)
+                        self.log_message(
+                            f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)"
+                        )
+                        return (1, 0)
                     row_count = None
                     try:
-                        row_count = self.save_to_google_sheets(case, result_data)
+                        row_count = self.save_to_google_sheets(case, new_data)
                     except Exception as save_err:
                         self.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
                         row_count = False
@@ -1569,13 +1780,27 @@ class BatchProcessingGUI:
                             original_index, "데이터 없음", "#7F8C8D", "📭"
                         )
                     else:
-                        self.update_case_status(
-                            original_index, f"완료 ({elapsed_time}초)", "green", "✅"
+                        self.history_manager.update_last_entry(
+                            case_number, new_data[-1]
                         )
+                        self.google_sheets_service.update_main_remark(
+                            case_number, row_count
+                        )
+                        self.update_case_status(
+                            original_index,
+                            f"완료 (+{row_count}건)",
+                            "green",
+                            "✅",
+                        )
+                    # 타임스탬프용 총 행 수 (기존 + 이번에 추가한 행)
+                    history = self.load_update_history()
+                    old_total = 0
+                    if isinstance(history.get(case_number), dict):
+                        old_total = history.get(case_number, {}).get("row_count", 0)
+                    total_rows = (old_total + row_count) if row_count else old_total
                     self.update_case_timestamp(
-                        case, original_index, row_count if row_count else 0
+                        case, original_index, total_rows
                     )
-                    # 구글 시트에 실제로 데이터가 기록된 경우에만 '검색함' 기록
                     if row_count > 0:
                         self.add_to_search_log(case_number)
                     self.log_message(
@@ -1778,7 +2003,7 @@ class BatchProcessingGUI:
                 self.root.after(
                     0,
                     lambda: self.start_btn.config(
-                        text="🖼️ 캡차 이미지 로드", state=tk.NORMAL, bg="#E67E22"
+                        text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)", state=tk.NORMAL, bg="#E67E22"
                     ),
                 )
                 self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
@@ -1791,7 +2016,7 @@ class BatchProcessingGUI:
             self.root.after(
                 0,
                 lambda: self.start_btn.config(
-                    text="🖼️ 캡차 이미지 로드", state=tk.NORMAL, bg="#E67E22"
+                    text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)", state=tk.NORMAL, bg="#E67E22"
                 ),
             )
             self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
@@ -2169,6 +2394,32 @@ class BatchProcessingGUI:
             pass
         return {}
 
+    def load_column_widths(self):
+        """
+        저장된 열 너비 JSON 로드.
+        리스트 길이가 COL_WIDTHS와 같을 때만 반환, 아니면 None.
+        """
+        path = getattr(config, "COLUMN_WIDTHS_FILE", "column_widths.json")
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    widths = json.load(f)
+                if isinstance(widths, list) and len(widths) == len(COL_WIDTHS):
+                    return widths
+        except Exception:
+            pass
+        return None
+
+    def _save_column_widths(self):
+        """현재 열 너비를 COLUMN_WIDTHS_FILE에 JSON 배열로 저장."""
+        path = getattr(config, "COLUMN_WIDTHS_FILE", "column_widths.json")
+        try:
+            if hasattr(self, "col_widths") and self.col_widths:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(self.col_widths, f, indent=2)
+        except Exception:
+            pass
+
     def save_status_history(self, case_number, status, color, emoji=""):
         """
         상태 변경 시 JSON에 기록 (직전 상태 유지: 완료/저장 실패 등).
@@ -2203,6 +2454,32 @@ class BatchProcessingGUI:
         # 이 메서드는 더 이상 사용되지 않습니다.
         # GoogleSheetsService.save_progress_data() 내부에서 자동으로 처리됩니다.
         pass
+
+    @staticmethod
+    def _normalize_text(text):
+        """비교용: 모든 공백(스페이스/탭/줄바꿈) 제거하여 미세 차이로 인한 중복 오판 방지."""
+        if text is None:
+            return ""
+        return "".join(str(text).split())
+
+    def filter_new_data(self, scraped_data, last_entry):
+        """
+        크롤링된 전체 데이터에서 last_entry 이후의 신규 데이터만 반환.
+        last_entry가 없거나 일치하는 항목이 없으면 전체 데이터 반환.
+        비교 시 공백 정규화를 적용하여 중복 저장을 방지합니다.
+        """
+        if not last_entry or not isinstance(scraped_data, list) or len(scraped_data) == 0:
+            return scraped_data if isinstance(scraped_data, list) else []
+        le_date = self._normalize_text(last_entry.get("date", ""))
+        le_content = self._normalize_text(last_entry.get("content", ""))
+        for i, row in enumerate(scraped_data):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_text(row.get("date", "")) == le_date and self._normalize_text(
+                row.get("content", "")
+            ) == le_content:
+                return scraped_data[i + 1 :]
+        return scraped_data
 
     def save_to_google_sheets(self, case, result_data):
         """
