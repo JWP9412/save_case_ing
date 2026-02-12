@@ -1422,13 +1422,32 @@ class BatchProcessingGUI:
                     time.time() - self.case_start_times.get(case_index, time.time())
                 )
                 try:
-                    last_entry = self.google_sheets_service.get_last_entry_from_sheet(case)
-                    if last_entry is not None:
+                    last_entry_result = self.google_sheets_service.get_last_entry_from_sheet(case)
+                    if last_entry_result is not None:
+                        last_entry, sheet_last_row_index = last_entry_result
                         self.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                    else:
+                        last_entry = None
+                        sheet_last_row_index = None
                 except Exception as e:
                     self.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
                     last_entry = self.history_manager.get_last_entry(case_number)
+                    sheet_last_row_index = None
                 new_data = self.filter_new_data(result_data, last_entry)
+                
+                # 변경없음(빈 리스트)이지만 시트 행 개수가 부족한 경우(기일 등이 마지막에 있어 중간 삽입 발생)
+                # 기일 행을 삭제한 뒤, 새 데이터 + 기일을 순서대로 다시 추가
+                if not new_data and sheet_last_row_index is not None:
+                    sheet_data_count = sheet_last_row_index - 1
+                    current_len = len(result_data)
+                    if sheet_data_count < current_len:
+                        missing = current_len - sheet_data_count
+                        if self.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
+                            new_data = result_data[-(missing + 1):]
+                            self.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
+                        else:
+                            new_data = result_data[-missing:]
+                            self.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
                 if not new_data:
                     self.log_message(f"📭 변경없음: {case_number}")
                     self.update_case_status(
@@ -1438,7 +1457,9 @@ class BatchProcessingGUI:
                     prev_total = 0
                     if isinstance(history.get(case_number), dict):
                         prev_total = history.get(case_number, {}).get("row_count", 0)
-                    self.update_case_timestamp(case, case_index, prev_total)
+                    current_count = len(result_data) if isinstance(result_data, list) else 0
+                    new_total = max(prev_total, current_count)
+                    self.update_case_timestamp(case, case_index, new_total)
                     if hasattr(self, "processed_cases"):
                         self.processed_cases.add(case_index)
                     self.log_message(
@@ -1742,13 +1763,32 @@ class BatchProcessingGUI:
                 if isinstance(result_data, list):
                     # 증분 저장: 구글 시트 실제 마지막 행 기준 비교, 없으면 로컬 캐시
                     try:
-                        last_entry = self.google_sheets_service.get_last_entry_from_sheet(case)
-                        if last_entry is not None:
+                        last_entry_result = self.google_sheets_service.get_last_entry_from_sheet(case)
+                        if last_entry_result is not None:
+                            last_entry, sheet_last_row_index = last_entry_result
                             self.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                        else:
+                            last_entry = None
+                            sheet_last_row_index = None
                     except Exception as e:
                         self.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
                         last_entry = self.history_manager.get_last_entry(case_number)
+                        sheet_last_row_index = None
                     new_data = self.filter_new_data(result_data, last_entry)
+
+                    # 변경없음(빈 리스트)이지만 시트 행 개수가 부족한 경우(기일 등이 마지막에 있어 중간 삽입 발생)
+                    # 기일 행을 삭제한 뒤, 새 데이터 + 기일을 순서대로 다시 추가
+                    if not new_data and sheet_last_row_index is not None:
+                        sheet_data_count = sheet_last_row_index - 1
+                        current_len = len(result_data)
+                        if sheet_data_count < current_len:
+                            missing = current_len - sheet_data_count
+                            if self.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
+                                new_data = result_data[-(missing + 1):]
+                                self.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
+                            else:
+                                new_data = result_data[-missing:]
+                                self.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
                     if not new_data:
                         self.log_message(f"📭 변경없음: {case_number}")
                         self.update_case_status(
@@ -1758,7 +1798,9 @@ class BatchProcessingGUI:
                         prev_total = 0
                         if isinstance(history.get(case_number), dict):
                             prev_total = history.get(case_number, {}).get("row_count", 0)
-                        self.update_case_timestamp(case, original_index, prev_total)
+                        current_count = len(result_data) if isinstance(result_data, list) else 0
+                        new_total = max(prev_total, current_count)
+                        self.update_case_timestamp(case, original_index, new_total)
                         self.log_message(
                             f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)"
                         )

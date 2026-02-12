@@ -191,8 +191,8 @@ class PuppeteerService:
                     if result.get("success"):
                         progress_data = result.get("progressData", [])
                         self._log(f"✅ 처리 완료: {len(progress_data)}건 데이터 추출")
-                        # 빈 리스트라도 성공이면 True (또는 빈 리스트) 반환
-                        return progress_data if progress_data else True
+                        # 빈 리스트일 경우 그대로 빈 리스트 반환 (True로 변환하지 않음)
+                        return progress_data
                     else:
                         error_msg = result.get("error", "Unknown error")
                         self._log(f"❌ 처리 실패 (Node): {error_msg}")

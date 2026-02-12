@@ -663,18 +663,34 @@ class PageController {
       
       let tabClicked = false;
 
-      // [전략 1] ID 기반 검색 (기존 방식)
+      // [전략 1] ID 기반 검색 (강화된 병행 방식)
       try {
         const progressTabSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2';
         const progressTab = await this.page.$(progressTabSelector);
         if (progressTab) {
           console.log(`📋 [전략 1] ID로 탭 발견! 클릭 시도... (${this.browserId})`);
-          await progressTab.click();
-          tabClicked = true;
-          console.log(`✅ [전략 1] 탭 클릭 성공!`);
+          
+          // 1단계: Puppeteer click 시도
+          try {
+            await progressTab.click();
+            console.log(`✅ [전략 1-1] Puppeteer click 성공!`);
+            tabClicked = true;
+          } catch (clickError) {
+            console.log(`⚠️ [전략 1-1] Puppeteer click 실패: ${clickError.message}. JS click으로 재시도.`);
+          }
+
+          // 2단계: JS click 시도 (1단계 실패 시 또는 보강용)
+          if (!tabClicked) {
+            await this.page.evaluate((selector) => {
+              const el = document.querySelector(selector);
+              if (el) el.click();
+            }, progressTabSelector);
+            tabClicked = true;
+            console.log(`✅ [전략 1-2] JS click 성공!`);
+          }
         }
       } catch (e) {
-        console.log(`⚠️ [전략 1] ID 검색 실패: ${e.message}`);
+        console.log(`⚠️ [전략 1] ID 검색/클릭 프로세스 오류: ${e.message}`);
       }
 
       // [전략 2] 텍스트 기반 검색 (실패 시 폴백)
@@ -701,12 +717,15 @@ class PageController {
         // 탭 전환 후 그리드가 나타나면 즉시 진행 (아래 waitForSelector에서 대기)
       }
       if (!tabClicked) {
-        console.log(`⚠️ "진행내용" 탭을 찾을 수 없습니다. (ID/텍스트 모두 실패) (${this.browserId})`);
+        const errorMsg = `"진행내용" 탭을 찾을 수 없습니다. (ID/텍스트 전략 모두 실패)`;
+        console.log(`❌ ${errorMsg} (${this.browserId})`);
         
         // 디버그: 스크린샷
         const debugPath = `screenshots/tab_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
         await this.page.screenshot({ path: debugPath, fullPage: true });
         console.log(`📸 [DEBUG] 탭 미발견 스크린샷: ${debugPath}`);
+        
+        throw new Error(errorMsg);
       }
 
       // 2. 진행내용 그리드 대기 및 추출
@@ -725,19 +744,18 @@ class PageController {
         
         if (fallbackGrid) {
              console.log(`✅ 대체 그리드 발견! (${this.browserId})`);
-             // 그리드가 있더라도 ID가 다를 수 있으니, 아래 evaluate에서 class 기반으로 찾도록 수정 필요
-             // 하지만 현재 evaluate 로직은 gridSelector를 사용함.
-             // 따라서 여기서 gridSelector 변수를 업데이트하거나, evaluate에 유연성을 줘야 함.
         } else {
-             console.log(`⚠️ 진행내용 그리드를 찾을 수 없습니다: ${error.message} (${this.browserId})`);
+             const errorMsg = `진행내용 그리드를 찾을 수 없습니다: ${error.message}`;
+             console.log(`❌ ${errorMsg} (${this.browserId})`);
              
              // 혹시 "조회된 내용이 없습니다" 같은 메시지가 있는지 확인
              const bodyText = await this.page.$eval('body', el => el.innerText);
              if (bodyText.includes('조회된 내용이 없습니다') || bodyText.includes('검색결과가 없습니다')) {
-                 console.log(`ℹ️ [DEBUG] 화면에 '내용 없음' 메시지 감지됨`);
+                 console.log(`ℹ️ [DEBUG] 화면에 '내용 없음' 메시지 감지됨 -> 정상 결과(0건)로 처리`);
+                 return [];
              }
              
-             return [];
+             throw new Error(errorMsg);
         }
       }
 
