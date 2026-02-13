@@ -34,6 +34,7 @@ def retry_on_quota_error(max_retries=5, base_delay=2.0):
     429 (Quota Exceeded) 발생 시 지수 백오프로 재시도하는 데코레이터.
     대기 시간: base_delay * (2 ** attempt) 초 (2, 4, 8, 16, 32초).
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -47,15 +48,19 @@ def retry_on_quota_error(max_retries=5, base_delay=2.0):
                     if "429" not in msg and "quota" not in msg:
                         raise
                     if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)
+                        delay = base_delay * (2**attempt)
                         if args and hasattr(args[0], "_log"):
-                            args[0]._log(f"⚠️ 구글 시트 할당량 초과(429). {delay}초 후 재시도 ({attempt + 1}/{max_retries})")
+                            args[0]._log(
+                                f"⚠️ 구글 시트 할당량 초과(429). {delay}초 후 재시도 ({attempt + 1}/{max_retries})"
+                            )
                         time.sleep(delay)
                     else:
                         raise
             if last_exc:
                 raise last_exc
+
         return wrapper
+
     return decorator
 
 
@@ -280,7 +285,11 @@ class GoogleSheetsService:
                 # 시트 이름용: 사건명 우선, 비고는 보조(업데이트 문구는 제외)
                 case_name = (case.get("사건명") or "").strip()
                 remark_raw = (case.get("비고") or "").strip()
-                if not case_name and remark_raw and not str(remark_raw).startswith("업데이트"):
+                if (
+                    not case_name
+                    and remark_raw
+                    and not str(remark_raw).startswith("업데이트")
+                ):
                     case_name = remark_raw
                 if case_name:
                     worksheet_name = f"{defendant}_{case_name}_{case_number}_{court}"
@@ -297,7 +306,14 @@ class GoogleSheetsService:
                 # ----- Step 3: 헤더 확인 및 확장, 기존 타임스탬프 행 삭제 -----
                 all_values = worksheet.get_all_values()
                 if len(all_values) == 0:
-                    headers = ["일자", "내용", "결과", "공시문", "비고", "이메일 송부 여부"]
+                    headers = [
+                        "일자",
+                        "내용",
+                        "결과",
+                        "공시문",
+                        "비고",
+                        "이메일 송부 여부",
+                    ]
                     worksheet.append_row(headers)
                 else:
                     row1 = all_values[0]
@@ -305,7 +321,9 @@ class GoogleSheetsService:
                         extended = (row1 + ["", ""])[:6]
                         extended[4] = extended[4] or "비고"
                         extended[5] = extended[5] or "이메일 송부 여부"
-                        worksheet.update("A1:F1", [extended], value_input_option="USER_ENTERED")
+                        worksheet.update(
+                            "A1:F1", [extended], value_input_option="USER_ENTERED"
+                        )
                 # 맨 아래 '업데이트 일시' / '최근 과거 업데이트' 행 제거 (뒤에서부터)
                 all_values = worksheet.get_all_values()
                 rows_to_delete = []
@@ -342,25 +360,32 @@ class GoogleSheetsService:
                             "documentColor": progress_row.get("documentColor"),
                         }
                     )
-                worksheet.append_rows(processed_new_data, value_input_option="USER_ENTERED")
+                worksheet.append_rows(
+                    processed_new_data, value_input_option="USER_ENTERED"
+                )
 
                 # ----- Step 5: 새로 추가된 행에만 색상 적용, 타임스탬프 행 추가 -----
                 self._apply_text_colors(worksheet, color_info)
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                empty_rows = [
-                    [""] * 6 for _ in range(config.EMPTY_ROWS_BEFORE_UPDATE)
-                ]
+                empty_rows = [[""] * 6 for _ in range(config.EMPTY_ROWS_BEFORE_UPDATE)]
                 worksheet.append_rows(empty_rows, value_input_option="USER_ENTERED")
                 worksheet.append_rows(
                     [["업데이트 일시", current_time, "", "", "", ""]],
                     value_input_option="USER_ENTERED",
                 )
-                current_row = start_row_1based + len(processed_new_data) + config.EMPTY_ROWS_BEFORE_UPDATE + 1
+                current_row = (
+                    start_row_1based
+                    + len(processed_new_data)
+                    + config.EMPTY_ROWS_BEFORE_UPDATE
+                    + 1
+                )
                 self._ensure_worksheet_rows(worksheet, current_row + 2)
                 self._format_update_timestamp_rows(worksheet, current_row, num_cols=6)
                 self._auto_resize_columns(worksheet, num_cols=6)
 
-                self._log(f"✅ 구글 시트 저장 완료: {worksheet_name} (+{len(processed_new_data)}건)")
+                self._log(
+                    f"✅ 구글 시트 저장 완료: {worksheet_name} (+{len(processed_new_data)}건)"
+                )
                 return len(processed_new_data)
 
             except gspread.exceptions.APIError:
@@ -368,6 +393,7 @@ class GoogleSheetsService:
             except Exception as e:
                 self._log(f"❌ 구글 시트 저장 실패: {e}")
                 import traceback
+
                 self._log(traceback.format_exc())
                 return False
 
@@ -581,7 +607,10 @@ class GoogleSheetsService:
             first_cell = str(row[0]).strip()
             if not first_cell or first_cell in skip_first_col_values:
                 continue
-            entry_dict = {"date": row[0].strip() if row[0] else "", "content": row[1].strip() if len(row) > 1 and row[1] else ""}
+            entry_dict = {
+                "date": row[0].strip() if row[0] else "",
+                "content": row[1].strip() if len(row) > 1 and row[1] else "",
+            }
             row_index = i + 1
             return (entry_dict, row_index)
         return None
@@ -598,7 +627,9 @@ class GoogleSheetsService:
         if not case_name and remark_raw and not str(remark_raw).startswith("업데이트"):
             case_name = remark_raw
         if case_name:
-            worksheet_name = f"{defendant}_{case_name}_{case.get('사건번호', '')}_{court}"
+            worksheet_name = (
+                f"{defendant}_{case_name}_{case.get('사건번호', '')}_{court}"
+            )
         else:
             worksheet_name = f"{defendant}_{case.get('사건번호', '')}_{court}"
         spreadsheet = self._get_spreadsheet()
@@ -611,6 +642,54 @@ class GoogleSheetsService:
             return True
         except Exception as e:
             self._log(f"⚠️ 시트 행 삭제 실패: {e}")
+            return False
+
+    def _get_case_worksheet_name(self, case):
+        """사건 정보로 개별 시트 이름을 반환."""
+        defendant = case.get("피고", "")
+        court = case.get("법원", "")
+        case_number = case.get("사건번호", "")
+        case_name = (case.get("사건명") or "").strip()
+        remark_raw = (case.get("비고") or "").strip()
+        if not case_name and remark_raw and not str(remark_raw).startswith("업데이트"):
+            case_name = remark_raw
+        if case_name:
+            return f"{defendant}_{case_name}_{case_number}_{court}"
+        return f"{defendant}_{case_number}_{court}"
+
+    def get_full_sheet_data(self, case):
+        """
+        해당 사건의 개별 시트에서 모든 셀 데이터를 2차원 리스트로 반환.
+        시트가 없거나 비어있으면 빈 리스트. API 오류는 예외 전파.
+        """
+        worksheet_name = self._get_case_worksheet_name(case)
+        spreadsheet = self._get_spreadsheet()
+        try:
+            worksheet = spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            return []
+        return worksheet.get_all_values()
+
+    def overwrite_sheet_data(self, case, data):
+        """
+        해당 사건의 개별 시트 내용을 data(2차원 리스트)로 전부 갱신.
+        clear 후 update. data가 비어있으면 시트만 비움.
+        """
+        if not isinstance(data, list):
+            return False
+        worksheet_name = self._get_case_worksheet_name(case)
+        spreadsheet = self._get_spreadsheet()
+        try:
+            worksheet = spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            return False
+        try:
+            worksheet.clear()
+            if data:
+                worksheet.update("A1", data, value_input_option="USER_ENTERED")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ 시트 덮어쓰기 실패: {e}")
             return False
 
     def update_main_remark(self, case_number, new_count):
@@ -639,11 +718,16 @@ class GoogleSheetsService:
                     col_remark = len(headers)
                 for r in range(1, len(all_values)):
                     row = all_values[r]
-                    if col_case < len(row) and str(row[col_case]).strip() == str(case_number).strip():
+                    if (
+                        col_case < len(row)
+                        and str(row[col_case]).strip() == str(case_number).strip()
+                    ):
                         today_str = datetime.now().strftime("%Y.%m.%d")
                         remark_text = f"{today_str} 업데이트 (+{new_count}건)"
                         ws.update_cell(r + 1, col_remark + 1, remark_text)
-                        self._log(f"📝 메인 시트 비고 갱신: {case_number} -> {remark_text}")
+                        self._log(
+                            f"📝 메인 시트 비고 갱신: {case_number} -> {remark_text}"
+                        )
                         return
         except Exception as e:
             self._log(f"⚠️ 메인 시트 비고 갱신 실패: {e}")

@@ -44,6 +44,11 @@ import tkinter as tk
 # ttk: 더 예쁜 위젯들을 제공하는 확장 모듈
 from tkinter import ttk, messagebox, scrolledtext
 
+# CustomTkinter: 현대적인 디자인 (다크/라이트 모드 선택 가능)
+import customtkinter as ctk
+
+ctk.set_default_color_theme("blue")
+
 # gspread: 구글 시트를 다루기 위한 라이브러리
 import gspread
 
@@ -73,9 +78,17 @@ from datetime import datetime
 # ThreadPoolExecutor: 여러 작업을 병렬로 처리하기 위한 클래스
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# config: 설정 상수 모음 (THEME, COL_WIDTHS 포함)
+# config: 설정 상수 모음 (THEME, COL_WIDTHS, 열 순서 등)
 import config
-from config import THEME, COL_WIDTHS
+from config import (
+    THEME,
+    COL_WIDTHS,
+    COL_NAMES,
+    DEFAULT_COL_ORDER,
+    COLUMN_ORDER_FILE,
+    HEADER_IMAGE_PATH,
+    HEADER_BG_COLOR,
+)
 
 # services.google_sheets: 구글 시트 서비스 모듈
 from services.google_sheets import GoogleSheetsService, load_google_sheet_data
@@ -101,6 +114,15 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 캡차 입력 팝업 창 (gui/captcha_dialog.py에서 분리됨)
 from gui.captcha_dialog import CaptchaInputDialog
+
+# tksheet: 구글 시트 뷰어/편집용 그리드 위젯
+try:
+    from tksheet import Sheet
+
+    TKSHEET_AVAILABLE = True
+except ImportError:
+    TKSHEET_AVAILABLE = False
+    Sheet = None
 
 
 # ============================================================================
@@ -166,7 +188,7 @@ class BatchProcessingGUI:
 
         # 정렬 상태 (사건 목록 컬럼 정렬용)
         # sort_column_index: 정렬 기준 컬럼 인덱스 (기본 9 = 최근 업데이트)
-        self.sort_column_index = 10  # 최근 업데이트 (사건명 추가 후 인덱스 시프트)
+        self.sort_column_index = 8  # 최근 업데이트 (10열 기준)
         # sort_reverse: False = 오름차순(과거 날짜가 위), True = 내림차순
         self.sort_reverse = False
         # 열 너비 리사이즈 드래그 상태
@@ -175,6 +197,12 @@ class BatchProcessingGUI:
         self._resize_start_width = None
         self._resize_current_width = None
         self.resize_guide_line = None
+        # 열 표시 순서 (인덱스 0~9 리스트). update_case_list_ui에서 파일 로드 시 덮어씀
+        self.col_order = list(DEFAULT_COL_ORDER)
+        # 열 너비 (인덱스 0~9). update_case_list_ui에서 파일 로드 시 덮어씀
+        self.col_widths = list(COL_WIDTHS)
+        # tksheet 미설치 시 경고 메시지 세션당 1회만 표시
+        self._tksheet_warned = False
 
         # ============================================================
         # 설정 옵션 변수들 (root 생성 후 초기화됨)
@@ -185,10 +213,67 @@ class BatchProcessingGUI:
         self.max_retry = None
         # retry_delay: 재시도 전 대기 시간(초) (기본값: 2초)
         self.retry_delay = None
+        # 테마: "Dark" / "Light" / "System". create_window()에서 로드 후 적용
+        self._appearance_mode = "Dark"
+        self._theme_index = 1  # 0=라이트, 1=다크 (THEME 튜플 인덱스)
+
+    def get_theme_color(self, key):
+        """현재 테마에 맞는 색상 또는 폰트 반환. THEME 값이 (light, dark) 튜플이면 현재 모드 값 반환."""
+        v = THEME.get(key)
+        if (
+            isinstance(v, tuple)
+            and len(v) >= 2
+            and isinstance(v[0], str)
+            and v[0].startswith("#")
+        ):
+            return v[self._theme_index]
+        return v
+
+    def _load_theme_setting(self):
+        """저장된 테마 설정 로드. "Dark" / "Light" / "System" 중 하나 반환."""
+        path = getattr(config, "THEME_CONFIG_FILE", "theme_config.json")
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                mode = data.get("appearance_mode") or data.get("mode")
+                if mode in ("Dark", "Light", "System"):
+                    return mode
+        except Exception:
+            pass
+        return "Dark"
+
+    def _save_theme_setting(self, mode):
+        """선택한 테마를 파일에 저장."""
+        path = getattr(config, "THEME_CONFIG_FILE", "theme_config.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"appearance_mode": mode}, f, indent=2)
+        except Exception:
+            pass
+
+    def _apply_theme(self, mode):
+        """테마 적용: set_appearance_mode 호출 후 _theme_index 갱신."""
+        self._appearance_mode = mode
+        ctk.set_appearance_mode(mode)
+        effective = ctk.get_appearance_mode()
+        self._theme_index = 1 if effective == "Dark" else 0
 
     def on_closing(self):
         """종료 처리"""
         if messagebox.askokcancel("종료", "프로그램을 종료하시겠습니까?"):
+            # 진행상황(우측) 패널 너비 저장 (다음 실행 시 복원)
+            if getattr(self, "right_panel", None) is not None:
+                try:
+                    if self.right_panel.winfo_exists():
+                        w = self.right_panel.winfo_width()
+                        path = getattr(
+                            config, "RIGHT_PANEL_WIDTH_FILE", "right_panel_width.json"
+                        )
+                        with open(path, "w", encoding="utf-8") as f:
+                            json.dump({"width": w}, f, indent=2)
+                except Exception:
+                    pass
             if hasattr(self, "puppeteer_service"):
                 # 실행 중인 모든 프로세스 종료
                 for process in list(self.puppeteer_service.running_processes.values()):
@@ -199,16 +284,16 @@ class BatchProcessingGUI:
             self.root.destroy()
 
     def create_window(self):
-        """메인 윈도우 생성"""
-        self.root = tk.Tk()
+        """메인 윈도우 생성 (CustomTkinter)"""
+        # 저장된 테마 적용 (창 생성 전에 설정해야 함)
+        saved_theme = self._load_theme_setting()
+        self._apply_theme(saved_theme)
+
+        self.root = ctk.CTk()
         self.root.title(f"{config.APP_TITLE} v{config.APP_VERSION}")
-        # config.py에서 창 크기 가져오기
         w, h = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
         self.root.geometry(f"{w}x{h}")
         self.root.resizable(True, True)
-
-        # 배경색 설정 (현대적인 다크 테마)
-        self.root.configure(bg="#2C3E50")
 
         # 종료 이벤트 바인딩
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -249,296 +334,836 @@ class BatchProcessingGUI:
         return self.root
 
     def create_header(self, parent):
-        """헤더 영역 생성"""
-        header_frame = tk.Frame(parent, bg="#34495E", height=120)
+        """헤더 영역 생성 (CustomTkinter). 배너 이미지가 있으면 중앙에 표시, 여백은 배경색으로 채움."""
+        header_bg = getattr(config, "HEADER_BG_COLOR", "#001A33")
+        header_frame = ctk.CTkFrame(parent, fg_color=(header_bg, header_bg), height=120)
         header_frame.pack(fill=tk.X, padx=0, pady=0)
         header_frame.pack_propagate(False)
 
-        # 제목 (config.APP_TITLE 사용)
-        title_label = tk.Label(
+        banner_path = getattr(config, "HEADER_IMAGE_PATH", "./assets/title_banner.png")
+        if not os.path.isabs(banner_path):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            banner_path = os.path.normpath(os.path.join(base_dir, banner_path))
+        if os.path.isfile(banner_path):
+            try:
+                if hasattr(self, "log_message"):
+                    self.log_message(f"배너 경로: {banner_path}")
+                from PIL import Image
+                with Image.open(banner_path) as im:
+                    bw, bh = im.size
+                if bw <= 0 or bh <= 0:
+                    if hasattr(self, "log_message"):
+                        self.log_message("배너 이미지 로드 실패: 이미지 크기가 유효하지 않음")
+                else:
+                    # 배너 프레임 높이(120)에 맞춰 세로를 채우고, 가로는 비율 유지·최대 900으로 제한
+                    banner_h = 120
+                    max_banner_w = 900
+                    scale = min(banner_h / bh, max_banner_w / bw)
+                    w, h = int(bw * scale), int(bh * scale)
+                    pil_img = Image.open(banner_path)
+                    ctk_image = ctk.CTkImage(
+                        light_image=pil_img,
+                        dark_image=pil_img,
+                        size=(w, h),
+                    )
+                    banner_label = ctk.CTkLabel(
+                        header_frame,
+                        text="",
+                        image=ctk_image,
+                    )
+                    banner_label.pack(anchor=tk.CENTER, expand=False)
+                    return header_frame
+            except Exception as e:
+                if hasattr(self, "log_message"):
+                    self.log_message(f"배너 이미지 로드 실패: {banner_path} — {e}")
+                else:
+                    print(f"배너 이미지 로드 실패: {banner_path} — {e}")
+        title_label = ctk.CTkLabel(
             header_frame,
             text=f"⚖️ {config.APP_TITLE}",
-            font=("맑은 고딕", 24, "bold"),
-            bg="#34495E",
-            fg="#ECF0F1",
+            font=ctk.CTkFont(family="맑은 고딕", size=26, weight="bold"),
+            text_color="#ECF0F1",
         )
         title_label.pack(pady=(20, 5))
-
-        # 부제목 (config.APP_SUBTITLE, config.APP_VERSION 사용)
-        subtitle_label = tk.Label(
+        subtitle_label = ctk.CTkLabel(
             header_frame,
             text=f"{config.APP_SUBTITLE} v{config.APP_VERSION}",
-            font=("맑은 고딕", 11),
-            bg="#34495E",
-            fg="#BDC3C7",
+            font=ctk.CTkFont(family="맑은 고딕", size=13),
+            text_color="#BDC3C7",
         )
         subtitle_label.pack(pady=(0, 15))
-
         return header_frame
 
     def create_control_panel(self, parent):
-        """제어 패널 생성"""
-        control_frame = tk.LabelFrame(
-            parent,
-            text="🎛️ 제어 패널",
-            font=("맑은 고딕", 12, "bold"),
-            bg="#ECF0F1",
-            fg="#2C3E50",
-            relief=tk.RIDGE,
-            bd=2,
+        """제어 패널 생성 (CustomTkinter)"""
+        control_frame = ctk.CTkFrame(
+            parent, fg_color=self.get_theme_color("bg_primary")
         )
         control_frame.pack(fill=tk.X, padx=10, pady=10)
+        ctk.CTkLabel(
+            control_frame,
+            text="🎛️ 제어 패널",
+            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
+            text_color="#ECF0F1",
+        ).pack(anchor=tk.W, pady=(0, 8))
 
-        # 버튼 프레임
-        button_frame = tk.Frame(control_frame, bg="#ECF0F1")
-        button_frame.pack(fill=tk.X, padx=15, pady=15)
+        button_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
+        button_frame.pack(fill=tk.X, padx=0, pady=10)
 
-        # 새로고침 버튼 (구글 시트 재로드)
-        load_btn = tk.Button(
+        # 제어 패널 버튼 공통 크기 및 비활성화 시 회색 스타일
+        BTN_W, BTN_H = 200, 36
+        DISABLED_FG = "#5D6D7E"
+        DISABLED_TEXT = "#ECF0F1"
+
+        self._control_btn_colors = {}
+
+        load_btn = ctk.CTkButton(
             button_frame,
             text="🔄 새로고침",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#27AE60",
-            fg="white",
-            width=18,
-            height=2,
-            relief=tk.RAISED,
-            bd=3,
-            activebackground="#229954",
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            fg_color="#27AE60",
+            hover_color="#229954",
+            text_color="#FFFFFF",
+            width=BTN_W,
+            height=BTN_H,
             cursor="hand2",
             command=self.load_google_sheet,
         )
         load_btn.pack(side=tk.LEFT, padx=(0, 10))
 
-        # 캡차 이미지 로드 버튼 (이름 변경)
-        self.start_btn = tk.Button(
+        self.start_btn = ctk.CTkButton(
             button_frame,
             text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#E67E22",
-            fg="white",
-            height=2,
-            relief=tk.RAISED,
-            bd=3,
-            activebackground="#D35400",
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            fg_color="#E67E22",
+            hover_color="#D35400",
+            text_color="#FFFFFF",
+            width=BTN_W,
+            height=BTN_H,
             cursor="hand2",
             command=self.start_batch_processing,
         )
+        self._control_btn_colors[self.start_btn] = ("#E67E22", "#D35400", "#FFFFFF")
         self.start_btn.pack(side=tk.LEFT, padx=(0, 10))
 
-        # 캡차 입력 완료 버튼
-        self.complete_btn = tk.Button(
+        self.complete_btn = ctk.CTkButton(
             button_frame,
             text="✔️ 캡차 입력 완료",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#16A085",
-            fg="white",
-            width=18,
-            height=2,
-            relief=tk.RAISED,
-            bd=3,
-            activebackground="#138D75",
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            fg_color=DISABLED_FG,
+            hover_color=DISABLED_FG,
+            text_color=DISABLED_TEXT,
+            width=BTN_W,
+            height=BTN_H,
             cursor="hand2",
             command=self.start_processing_thread,
-            state=tk.DISABLED,
+            state="disabled",
         )
+        self._control_btn_colors[self.complete_btn] = ("#16A085", "#138D75", "#FFFFFF")
         self.complete_btn.pack(side=tk.LEFT, padx=(0, 10))
 
-        # 중지 버튼
-        self.stop_btn = tk.Button(
+        self.stop_btn = ctk.CTkButton(
             button_frame,
             text="⛔ 처리 중지",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#E74C3C",
-            fg="white",
-            width=18,
-            height=2,
-            relief=tk.RAISED,
-            bd=3,
-            activebackground="#C0392B",
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            fg_color=DISABLED_FG,
+            hover_color=DISABLED_FG,
+            text_color=DISABLED_TEXT,
+            width=BTN_W,
+            height=BTN_H,
             cursor="hand2",
             command=self.stop_batch_processing,
-            state=tk.DISABLED,
+            state="disabled",
         )
+        self._control_btn_colors[self.stop_btn] = ("#E74C3C", "#C0392B", "#FFFFFF")
         self.stop_btn.pack(side=tk.LEFT)
 
         return control_frame
 
+    def _set_control_btn_state(self, btn, enabled):
+        """제어 패널 버튼 활성/비활성 + 회색 스타일 적용. 비활성 시 글씨가 보이는 회색."""
+        if enabled:
+            colors = self._control_btn_colors.get(btn)
+            if colors:
+                fg, hover, text = colors
+                btn.configure(
+                    state="normal",
+                    fg_color=fg,
+                    hover_color=hover,
+                    text_color=text,
+                )
+            else:
+                btn.configure(state="normal")
+        else:
+            btn.configure(
+                state="disabled",
+                fg_color="#5D6D7E",
+                hover_color="#5D6D7E",
+                text_color="#ECF0F1",
+            )
+
     def create_settings_panel(self, parent):
-        """설정 패널 생성"""
-        settings_frame = tk.LabelFrame(
-            parent,
-            text="⚙️ 처리 설정",
-            font=("맑은 고딕", 12, "bold"),
-            bg="#ECF0F1",
-            fg="#2C3E50",
-            relief=tk.RIDGE,
-            bd=2,
+        """설정 패널 생성 (CustomTkinter)"""
+        # 구분선: 제어 패널과 설정 패널 사이 (테마 색상 사용)
+        sep = ctk.CTkFrame(
+            parent, fg_color=self.get_theme_color("border"), height=2, corner_radius=0
+        )
+        sep.pack(fill=tk.X, padx=10, pady=(0, 4))
+        sep.pack_propagate(False)
+
+        settings_frame = ctk.CTkFrame(
+            parent, fg_color=self.get_theme_color("bg_primary")
         )
         settings_frame.pack(fill=tk.X, padx=10, pady=5)
+        ctk.CTkLabel(
+            settings_frame,
+            text="⚙️ 처리 설정",
+            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).pack(anchor=tk.W, pady=(0, 8))
 
-        settings_inner = tk.Frame(settings_frame, bg="#ECF0F1")
-        settings_inner.pack(fill=tk.X, padx=15, pady=12)
+        settings_inner = ctk.CTkFrame(
+            settings_frame, fg_color=self.get_theme_color("bg_primary")
+        )
+        settings_inner.pack(fill=tk.X, padx=0, pady=8)
 
-        # 병렬 처리 수
-        tk.Label(
+        ctk.CTkLabel(
             settings_inner,
             text="⚡ 병렬 처리 수:",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#ECF0F1",
-        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=2)
         max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
-        parallel_spin = tk.Spinbox(
+        parallel_entry = ctk.CTkEntry(
             settings_inner,
-            from_=1,
-            to=max_limit,
-            textvariable=self.max_parallel,
-            width=8,
-            font=("맑은 고딕", 10),
-            relief=tk.SUNKEN,
-            bd=2,
+            width=80,
+            height=28,
+            font=ctk.CTkFont(family="맑은 고딕", size=13),
         )
-        parallel_spin.grid(row=0, column=1, sticky=tk.W, padx=(0, 30))
+        parallel_entry.grid(row=0, column=1, sticky=tk.W, padx=(0, 25))
+        parallel_entry.insert(0, str(self.max_parallel.get()))
+        parallel_entry.bind(
+            "<FocusOut>",
+            lambda e: self._sync_spin(parallel_entry, self.max_parallel, 1, max_limit),
+        )
+        self._settings_parallel_entry = parallel_entry
 
-        # 캡차 재시도 횟수
-        tk.Label(
+        ctk.CTkLabel(
             settings_inner,
             text="🔄 캡차 재시도 횟수:",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#ECF0F1",
-        ).grid(row=0, column=2, sticky=tk.W, padx=(0, 10))
-        retry_spin = tk.Spinbox(
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).grid(row=0, column=2, sticky=tk.W, padx=(0, 10), pady=2)
+        retry_entry = ctk.CTkEntry(
             settings_inner,
-            from_=1,
-            to=10,
-            textvariable=self.max_retry,
-            width=8,
-            font=("맑은 고딕", 10),
-            relief=tk.SUNKEN,
-            bd=2,
+            width=80,
+            height=28,
+            font=ctk.CTkFont(family="맑은 고딕", size=13),
         )
-        retry_spin.grid(row=0, column=3, sticky=tk.W, padx=(0, 30))
+        retry_entry.grid(row=0, column=3, sticky=tk.W, padx=(0, 25))
+        retry_entry.insert(0, str(self.max_retry.get()))
+        retry_entry.bind(
+            "<FocusOut>", lambda e: self._sync_spin(retry_entry, self.max_retry, 1, 10)
+        )
 
-        # 재시도 간 대기시간
-        tk.Label(
+        ctk.CTkLabel(
             settings_inner,
             text="⏱️ 재시도 간 대기시간(초):",
-            font=("맑은 고딕", 10, "bold"),
-            bg="#ECF0F1",
-        ).grid(row=0, column=4, sticky=tk.W, padx=(0, 10))
-        delay_spin = tk.Spinbox(
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).grid(row=0, column=4, sticky=tk.W, padx=(0, 10), pady=2)
+        delay_entry = ctk.CTkEntry(
             settings_inner,
-            from_=1,
-            to=10,
-            textvariable=self.retry_delay,
-            width=8,
-            font=("맑은 고딕", 10),
-            relief=tk.SUNKEN,
-            bd=2,
+            width=80,
+            height=28,
+            font=ctk.CTkFont(family="맑은 고딕", size=13),
         )
-        delay_spin.grid(row=0, column=5, sticky=tk.W)
+        delay_entry.grid(row=0, column=5, sticky=tk.W, pady=2)
+        delay_entry.insert(0, str(self.retry_delay.get()))
+        delay_entry.bind(
+            "<FocusOut>",
+            lambda e: self._sync_spin(delay_entry, self.retry_delay, 1, 10),
+        )
+
+        # 테마 선택 (다크 / 라이트 / 시스템)
+        theme_display = {
+            "Dark": "다크(Dark)",
+            "Light": "라이트(Light)",
+            "System": "시스템(System)",
+        }
+        theme_options = ["다크(Dark)", "라이트(Light)", "시스템(System)"]
+        current_display = theme_display.get(self._appearance_mode, "다크(Dark)")
+
+        ctk.CTkLabel(
+            settings_inner,
+            text="🎨 테마:",
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(12, 2))
+
+        def on_theme_change(choice):
+            mode = (
+                "Dark"
+                if choice == "다크(Dark)"
+                else ("Light" if choice == "라이트(Light)" else "System")
+            )
+            self._apply_theme(mode)
+            self._save_theme_setting(mode)
+            if hasattr(self, "case_list") and self.case_list:
+                self.update_case_list_ui()
+
+        theme_var = ctk.StringVar(value=current_display)
+        theme_menu = ctk.CTkOptionMenu(
+            settings_inner,
+            values=theme_options,
+            variable=theme_var,
+            width=140,
+            command=on_theme_change,
+        )
+        theme_menu.grid(row=1, column=1, sticky=tk.W, padx=(0, 25), pady=(12, 2))
+        self._theme_option_var = theme_var
 
         return settings_frame
 
+    def _sync_spin(self, entry_widget, int_var, low, high):
+        """Entry 값으로 IntVar 동기화 (범위 클램프)."""
+        try:
+            val = int(entry_widget.get().strip())
+            val = max(low, min(high, val))
+            int_var.set(val)
+            entry_widget.delete(0, tk.END)
+            entry_widget.insert(0, str(val))
+        except (ValueError, tk.TclError):
+            entry_widget.delete(0, tk.END)
+            entry_widget.insert(0, str(int_var.get()))
+
     def create_case_list_panel(self, parent):
-        """사건 목록 패널 생성"""
-        case_frame = tk.LabelFrame(
-            parent,
-            text="📋 사건 목록",
-            font=("맑은 고딕", 12, "bold"),
-            bg="#ECF0F1",
-            fg="#2C3E50",
-            relief=tk.RIDGE,
-            bd=2,
-            padx=0,
-            pady=0,
+        """사건 목록 패널 생성 (CustomTkinter, Canvas 유지 for 가로 스크롤/리사이즈)"""
+        # 구분선: 설정 패널과 사건 목록 사이 (테마 색상 사용)
+        sep = ctk.CTkFrame(
+            parent, fg_color=self.get_theme_color("border"), height=2, corner_radius=0
         )
+        sep.pack(fill=tk.X, padx=10, pady=(0, 4))
+        sep.pack_propagate(False)
+
+        case_frame = ctk.CTkFrame(parent, fg_color="transparent")
         case_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # 메인 컨테이너 (헤더 + 데이터를 같은 공간에)
-        main_container = tk.Frame(case_frame, bg="white", bd=0, padx=0, pady=0)
+        # 제목 + 열 순서 설정 버튼 + 검색창 한 줄
+        title_row = ctk.CTkFrame(case_frame, fg_color="transparent")
+        title_row.pack(anchor=tk.W, pady=(0, 4))
+        ctk.CTkLabel(
+            title_row,
+            text="📋 사건 목록",
+            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).pack(side=tk.LEFT)
+        settings_btn = ctk.CTkButton(
+            title_row,
+            text="⚙",
+            font=ctk.CTkFont(size=16),
+            width=36,
+            height=28,
+            fg_color="transparent",
+            hover_color="#3D5A6C",
+            cursor="hand2",
+            command=self._open_column_order_dialog,
+        )
+        settings_btn.pack(side=tk.LEFT, padx=(8, 0))
+        search_frame = ctk.CTkFrame(title_row, fg_color="transparent")
+        search_frame.pack(side=tk.LEFT, padx=(16, 0))
+        self.search_entry = ctk.CTkEntry(
+            search_frame,
+            width=200,
+            height=28,
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            placeholder_text="검색...",
+        )
+        self.search_entry.pack(side=tk.LEFT, padx=(0, 6))
+        self.search_entry.bind("<Return>", lambda e: self.perform_search())
+        search_btn = ctk.CTkButton(
+            search_frame,
+            text="찾기",
+            width=60,
+            height=28,
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            cursor="hand2",
+            command=self.perform_search,
+        )
+        search_btn.pack(side=tk.LEFT)
+
+        main_container = ctk.CTkFrame(case_frame, fg_color="transparent")
         main_container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        # 스크롤 영역 (Canvas) - 헤더와 리스트를 함께 담을 inner_frame 사용
+        # 가로 스크롤 시 헤더/리스트 동기화
+        def _sync_xview(first, last):
+            self.header_canvas.xview_moveto(first)
+            self.case_canvas.xview_moveto(first)
+
+        self.header_canvas = tk.Canvas(
+            main_container,
+            bg="#2B2B2B",
+            height=40,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.header_canvas.pack(fill=tk.X)
+
         self.case_canvas = tk.Canvas(
-            main_container, bg="white", highlightthickness=0, bd=0
+            main_container, bg="#2B2B2B", highlightthickness=0, bd=0
         )
         v_scrollbar = ttk.Scrollbar(
             main_container, orient="vertical", command=self.case_canvas.yview
         )
         h_scrollbar = ttk.Scrollbar(
-            main_container, orient="horizontal", command=self.case_canvas.xview
+            main_container, orient="horizontal", command=_sync_xview
         )
 
-        # 헤더와 리스트를 함께 스크롤하기 위한 내부 프레임
-        self.case_inner_frame = tk.Frame(
-            self.case_canvas, bg="white", bd=0, padx=0, pady=0
+        self.header_container = ctk.CTkFrame(
+            self.header_canvas, fg_color="#34495E", height=40, width=400
         )
-        self.header_container = tk.Frame(
-            self.case_inner_frame, bg="#34495E", height=40, bd=0
-        )
-        self.header_container.pack(fill=tk.X, side=tk.TOP, padx=0, pady=0)
         self.header_container.pack_propagate(False)
-
-        self.case_list_frame = tk.Frame(
-            self.case_inner_frame, bg="white", bd=0, padx=0, pady=0
+        self.header_canvas.create_window(
+            (0, 0), window=self.header_container, anchor="nw"
         )
-        self.case_list_frame.pack(fill=tk.BOTH, expand=True)
+        self.header_canvas.configure(xscrollcommand=h_scrollbar.set)
+        self.header_canvas.configure(scrollregion=(0, 0, 400, 40))
+
+        self.case_list_frame = ctk.CTkFrame(
+            self.case_canvas,
+            fg_color="#2B2B2B",
+            width=400,
+            corner_radius=0,
+            border_width=0,
+        )
+        # pack_propagate(False) 사용 안 함 → 세로로 자식(행)만큼 늘어나 전부 표시
+        self.case_canvas.create_window(
+            (0, 0), window=self.case_list_frame, anchor="nw"
+        )
 
         def _update_scroll_region(_=None):
             self.case_canvas.update_idletasks()
             self.case_canvas.configure(scrollregion=self.case_canvas.bbox("all"))
 
-        self.case_inner_frame.bind("<Configure>", _update_scroll_region)
-        self.case_canvas.create_window(
-            (0, 0), window=self.case_inner_frame, anchor="nw"
-        )
+        self.case_list_frame.bind("<Configure>", _update_scroll_region)
+
+        def _on_canvas_configure(_=None):
+            _update_scroll_region()
+            if hasattr(self, "col_order") and len(self.col_order) > 0:
+                self.apply_column_width(len(self.col_order) - 1)
+
+        self.case_canvas.bind("<Configure>", _on_canvas_configure)
         self.case_canvas.configure(yscrollcommand=v_scrollbar.set)
         self.case_canvas.configure(xscrollcommand=h_scrollbar.set)
 
-        # 마우스 휠: 세로 스크롤 (Shift+휠은 가로는 별도 바인딩 가능)
-        def on_mousewheel(event):
-            self.case_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        # 마우스 휠: 목록 영역 세로 스크롤. 하위 위젯(행, 텍스트박스 등)에도 전파되도록 나중에 _bind_mousewheel_to_case_list()에서 일괄 바인딩
+        self._case_list_mousewheel_handler = lambda e: self.case_canvas.yview_scroll(
+            int(-1 * (e.delta / 120)), "units"
+        )
+        self.case_canvas.bind("<MouseWheel>", self._case_list_mousewheel_handler)
+        self.case_list_frame.bind("<MouseWheel>", self._case_list_mousewheel_handler)
 
-        self.case_canvas.bind_all("<MouseWheel>", on_mousewheel)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=0)
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=0, pady=0)
+        self.case_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        v_scrollbar.pack(side="right", fill="y", padx=0, pady=0)
-        h_scrollbar.pack(side="bottom", fill="x", padx=0, pady=0)
-        self.case_canvas.pack(side="left", fill="both", expand=True, padx=0, pady=0)
+        # Ctrl+F: 찾기 다이얼로그
+        self.root.bind("<Control-f>", self._open_find_dialog)
 
         return case_frame
 
+    _FIND_HIGHLIGHT_TAG = "find_highlight"
+
+    def _clear_find_highlights(self):
+        if not hasattr(self, "case_info_text_widgets"):
+            return
+        for widgets in self.case_info_text_widgets.values():
+            for w in widgets:
+                if w.winfo_exists():
+                    try:
+                        w.tag_remove(self._FIND_HIGHLIGHT_TAG, "1.0", tk.END)
+                    except (tk.TclError, AttributeError):
+                        pass
+
+    def _apply_find_highlight(self, row_index, q):
+        if not q or not hasattr(self, "case_info_text_widgets"):
+            return
+        widgets = self.case_info_text_widgets.get(row_index, [])
+        q_lower = q.lower()
+        for w in widgets:
+            if not w.winfo_exists():
+                continue
+            try:
+                w.configure(state="normal")
+                content = w.get("1.0", tk.END).rstrip("\n")
+                content_lower = content.lower()
+                pos = 0
+                while True:
+                    idx = content_lower.find(q_lower, pos)
+                    if idx < 0:
+                        break
+                    w.tag_add(
+                        self._FIND_HIGHLIGHT_TAG,
+                        f"1.{idx}",
+                        f"1.{idx + len(q)}",
+                    )
+                    pos = idx + 1
+                w.tag_config(
+                    self._FIND_HIGHLIGHT_TAG,
+                    background="#FFF176",
+                    foreground="#000000",
+                )
+                w.configure(state="disabled")
+            except (tk.TclError, AttributeError):
+                pass
+
+    def _scroll_to_row_and_highlight(self, row_index, query):
+        if not hasattr(self, "case_frames") or row_index not in self.case_frames:
+            return
+        row_frame = self.case_frames[row_index]
+        row_container = row_frame.master
+        self.case_canvas.update_idletasks()
+        bbox = self.case_canvas.bbox("all")
+        if not bbox:
+            return
+        total_h = bbox[3] - bbox[1]
+        y_in_list = row_container.winfo_y()
+        y_in_canvas = y_in_list
+        fraction = max(0.0, min(1.0, (y_in_canvas - 20) / total_h))
+        self.case_canvas.yview_moveto(fraction)
+        self._clear_find_highlights()
+        self._apply_find_highlight(row_index, query)
+        orig_fg = (
+            self.get_theme_color("row_odd")
+            if row_index % 2 == 0
+            else self.get_theme_color("row_even")
+        )
+        try:
+            row_frame.configure(fg_color="#B3D9FF")
+            for c in row_frame.winfo_children():
+                try:
+                    c.configure(fg_color="#B3D9FF")
+                except (tk.TclError, AttributeError):
+                    try:
+                        c.config(bg="#B3D9FF")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        def restore():
+            try:
+                row_frame.configure(fg_color=orig_fg)
+                for c in row_frame.winfo_children():
+                    try:
+                        c.configure(fg_color=orig_fg)
+                    except (tk.TclError, AttributeError):
+                        try:
+                            c.config(bg=orig_fg)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        self.root.after(800, restore)
+
+    def _find_match_indices(self, query):
+        if not query or not hasattr(self, "case_list"):
+            return []
+
+        def case_search_text(case):
+            return " ".join(
+                [
+                    str(case.get("법원", "") or ""),
+                    str(case.get("사건번호", "") or ""),
+                    str(case.get("피고", "") or ""),
+                    str(case.get("사건명", "") or ""),
+                    str(case.get("비고", "") or ""),
+                ]
+            ).lower()
+
+        q = query.strip().lower()
+        return [i for i, c in enumerate(self.case_list) if q in case_search_text(c)]
+
+    def perform_search(self, query=None):
+        """상단 검색창 또는 팝업에서 호출. query가 None이면 self.search_entry에서 가져옴."""
+        if query is None and hasattr(self, "search_entry") and self.search_entry.winfo_exists():
+            query = self.search_entry.get().strip()
+        if not query:
+            return
+        match_indices = self._find_match_indices(query)
+        if not match_indices:
+            messagebox.showinfo("찾기", "검색어와 일치하는 항목이 없습니다.")
+            return
+        self._scroll_to_row_and_highlight(match_indices[0], query)
+
+    def _bind_mousewheel_recursive(self, widget, handler):
+        """위젯과 그 자손 모두에 마우스 휠 핸들러를 바인딩 (사건 목록 내 어디서나 휠 스크롤 가능)."""
+        try:
+            widget.bind("<MouseWheel>", handler)
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            self._bind_mousewheel_recursive(child, handler)
+
+    def _bind_mousewheel_to_case_list(self):
+        """사건 목록 캔버스/내부 프레임 및 모든 하위 위젯에 마우스 휠 스크롤 바인딩."""
+        if not hasattr(self, "_case_list_mousewheel_handler") or not hasattr(
+            self, "case_list_frame"
+        ):
+            return
+        if not self.case_list_frame.winfo_exists():
+            return
+        self._bind_mousewheel_recursive(
+            self.case_list_frame, self._case_list_mousewheel_handler
+        )
+
+    def _open_column_order_dialog(self):
+        """열 순서 설정 팝업. 위로/아래로로 순서 변경 후 적용 시 저장 및 목록 갱신."""
+        if (
+            getattr(self, "_column_order_dialog", None) is not None
+            and self._column_order_dialog.winfo_exists()
+        ):
+            self._column_order_dialog.focus_set()
+            return
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title("사건 목록 열 순서")
+        dlg.geometry("320x380")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        self._column_order_dialog = dlg
+
+        frm = ctk.CTkFrame(dlg, fg_color="transparent")
+        frm.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+
+        # 현재 순서 복사 (다이얼로그 내에서만 변경)
+        order = list(self.col_order)
+
+        # 버튼 행을 먼저 하단에 고정 (expand=True 리스트가 공간을 다 차지해 버튼이 가려지는 것 방지)
+        sep_line = ctk.CTkFrame(
+            frm, fg_color=self.get_theme_color("border"), height=2, corner_radius=0
+        )
+        sep_line.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
+        sep_line.pack_propagate(False)
+
+        btn_row = ctk.CTkFrame(frm, fg_color="transparent")
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 4))
+        # 그리드로 배치해 위로/아래로·취소/적용 간격을 통일하고, 가운데 여백으로 좌우 균형 유지
+        btn_row.grid_columnconfigure(2, weight=1)
+
+        def move_up():
+            sel = listbox.curselection()
+            if not sel or sel[0] == 0:
+                return
+            i = sel[0]
+            order[i], order[i - 1] = order[i - 1], order[i]
+            refresh_list()
+            listbox.selection_set(i - 1)
+
+        def move_down():
+            sel = listbox.curselection()
+            if not sel or sel[0] >= len(order) - 1:
+                return
+            i = sel[0]
+            order[i], order[i + 1] = order[i + 1], order[i]
+            refresh_list()
+            listbox.selection_set(i + 1)
+
+        def apply_and_close():
+            self.col_order[:] = order
+            self._save_column_order()
+            if hasattr(self, "case_list") and self.case_list:
+                self.update_case_list_ui()
+            if self._column_order_dialog and self._column_order_dialog.winfo_exists():
+                self._column_order_dialog.destroy()
+            self._column_order_dialog = None
+
+        BTN_PAD = 8  # 버튼 간 동일 간격 (px)
+        ctk.CTkButton(
+            btn_row,
+            text="위로",
+            width=70,
+            height=36,
+            text_color="#FFFFFF",
+            command=move_up,
+        ).grid(row=0, column=0, padx=(0, BTN_PAD), sticky="w")
+        ctk.CTkButton(
+            btn_row,
+            text="아래로",
+            width=70,
+            height=36,
+            text_color="#FFFFFF",
+            command=move_down,
+        ).grid(row=0, column=1, padx=(0, 0), sticky="w")
+        # column 2: 가운데 빈 공간 (weight=1)
+        ctk.CTkButton(
+            btn_row,
+            text="취소",
+            width=70,
+            height=36,
+            text_color="#FFFFFF",
+            command=dlg.destroy,
+        ).grid(row=0, column=3, padx=(BTN_PAD * 2, BTN_PAD), sticky="e")
+        ctk.CTkButton(
+            btn_row,
+            text="적용",
+            width=70,
+            height=36,
+            text_color="#FFFFFF",
+            command=apply_and_close,
+        ).grid(row=0, column=4, padx=(0, 0), sticky="e")
+
+        # 제목 라벨 (상단)
+        ctk.CTkLabel(
+            frm,
+            text="표시 순서 (위에서 아래가 왼쪽에서 오른쪽)",
+            font=ctk.CTkFont(family="맑은 고딕", size=13),
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        # 리스트 영역 (가운데, 남는 공간만 사용해 버튼이 항상 보이도록)
+        list_frame = ctk.CTkFrame(frm, fg_color=("#2B2B2B", "#2B2B2B"))
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+
+        listbox = tk.Listbox(
+            list_frame,
+            font=("맑은 고딕", 13),
+            selectbackground=self.get_theme_color("accent"),
+            selectforeground="white",
+            bg="#2B2B2B",
+            fg="white",
+            relief=tk.FLAT,
+            highlightthickness=0,
+            height=12,
+        )
+        listbox.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        def refresh_list():
+            listbox.delete(0, tk.END)
+            for internal_idx in order:
+                listbox.insert(tk.END, COL_NAMES[internal_idx])
+
+        refresh_list()
+        if order:
+            listbox.selection_set(0)
+
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+
+    def _open_find_dialog(self, event=None):
+        """Ctrl+F 시 찾기 다이얼로그. 검색어 형광펜 하이라이트 (CTkTextbox tag)."""
+        if (
+            getattr(self, "_find_dialog", None) is not None
+            and self._find_dialog.winfo_exists()
+        ):
+            self._find_dialog.focus_set()
+            return "break"
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title("찾기")
+        dlg.geometry("400x140")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        self._find_dialog = dlg
+
+        frm = ctk.CTkFrame(dlg, fg_color="transparent")
+        frm.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+
+        ctk.CTkLabel(frm, text="검색어:").pack(anchor=tk.W)
+        entry_var = tk.StringVar()
+        entry = ctk.CTkEntry(frm, textvariable=entry_var, width=320, height=32)
+        entry.pack(fill=tk.X, pady=(0, 10))
+        entry.focus_set()
+
+        match_indices = []
+        current_index = [0]
+
+        def find_matches():
+            q = entry_var.get().strip()
+            match_indices[:] = self._find_match_indices(q)
+
+        def on_find():
+            self._clear_find_highlights()
+            find_matches()
+            current_index[0] = 0
+            if not match_indices:
+                messagebox.showinfo(
+                    "찾기", "검색어와 일치하는 항목이 없습니다.", parent=dlg
+                )
+                return
+            self._scroll_to_row_and_highlight(
+                match_indices[0], entry_var.get().strip()
+            )
+
+        def on_next():
+            self._clear_find_highlights()
+            find_matches()
+            if not match_indices:
+                messagebox.showinfo(
+                    "찾기", "검색어와 일치하는 항목이 없습니다.", parent=dlg
+                )
+                return
+            current_index[0] = (current_index[0] + 1) % len(match_indices)
+            self._scroll_to_row_and_highlight(
+                match_indices[current_index[0]], entry_var.get().strip()
+            )
+
+        btn_frm = ctk.CTkFrame(frm, fg_color="transparent")
+        btn_frm.pack(fill=tk.X, pady=(4, 0))
+        ctk.CTkButton(btn_frm, text="찾기", command=on_find, width=100).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ctk.CTkButton(btn_frm, text="다음 찾기", command=on_next, width=100).pack(
+            side=tk.LEFT
+        )
+
+        def on_closing():
+            self._clear_find_highlights()
+            self._find_dialog = None
+            dlg.destroy()
+
+        dlg.protocol("WM_DELETE_WINDOW", on_closing)
+
+        return "break"
+
     def create_progress_panel(self, parent):
-        """진행상황 패널 생성"""
-        progress_frame = tk.LabelFrame(
-            parent,
-            text="📊 진행상황",
-            font=("맑은 고딕", 12, "bold"),
-            bg="#ECF0F1",
-            fg="#2C3E50",
-            relief=tk.RIDGE,
-            bd=2,
+        """진행상황 패널 생성 (CustomTkinter)"""
+        progress_frame = ctk.CTkFrame(
+            parent, fg_color=self.get_theme_color("bg_primary")
         )
         progress_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # 진행률 바
-        self.progress_var = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(
-            progress_frame, variable=self.progress_var, maximum=100, mode="determinate"
-        )
-        progress_bar.pack(fill=tk.X, padx=15, pady=10)
-
-        # 상태 텍스트 (로그 창 - 크게!)
-        self.status_text = scrolledtext.ScrolledText(
+        ctk.CTkLabel(
             progress_frame,
-            font=("맑은 고딕", 9),
-            bg="#34495E",
-            fg="#ECF0F1",
-            relief=tk.SUNKEN,
-            bd=2,
-            wrap=tk.WORD,
+            text="📊 진행상황",
+            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
+            text_color=self.get_theme_color("text_main"),
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        self.progress_var = tk.DoubleVar()
+        # width를 제거하여 부모 너비에 맞춰 유동적으로 조절되도록 함
+        self.progress_bar = ctk.CTkProgressBar(progress_frame, height=16)
+        self.progress_bar.pack(fill=tk.X, padx=0, pady=10)
+        self.progress_bar.set(0)
+
+        # 진행률 바와 로그 영역 사이 구분선 (테마 색상 사용)
+        sep = ctk.CTkFrame(
+            progress_frame,
+            fg_color=self.get_theme_color("border"),
+            height=2,
+            corner_radius=0,
         )
-        self.status_text.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+        sep.pack(fill=tk.X, pady=(0, 8))
+        sep.pack_propagate(False)
+
+        self.status_text = ctk.CTkTextbox(
+            progress_frame,
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            fg_color="#34495E",
+            text_color="#ECF0F1",
+            wrap=tk.WORD,
+            height=300,
+            width=100, # 초기 너비 설정 (fill=BOTH에 의해 조절됨)
+        )
+        self.status_text.pack(fill=tk.BOTH, expand=True, padx=0, pady=(0, 10))
 
         return progress_frame
 
@@ -558,6 +1183,9 @@ class BatchProcessingGUI:
             "case_update_labels",
             "case_update_date_labels",
             "case_start_times",
+            "case_info_text_widgets",
+            "case_cell_frames",
+            "case_separators",
             "browser_ws_urls",
             "browser_processes",
         ):
@@ -573,19 +1201,15 @@ class BatchProcessingGUI:
         def sort_key(case):
             cn = case.get("사건번호", "")
             if self.sort_column_index == 1:
-                return case.get("사건번호", "")
+                return f"{case.get('법원', '')} {case.get('사건번호', '')}".strip()
             if self.sort_column_index == 2:
-                return case.get("피고", "")
+                return f"{case.get('피고', '')} {case.get('사건명', '')}".strip()
             if self.sort_column_index == 3:
-                return case.get("법원", "")
-            if self.sort_column_index == 4:
-                return case.get("사건명", "")
-            if self.sort_column_index == 5:
                 return case.get("비고", "")
-            if self.sort_column_index == 9:
+            if self.sort_column_index == 7:
                 # 기록(쿠키): search_log 기준, 있으면 1 없으면 0
                 return 1 if cn in search_log else 0
-            if self.sort_column_index == 10:
+            if self.sort_column_index == 8:
                 # 최근 업데이트: 날짜 문자열, 없으면 과거로
                 data = history.get(cn, {})
                 if isinstance(data, dict):
@@ -597,7 +1221,7 @@ class BatchProcessingGUI:
 
     def on_header_click(self, col_idx):
         """헤더 클릭 시 정렬 기준 변경 후 목록 재정렬 및 UI 갱신."""
-        sortable = (1, 2, 3, 4, 5, 9, 10)
+        sortable = (1, 2, 3, 7, 8)
         if col_idx not in sortable:
             return
         if self.sort_column_index == col_idx:
@@ -610,6 +1234,10 @@ class BatchProcessingGUI:
 
     def load_google_sheet(self):
         """구글 시트에서 사건 목록 로드"""
+        # 새로고침 시 '사건 조회 로드 실행' 버튼을 원래 색/텍스트/활성 상태로 복구
+        self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
+        self._set_control_btn_state(self.start_btn, True)
+
         self.reset_internal_data()
 
         # 쿠키 폴더가 삭제된 경우 검색 기록(search_log.json)도 자동 초기화 (표시 불일치 방지)
@@ -639,6 +1267,12 @@ class BatchProcessingGUI:
             n_cases = len(self.case_list)
             smart_parallel = max(1, min(n_cases // 2, max_limit))
             self.max_parallel.set(smart_parallel)
+            if (
+                hasattr(self, "_settings_parallel_entry")
+                and self._settings_parallel_entry.winfo_exists()
+            ):
+                self._settings_parallel_entry.delete(0, tk.END)
+                self._settings_parallel_entry.insert(0, str(smart_parallel))
             if smart_parallel > 10:
                 self.log_message(
                     "⚠️ 고성능 모드: 인스턴스 폴더가 10개 이상 사용됩니다. 디스크/RAM 사용량이 늘어날 수 있습니다."
@@ -655,157 +1289,166 @@ class BatchProcessingGUI:
             self.log_message(f"❌ 구글 시트 로드 실패: {e}")
             messagebox.showerror("오류", f"구글 시트 로드 실패: {e}")
 
+    def _display_width_up_to(self, display_idx):
+        """표시 순서상 display_idx(포함)까지의 누적 너비. 리사이즈 가이드라인 위치 계산용."""
+        return sum(self.col_widths[self.col_order[i]] for i in range(display_idx + 1))
+
+    def _get_effective_widths(self):
+        """캔버스 너비를 반영한 전체 너비와 마지막 열(비고) 여분. (effective_total, extra_last) 반환."""
+        if not hasattr(self, "col_widths") or not hasattr(self, "col_order"):
+            return sum(getattr(self, "col_widths", [400])), 0
+        total = sum(self.col_widths)
+        if not hasattr(self, "case_canvas") or not self.case_canvas.winfo_exists():
+            return total, 0
+        self.case_canvas.update_idletasks()
+        canvas_w = self.case_canvas.winfo_width()
+        extra = max(0, canvas_w - total)
+        return total + extra, extra
+
     def create_list_header(self):
-        """사건 목록 헤더 생성 (2026 Modern Design)"""
+        """사건 목록 헤더 생성 (col_order 순서대로 표시)"""
         # 기존 헤더 제거
         for widget in self.header_container.winfo_children():
             widget.destroy()
 
         self.header_cell_frames = []
 
-        # 컬럼 정의 (정렬 가능: 1=사건번호, 2=피고, 3=법원, 4=사건명, 5=비고, 9=기록, 10=최근 업데이트)
-        col_names = [
-            "선택",
-            "사건번호",
-            "피고",
-            "법원",
-            "사건명",
-            "비고",
-            "캡차 이미지",
-            "캡차 입력",
-            "상태",
-            "기록",
-            "최근 업데이트",
-        ]
-        sortable_cols = (1, 2, 3, 4, 5, 9, 10)
+        # 정렬 가능한 열 = 내부 인덱스 1,2,3,7,8 (법원/사건번호, 피고/사건명, 비고, 기록, 최근 업데이트)
+        sortable_internal = (1, 2, 3, 7, 8)
 
-        # 헤더 프레임
-        header_frame = tk.Frame(self.header_container, bg=THEME["bg_header"])
+        header_frame = ctk.CTkFrame(self.header_container, fg_color="#34495E")
         header_frame.pack(fill=tk.BOTH, expand=True)
 
-        for col_idx, (name, width) in enumerate(zip(col_names, self.col_widths)):
-            cell = tk.Frame(header_frame, bg=THEME["bg_header"], width=width, height=40)
+        extra_last = getattr(self, "_extra_width_last_col", 0)
+        last_internal = self.col_order[-1] if self.col_order else None
+        for disp_idx, internal_idx in enumerate(self.col_order):
+            name = COL_NAMES[internal_idx]
+            width = self.col_widths[internal_idx] + (
+                extra_last if internal_idx == last_internal else 0
+            )
+            # 헤더 셀: tk.Frame으로 변경 (데이터 행과 동일 구조)
+            cell = tk.Frame(
+                header_frame,
+                bg="#34495E",
+                width=width,
+                height=40,
+                bd=0,
+                highlightthickness=0,
+            )
             cell.pack(side=tk.LEFT)
             cell.pack_propagate(False)
             self.header_cell_frames.append(cell)
 
-            if col_idx == 0:
-                # "선택" 열: 전체 선택/해제 토글 체크박스 하나
-                header_cb = tk.Checkbutton(
+            # 선택 열: 리사이즈 핸들을 먼저 pack해 우측에 두고, 체크박스는 셀 정중앙에 place
+            if internal_idx == 0:
+                handle = tk.Frame(cell, bg="#34495E", width=10, height=40)
+                handle.pack(side=tk.RIGHT, fill=tk.Y)
+                handle.pack_propagate(False)
+                line = tk.Frame(handle, bg="white", width=1, height=40)
+                line.pack(side=tk.RIGHT, fill=tk.Y, padx=1)
+                handle.config(cursor="sb_h_double_arrow")
+                handle.bind(
+                    "<ButtonPress-1>",
+                    lambda e, d=disp_idx: self._on_resize_press(d, e),
+                )
+                handle.bind(
+                    "<B1-Motion>",
+                    lambda e, d=disp_idx: self._on_resize_motion(d, e),
+                )
+                handle.bind("<ButtonRelease-1>", lambda e: self._on_resize_release(e))
+                header_cb = ctk.CTkCheckBox(
                     cell,
-                    text="전체",
+                    text="",
                     variable=self.header_select_all_var,
-                    font=THEME["font_small"],
-                    bg=THEME["bg_header"],
-                    fg=THEME["text_header"],
-                    activebackground=THEME["bg_header"],
-                    activeforeground=THEME["text_header"],
-                    selectcolor=THEME["bg_header"],
-                    relief=tk.FLAT,
-                    cursor="hand2",
+                    font=ctk.CTkFont(family="맑은 고딕", size=12),
+                    width=24,
+                    fg_color="#3D5A6C",
+                    text_color=self.get_theme_color("text_header"),
                     command=self._on_header_select_toggle,
                 )
-                header_cb.pack(fill=tk.BOTH, expand=True)
-            elif col_idx in sortable_cols:
+                header_cb.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+            elif internal_idx in sortable_internal:
                 arrow = (
                     " ▼"
-                    if (self.sort_column_index == col_idx and self.sort_reverse)
+                    if (self.sort_column_index == internal_idx and self.sort_reverse)
                     else " ▲"
                 )
-                if self.sort_column_index != col_idx:
+                if self.sort_column_index != internal_idx:
                     arrow = ""
                 display_text = name + arrow
-                btn = tk.Button(
+                btn = ctk.CTkButton(
                     cell,
                     text=display_text,
-                    font=THEME["font_header"],
-                    bg=THEME["bg_header"],
-                    fg=THEME["text_header"],
-                    activebackground=THEME["bg_header"],
-                    activeforeground=THEME["text_header"],
-                    relief=tk.FLAT,
+                    font=ctk.CTkFont(family="맑은 고딕", size=12, weight="bold"),
+                    fg_color="transparent",
+                    hover_color="#3D5A6C",
+                    text_color=self.get_theme_color("text_header"),
                     anchor=tk.CENTER,
                     cursor="hand2",
-                    command=lambda c=col_idx: self.on_header_click(c),
+                    command=lambda c=internal_idx: self.on_header_click(c),
                 )
                 btn.pack(fill=tk.BOTH, expand=True)
             else:
-                label = tk.Label(
+                label = ctk.CTkLabel(
                     cell,
                     text=name,
-                    font=THEME["font_header"],
-                    bg=THEME["bg_header"],
-                    fg=THEME["text_header"],
-                    anchor=tk.CENTER,
+                    font=ctk.CTkFont(family="맑은 고딕", size=12, weight="bold"),
+                    text_color=self.get_theme_color("text_header"),
                 )
                 label.pack(fill=tk.BOTH, expand=True)
 
-            # 열 너비 리사이즈 핸들 (시인성: 16px, 밝은 색, 구분선 강화)
-            HANDLE_BG = "#95A5A6"
-            handle = tk.Frame(cell, bg=HANDLE_BG, width=16, height=40)
-            handle.pack(side=tk.RIGHT, fill=tk.Y)
-            handle.pack_propagate(False)
-            # 핸들 내부 구분선 (3px, 밝은 회색)
-            line = tk.Frame(handle, bg="#BDC3C7", width=3, height=40)
-            line.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 6))
-            line.pack_propagate(False)
-            handle.bind(
-                "<Enter>",
-                lambda e, h=handle: h.config(bg="#BDC3C7"),
-            )
-            handle.bind(
-                "<Leave>",
-                lambda e, h=handle: h.config(bg=HANDLE_BG)
-                if self._resize_col is None
-                else None,
-            )
-            handle.config(cursor="sb_h_double_arrow")
-            handle.bind(
-                "<ButtonPress-1>",
-                lambda e, c=col_idx: self._on_resize_press(c, e),
-            )
-            handle.bind(
-                "<B1-Motion>",
-                lambda e, c=col_idx: self._on_resize_motion(c, e),
-            )
-            handle.bind(
-                "<ButtonRelease-1>",
-                lambda e: self._on_resize_release(e),
-            )
+            # 리사이즈 핸들 (선택 열은 위에서 이미 생성)
+            if internal_idx != 0:
+                handle = tk.Frame(cell, bg="#34495E", width=10, height=40)
+                handle.pack(side=tk.RIGHT, fill=tk.Y)
+                handle.pack_propagate(False)
+                line = tk.Frame(handle, bg="white", width=1, height=40)
+                line.pack(side=tk.RIGHT, fill=tk.Y, padx=1)
+                handle.config(cursor="sb_h_double_arrow")
+                handle.bind(
+                    "<ButtonPress-1>",
+                    lambda e, d=disp_idx: self._on_resize_press(d, e),
+                )
+                handle.bind(
+                    "<B1-Motion>",
+                    lambda e, d=disp_idx: self._on_resize_motion(d, e),
+                )
+                handle.bind("<ButtonRelease-1>", lambda e: self._on_resize_release(e))
 
-            if col_idx < len(col_names) - 1:
-                sep = tk.Frame(cell, bg="#ECF0F1", width=1)
-                sep.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
 
-    def _on_resize_press(self, col_idx, event):
-        self._resize_col = col_idx
+    def _on_resize_press(self, display_idx, event):
+        """display_idx: 표시 순서상 열 인덱스 (0~9). 내부 열 인덱스는 col_order[display_idx]."""
+        self._resize_col = display_idx
+        internal_idx = self.col_order[display_idx]
         self._resize_start_x = event.x_root
-        self._resize_start_width = self.col_widths[col_idx]
-        self._resize_current_width = self.col_widths[col_idx]
-        # 가이드라인: 리스트 영역에 세로선 표시 (드래그 중만)
-        if hasattr(self, "case_inner_frame") and self.case_inner_frame.winfo_exists():
+        self._resize_start_width = self.col_widths[internal_idx]
+        self._resize_current_width = self.col_widths[internal_idx]
+        if hasattr(self, "case_list_frame") and self.case_list_frame.winfo_exists():
             if self.resize_guide_line and self.resize_guide_line.winfo_exists():
                 self.resize_guide_line.destroy()
-            x_pos = sum(self.col_widths[: col_idx + 1])
+            x_pos = self._display_width_up_to(display_idx)
             self.resize_guide_line = tk.Frame(
-                self.case_inner_frame, width=1, bg="#2C3E50", height=10000
+                self.case_list_frame, width=1, bg="#2C3E50", height=10000
             )
             self.resize_guide_line.place(x=x_pos, y=0, anchor=tk.NW)
 
-    def _on_resize_motion(self, col_idx, event):
+    def _on_resize_motion(self, display_idx, event):
         if self._resize_col is None:
             return
         delta = event.x_root - self._resize_start_x
         new_w = max(30, min(500, self._resize_start_width + delta))
         self._resize_current_width = new_w
-        # 가이드라인만 이동 (col_widths는 release 시 반영)
         if self.resize_guide_line and self.resize_guide_line.winfo_exists():
-            x_pos = sum(self.col_widths[:col_idx]) + new_w
+            x_pos = (
+                sum(self.col_widths[self.col_order[i]] for i in range(display_idx))
+                + new_w
+            )
             self.resize_guide_line.place_configure(x=x_pos)
 
     def _on_resize_release(self, event):
         if self._resize_col is not None:
-            col_idx = self._resize_col
+            display_idx = self._resize_col
+            internal_idx = self.col_order[display_idx]
             self._resize_col = None
             self._resize_start_x = None
             self._resize_start_width = None
@@ -813,264 +1456,355 @@ class BatchProcessingGUI:
                 self.resize_guide_line.destroy()
                 self.resize_guide_line = None
             if self._resize_current_width is not None:
-                self.col_widths[col_idx] = int(self._resize_current_width)
+                self.col_widths[internal_idx] = int(self._resize_current_width)
                 self._resize_current_width = None
             self._save_column_widths()
-            self.apply_column_width(col_idx)
+            self.apply_column_width(display_idx)
 
-    def apply_column_width(self, col_idx):
-        """리사이즈 후 해당 열 너비만 적용 (전체 UI 리빌드 없이)."""
-        if not hasattr(self, "col_widths") or col_idx >= len(self.col_widths):
+    def apply_column_width(self, display_idx):
+        """리사이즈 후 해당 표시 열 너비만 적용 (display_idx = 표시 순서상 인덱스). 비고 열은 캔버스 여분 반영."""
+        if not hasattr(self, "col_order") or display_idx >= len(self.col_order):
             return
-        w = self.col_widths[col_idx]
-        if hasattr(self, "header_cell_frames") and col_idx < len(self.header_cell_frames):
-            self.header_cell_frames[col_idx].config(width=w)
+        effective_total, extra_last = self._get_effective_widths()
+        self._extra_width_last_col = extra_last
+        last_internal = self.col_order[-1]
+        last_disp_idx = len(self.col_order) - 1
+        internal_idx = self.col_order[display_idx]
+        w = self.col_widths[internal_idx] + (
+            extra_last if internal_idx == last_internal else 0
+        )
+        if hasattr(self, "header_cell_frames") and display_idx < len(
+            self.header_cell_frames
+        ):
+            self.header_cell_frames[display_idx].configure(width=w)
         if hasattr(self, "case_cell_frames"):
             for row_cells in self.case_cell_frames.values():
-                if col_idx < len(row_cells):
-                    row_cells[col_idx].config(width=w)
-        total_width = sum(self.col_widths)
-        if hasattr(self, "case_inner_frame") and self.case_inner_frame.winfo_exists():
-            self.case_inner_frame.config(width=total_width)
+                if display_idx < len(row_cells):
+                    row_cells[display_idx].config(width=w)
+        # 마지막 열(비고)도 여분 반영해 한 번 더 적용 (다른 열 리사이즈 시 캔버스 너비가 바뀐 경우 대비)
+        w_last = self.col_widths[last_internal] + extra_last
+        if last_disp_idx != display_idx and hasattr(
+            self, "header_cell_frames"
+        ) and last_disp_idx < len(self.header_cell_frames):
+            self.header_cell_frames[last_disp_idx].configure(width=w_last)
+        if hasattr(self, "case_cell_frames"):
+            for row_cells in self.case_cell_frames.values():
+                if last_disp_idx < len(row_cells):
+                    row_cells[last_disp_idx].config(width=w_last)
+        if hasattr(self, "header_container") and self.header_container.winfo_exists():
+            self.header_container.configure(width=effective_total)
+        if hasattr(self, "header_canvas") and self.header_canvas.winfo_exists():
+            self.header_canvas.configure(
+                scrollregion=(0, 0, effective_total, 40)
+            )
+        if hasattr(self, "case_list_frame") and self.case_list_frame.winfo_exists():
+            self.case_list_frame.configure(width=effective_total)
         if hasattr(self, "case_frames"):
             for case_frame in self.case_frames.values():
                 if case_frame.winfo_exists():
-                    case_frame.config(width=total_width)
+                    case_frame.configure(width=effective_total)
         if hasattr(self, "case_separators"):
             for sep in self.case_separators.values():
                 if sep.winfo_exists():
-                    sep.config(width=total_width)
+                    sep.config(width=effective_total)
 
     def create_case_row(self, parent, case, index, total_width, initial_status=None):
         """
-        단일 사건 행 위젯 생성 (2026 Modern Design).
-        initial_status: 저장된 직전 상태가 있으면 {"status", "color", "emoji"} 로 전달.
+        단일 사건 행 위젯 생성. col_order 순서대로 열을 배치한다.
         """
-        # 배경색 (얼터네이트)
-        bg_color = THEME["row_odd"] if index % 2 == 0 else THEME["row_even"]
-
-        # 사건 행 컨테이너 (case_frame + 가로 구분선)
-        row_container = tk.Frame(parent, bg=THEME["bg_white"], bd=0)
+        bg_color = (
+            self.get_theme_color("row_odd")
+            if index % 2 == 0
+            else self.get_theme_color("row_even")
+        )
+        row_container = ctk.CTkFrame(parent, fg_color="transparent")
         row_container.pack(fill=tk.X, pady=0, padx=0)
 
-        case_frame = tk.Frame(
-            row_container, bg=bg_color, height=60, width=total_width, bd=0
+        case_frame = ctk.CTkFrame(
+            row_container,
+            fg_color=bg_color,
+            height=60,
+            width=total_width,
+            corner_radius=0,
         )
         case_frame.pack(fill=tk.X)
         case_frame.pack_propagate(False)
 
-        # 가로 구분선 (하단)
         separator = tk.Frame(
-            row_container, bg=THEME["border"], height=1, width=total_width
+            row_container,
+            bg=self.get_theme_color("border"),
+            height=1,
+            width=total_width,
+            bd=0,
+            highlightthickness=0,
         )
         separator.pack(fill=tk.X)
+        separator.pack_propagate(False)
         self.case_separators[index] = separator
 
-        # 컴포넌트 저장용 딕셔너리 + 열 셀 프레임 (리사이즈 시 width만 갱신용)
         components = {}
-        cell_frames = []
+        # 내부 인덱스(0~9)별 셀 프레임: tk.Frame으로 고정 너비/정렬 및 성능 확보
+        # 마지막 열(비고)에는 캔버스 여분 너비를 더해 우측 끝까지 채움
+        extra_last = getattr(self, "_extra_width_last_col", 0)
+        last_internal = self.col_order[-1] if self.col_order else None
 
-        # 1. 체크박스
+        def _cell_width(internal_idx):
+            return self.col_widths[internal_idx] + (
+                extra_last if internal_idx == last_internal else 0
+            )
+
+        frames_by_internal = [None] * len(COL_NAMES)
+
+        # 0: 선택
         var = tk.BooleanVar()
-        checkbox_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[0], height=60
-        )
-        checkbox_frame.pack(side=tk.LEFT)
-        checkbox_frame.pack_propagate(False)
-        cell_frames.append(checkbox_frame)
-
-        checkbox = tk.Checkbutton(
-            checkbox_frame,
-            variable=var,
+        f0 = tk.Frame(
+            case_frame,
             bg=bg_color,
-            activebackground=bg_color,
-            command=lambda idx=index: self.on_checkbox_change(idx),
+            width=_cell_width(0),
+            height=60,
+            bd=0,
+            highlightthickness=0,
         )
-        checkbox.pack(anchor=tk.CENTER, expand=True)
+        f0.pack_propagate(False)
+        frames_by_internal[0] = f0
+        ctk.CTkCheckBox(
+            f0,
+            variable=var,
+            text="",
+            fg_color=bg_color,
+            width=24,
+            command=lambda idx=index: self.on_checkbox_change(idx),
+        ).place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         components["checkbox_var"] = var
 
-        # 2. 텍스트 정보 (사건번호, 피고, 법원, 사건명, 비고)
-        info_keys = ["사건번호", "피고", "법원", "사건명", "비고"]
-        for i, key in enumerate(info_keys, start=1):
-            text = str(case.get(key, "") or "")
-            frame = tk.Frame(
-                case_frame, bg=bg_color, width=self.col_widths[i], height=60
-            )
-            frame.pack(side=tk.LEFT)
-            frame.pack_propagate(False)
-            cell_frames.append(frame)
-
-            # 텍스트: Entry(readonly)로 드래그 선택·복사 가능 (생성 시 normal로 삽입 후 readonly)
-            entry = tk.Entry(
-                frame,
-                font=THEME["font_main"],
+        # 1,2,3: 법원/사건번호, 피고/사건명, 비고
+        info_parts = [
+            f"{case.get('법원', '')} {case.get('사건번호', '')}".strip(),
+            f"{case.get('피고', '')} {case.get('사건명', '')}".strip(),
+            str(case.get("비고", "") or ""),
+        ]
+        for i, text in enumerate(info_parts, start=1):
+            fi = tk.Frame(
+                case_frame,
                 bg=bg_color,
-                fg=THEME["text_main"],
-                relief=tk.FLAT,
+                width=_cell_width(i),
+                height=60,
                 bd=0,
                 highlightthickness=0,
             )
-            entry.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
-            entry.insert(0, text)
-            entry.config(state="readonly")
-            components[f"label_{key}"] = entry
+            fi.pack_propagate(False)
+            frames_by_internal[i] = fi
+            tb = ctk.CTkTextbox(
+                fi,
+                font=ctk.CTkFont(family="맑은 고딕", size=13),
+                fg_color=bg_color,
+                text_color=self.get_theme_color("text_main"),
+                height=36,
+                activate_scrollbars=False,
+                wrap=tk.NONE,
+                border_width=0,
+            )
+            tb.pack(fill=tk.X, expand=True, padx=6, pady=12)
+            tb.insert("1.0", text)
+            tb.configure(state="disabled")
+            components[f"label_info_{i}"] = tb
 
-        # 3. 캡차 이미지 (6번)
-        image_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[6], height=60
+        # 4: 캡차 이미지
+        f4 = tk.Frame(
+            case_frame,
+            bg=bg_color,
+            width=_cell_width(4),
+            height=60,
+            bd=0,
+            highlightthickness=0,
         )
-        image_frame.pack(side=tk.LEFT)
-        image_frame.pack_propagate(False)
-        cell_frames.append(image_frame)
-
-        image_label = tk.Label(
-            image_frame,
+        f4.pack_propagate(False)
+        frames_by_internal[4] = f4
+        il = tk.Label(
+            f4,
             text="대기중",
-            font=THEME["font_small"],
-            fg=THEME["text_sub"],
-            bg=THEME["bg_primary"],
+            font=self.get_theme_color("font_small"),
+            fg=self.get_theme_color("text_sub"),
+            bg=self.get_theme_color("bg_primary"),
             relief=tk.FLAT,
         )
-        image_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        components["image_label"] = image_label
+        il.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        components["image_label"] = il
 
-        # 4. 캡차 입력 (7번)
-        captcha_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[7], height=60
+        # 5: 캡차 입력
+        f5 = tk.Frame(
+            case_frame,
+            bg=bg_color,
+            width=_cell_width(5),
+            height=60,
+            bd=0,
+            highlightthickness=0,
         )
-        captcha_frame.pack(side=tk.LEFT)
-        captcha_frame.pack_propagate(False)
-        cell_frames.append(captcha_frame)
-
+        f5.pack_propagate(False)
+        frames_by_internal[5] = f5
         captcha_var = tk.StringVar()
-        captcha_entry = tk.Entry(
-            captcha_frame,
+        captcha_entry = ctk.CTkEntry(
+            f5,
             textvariable=captcha_var,
-            font=THEME["font_bold"],
+            font=ctk.CTkFont(family="맑은 고딕", size=14, weight="bold"),
             justify=tk.CENTER,
-            bg=THEME["bg_white"],
-            fg=THEME["text_main"],
-            relief=tk.FLAT,
-            bd=1,
-            highlightthickness=1,
-            highlightbackground=THEME["border"],
-            highlightcolor=THEME["accent"],
+            width=70,
+            height=28,
         )
-        captcha_entry.pack(fill=tk.X, expand=True, padx=5, pady=15)
-
-        # 입력 검증 (빈 문자열 = Backspace/Delete 허용)
-        def validate(char):
-            if char == "":
-                return True
-            return char.isdigit() and len(captcha_var.get()) < 6
-
-        captcha_entry.config(
-            validate="key", validatecommand=(captcha_entry.register(validate), "%S")
+        captcha_entry.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        captcha_entry.bind(
+            "<KeyRelease>", lambda e, idx=index: self._validate_captcha_entry(idx)
         )
-        captcha_entry.bind("<Return>", lambda e, idx=index: self.on_captcha_enter(idx))
-
+        try:
+            captcha_entry.bind(
+                "<Return>", lambda e, idx=index: self.on_captcha_enter(idx)
+            )
+        except Exception:
+            pass
         components["captcha_var"] = captcha_var
         components["captcha_entry"] = captcha_entry
 
-        # 5. 상태 (8번) - 저장된 직전 상태가 있으면 표시 (저장 실패/완료 등)
-        status_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[8], height=60
+        # 6: 상태
+        f6 = tk.Frame(
+            case_frame,
+            bg=bg_color,
+            width=_cell_width(6),
+            height=60,
+            bd=0,
+            highlightthickness=0,
         )
-        status_frame.pack(side=tk.LEFT)
-        status_frame.pack_propagate(False)
-        cell_frames.append(status_frame)
-
+        f6.pack_propagate(False)
+        frames_by_internal[6] = f6
         if initial_status and isinstance(initial_status, dict):
             st = initial_status.get("status", "대기")
             em = initial_status.get("emoji", "⏸️")
             status_text = f"{em} {st}" if em else st
-            status_fg = initial_status.get("color", THEME["text_sub"])
+            status_fg = initial_status.get("color", self.get_theme_color("text_sub"))
         else:
-            status_text = "⏸️ 대기"
-            status_fg = THEME["text_sub"]
-
-        status_label = tk.Label(
-            status_frame,
+            status_text, status_fg = "⏸️ 대기", self.get_theme_color("text_sub")
+        sl = ctk.CTkLabel(
+            f6,
             text=status_text,
-            font=THEME["font_main"],
-            fg=status_fg,
-            bg=bg_color,
-            anchor=tk.CENTER,
+            font=ctk.CTkFont(family="맑은 고딕", size=13),
+            text_color=status_fg,
         )
-        status_label.pack(fill=tk.BOTH, expand=True)
-        components["status_label"] = status_label
+        sl.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        components["status_label"] = sl
 
-        # 6. 기록(쿠키) (9번) - 캡차 입력 성공 이력만 표시 (search_log.json 기준)
-        search_log = self.load_search_log()
-        record_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[9], height=60
+        # 7: 기록
+        f7 = tk.Frame(
+            case_frame,
+            bg=bg_color,
+            width=_cell_width(7),
+            height=60,
+            bd=0,
+            highlightthickness=0,
         )
-        record_frame.pack(side=tk.LEFT)
-        record_frame.pack_propagate(False)
-        cell_frames.append(record_frame)
+        f7.pack_propagate(False)
+        frames_by_internal[7] = f7
         cn = case.get("사건번호", "")
+        search_log = self.load_search_log()
         if cn in search_log:
-            record_text, record_fg = "🍪 검색함", THEME["success"]
+            record_text, record_fg = "🍪 검색함", self.get_theme_color("success")
         else:
-            record_text, record_fg = "-", THEME["text_sub"]
-        record_label = tk.Label(
-            record_frame,
+            record_text, record_fg = "-", self.get_theme_color("text_sub")
+        rl = ctk.CTkLabel(
+            f7,
             text=record_text,
-            font=THEME["font_small"],
-            fg=record_fg,
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            text_color=record_fg,
+        )
+        rl.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        components["record_label"] = rl
+
+        # 8: 최근 업데이트
+        f8 = tk.Frame(
+            case_frame,
             bg=bg_color,
-            anchor=tk.CENTER,
+            width=_cell_width(8),
+            height=60,
+            bd=0,
+            highlightthickness=0,
         )
-        record_label.pack(fill=tk.BOTH, expand=True)
-        components["record_label"] = record_label
-
-        # 7. 최근 업데이트 (10번)
-        update_frame = tk.Frame(
-            case_frame, bg=bg_color, width=self.col_widths[10], height=60
-        )
-        update_frame.pack(side=tk.LEFT)
-        update_frame.pack_propagate(False)
-        cell_frames.append(update_frame)
-
-        # 컨테이너 (날짜 + D-day)
-        u_container = tk.Frame(update_frame, bg=bg_color)
-        u_container.pack(expand=True)
-
-        # 데이터 로드 (최근 업데이트 날짜는 update_history 기준)
+        f8.pack_propagate(False)
+        frames_by_internal[8] = f8
+        u_container = tk.Frame(f8, bg=bg_color)
+        u_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         history = self.load_update_history()
         c_data = history.get(cn, {})
         last_date = (
             c_data.get("last_update", "-") if isinstance(c_data, dict) else c_data
         )
         days_since = self.get_days_since_update(case)
-
-        date_label = tk.Label(
+        date_label = ctk.CTkLabel(
             u_container,
             text=last_date,
-            font=THEME["font_small"],
-            fg=THEME["text_sub"],
-            bg=bg_color,
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            text_color=self.get_theme_color("text_sub"),
         )
         date_label.pack(anchor=tk.CENTER)
-
-        if days_since < 0:
-            d_text = "-"
-            d_fg = THEME["text_sub"]
-        else:
-            d_text = f"D+{days_since}"
-            d_fg = THEME["error"] if days_since >= 3 else THEME["success"]
-        d_label = tk.Label(
-            u_container, text=d_text, font=THEME["font_bold"], fg=d_fg, bg=bg_color
+        d_text = "-" if days_since < 0 else f"D+{days_since}"
+        d_fg = (
+            self.get_theme_color("text_sub")
+            if days_since < 0
+            else (
+                self.get_theme_color("error")
+                if days_since >= 3
+                else self.get_theme_color("success")
+            )
+        )
+        d_label = ctk.CTkLabel(
+            u_container,
+            text=d_text,
+            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
+            text_color=d_fg,
         )
         d_label.pack(anchor=tk.CENTER)
-
         components["update_date_label"] = date_label
         components["update_d_label"] = d_label
 
-        # 프레임 저장
-        self.case_frames[index] = case_frame
+        # 9: 시트
+        f9 = tk.Frame(
+            case_frame,
+            bg=bg_color,
+            width=_cell_width(9),
+            height=60,
+            bd=0,
+            highlightthickness=0,
+        )
+        f9.pack_propagate(False)
+        frames_by_internal[9] = f9
+        ctk.CTkButton(
+            f9,
+            text="📝 시트",
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            fg_color=self.get_theme_color("accent"),
+            hover_color=self.get_theme_color("accent"),
+            width=50,
+            height=28,
+            cursor="hand2",
+            command=lambda idx=index: self._open_sheet_viewer(idx),
+        ).place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
+        # col_order 순서대로 pack하고 cell_frames 구성 (헤더와 동일한 표시 순서)
+        cell_frames = []
+        for disp_idx, internal_idx in enumerate(self.col_order):
+            frame = frames_by_internal[internal_idx]
+            frame.pack(side=tk.LEFT)
+            frame.pack_propagate(False)
+            cell_frames.append(frame)
+
+        self.case_frames[index] = case_frame
         return row_container, components, cell_frames
+
+    def _validate_captcha_entry(self, index):
+        """캡차 입력 6자리 숫자만 허용 (CTkEntry용)."""
+        if index not in self.case_inputs:
+            return
+        val = self.case_inputs[index].get()
+        cleaned = "".join(c for c in val if c.isdigit())[:6]
+        if cleaned != val:
+            self.case_inputs[index].set(cleaned)
 
     def update_case_list_ui(self):
         """사건 목록 UI 업데이트 (Refactored 2026)"""
@@ -1081,7 +1815,6 @@ class BatchProcessingGUI:
             for widget in self.case_list_frame.winfo_children():
                 widget.destroy()
 
-            # 초기화
             self.case_checkboxes = {}
             self.case_inputs = {}
             self.case_entries = {}
@@ -1094,18 +1827,37 @@ class BatchProcessingGUI:
             self.case_update_labels = {}
             self.case_update_date_labels = {}
             self.case_start_times = {}
+            self.case_info_text_widgets = {}
 
             # 컬럼 설정 (픽셀) - 저장된 값 우선, 없으면 기본값 또는 세션 리사이즈 유지
             loaded = self.load_column_widths()
             if loaded is not None and len(loaded) == len(COL_WIDTHS):
                 self.col_widths = list(loaded)
-            elif not hasattr(self, "col_widths") or len(self.col_widths) != len(COL_WIDTHS):
+            elif not hasattr(self, "col_widths") or len(self.col_widths) != len(
+                COL_WIDTHS
+            ):
                 self.col_widths = list(COL_WIDTHS)
 
-            # 전체 너비 (가로 스크롤용 inner_frame 너비 설정에 사용)
-            total_width = sum(self.col_widths)
-            if hasattr(self, "case_inner_frame") and self.case_inner_frame.winfo_exists():
-                self.case_inner_frame.config(width=total_width)
+            # 열 표시 순서 - 저장된 값 우선, 없으면 기본 순서 (비고=맨 우측, 시트=그 왼쪽)
+            order_loaded = self.load_column_order()
+            if order_loaded is not None and len(order_loaded) == len(COL_NAMES):
+                self.col_order = list(order_loaded)
+            elif not hasattr(self, "col_order") or len(self.col_order) != len(
+                COL_NAMES
+            ):
+                self.col_order = list(DEFAULT_COL_ORDER)
+
+            # 전체 너비: 캔버스 너비만큼 채워 비고 열이 우측 끝까지 닿도록
+            effective_total, extra_last = self._get_effective_widths()
+            self._extra_width_last_col = extra_last
+            if hasattr(self, "header_container") and self.header_container.winfo_exists():
+                self.header_container.configure(width=effective_total)
+            if hasattr(self, "header_canvas") and self.header_canvas.winfo_exists():
+                self.header_canvas.configure(
+                    scrollregion=(0, 0, effective_total, 40)
+                )
+            if hasattr(self, "case_list_frame") and self.case_list_frame.winfo_exists():
+                self.case_list_frame.configure(width=effective_total)
 
             # 헤더 생성
             self.create_list_header()
@@ -1121,12 +1873,16 @@ class BatchProcessingGUI:
                     self.case_list_frame,
                     case,
                     i,
-                    total_width,
+                    effective_total,
                     initial_status=initial_status,
                 )
                 self.case_cell_frames[i] = cell_frames
+                self.case_info_text_widgets[i] = [
+                    comps["label_info_1"],
+                    comps["label_info_2"],
+                    comps["label_info_3"],
+                ]
 
-                # 컴포넌트 등록
                 self.case_checkboxes[i] = comps["checkbox_var"]
                 self.case_images[i] = comps["image_label"]
                 self.case_inputs[i] = comps["captcha_var"]
@@ -1146,9 +1902,15 @@ class BatchProcessingGUI:
             # 스크롤 영역 업데이트 (가로/세로)
             self.case_list_frame.update_idletasks()
             self.case_canvas.update_idletasks()
-            self.case_canvas.config(scrollregion=self.case_canvas.bbox("all"))
+            self.case_canvas.configure(scrollregion=self.case_canvas.bbox("all"))
             self.case_canvas.yview_moveto(0)
             self.case_canvas.xview_moveto(0)
+            if hasattr(self, "header_canvas") and self.header_canvas.winfo_exists():
+                self.header_canvas.xview_moveto(0)
+
+            # 사건 목록 내 모든 위젯에 마우스 휠 바인딩 (행/셀 위에서도 휠 스크롤 가능)
+            self._bind_mousewheel_to_case_list()
+
             self.log_message("✅ UI 구성 완료 (Modern Style)")
 
         except Exception as e:
@@ -1165,6 +1927,114 @@ class BatchProcessingGUI:
             self.select_all_cases()
         else:
             self.deselect_all_cases()
+
+    def _open_sheet_viewer(self, case_index):
+        """사건 인덱스에 해당하는 구글 시트 데이터를 팝업에서 보기/편집."""
+        if not TKSHEET_AVAILABLE:
+            if not getattr(self, "_tksheet_warned", False):
+                self._tksheet_warned = True
+                messagebox.showwarning(
+                    "라이브러리 없음",
+                    "tksheet가 설치되지 않았습니다.\n"
+                    "pip install tksheet 실행 후 프로그램을 다시 실행하세요.",
+                )
+            return
+        if case_index < 0 or case_index >= len(self.case_list):
+            return
+        case = self.case_list[case_index]
+        case_number = case.get("사건번호", "")
+
+        popup = tk.Toplevel(self.root)
+        popup.title(f"시트 보기: {case_number}")
+        popup.geometry("900x500")
+        popup.minsize(400, 300)
+
+        top_bar = tk.Frame(popup)
+        top_bar.pack(fill=tk.X, padx=5, pady=5)
+        save_btn = tk.Button(
+            top_bar,
+            text="💾 구글 시트에 저장",
+            font=self.get_theme_color("font_small"),
+            command=lambda: None,
+        )
+        save_btn.pack(side=tk.LEFT)
+
+        loading_label = tk.Label(
+            popup, text="로딩 중...", font=self.get_theme_color("font_small")
+        )
+        loading_label.pack(expand=True)
+
+        sheet_container = tk.Frame(popup)
+        sheet_widget = [None]
+
+        def load_done(data):
+            loading_label.destroy()
+            sheet_container.pack(fill=tk.BOTH, expand=True)
+            sh = Sheet(
+                sheet_container,
+                data=data if data else [],
+                headers=0,
+            )
+            sh.enable_bindings()
+            sh.pack(fill=tk.BOTH, expand=True)
+            sheet_widget[0] = sh
+
+            def _get_sheet_data_for_save(sh):
+                for method_name in ("get_sheet_data", "get_data"):
+                    m = getattr(sh, method_name, None)
+                    if callable(m):
+                        try:
+                            out = m()
+                            if isinstance(out, list):
+                                return out
+                        except Exception:
+                            continue
+                return []
+
+            def do_save():
+                current = _get_sheet_data_for_save(sh)
+                if not current:
+                    messagebox.showinfo("저장", "저장할 데이터가 없습니다.")
+                    return
+                save_btn.configure(state="disabled", text="저장 중...")
+
+                def save_thread():
+                    ok = self.google_sheets_service.overwrite_sheet_data(case, current)
+                    popup.after(
+                        0,
+                        lambda: _save_done(ok),
+                    )
+
+                t = threading.Thread(target=save_thread, daemon=True)
+                t.start()
+
+            def _save_done(ok):
+                save_btn.configure(state="normal", text="💾 구글 시트에 저장")
+                if ok:
+                    messagebox.showinfo("저장", "구글 시트에 저장되었습니다.")
+                else:
+                    messagebox.showerror("저장 실패", "구글 시트 저장에 실패했습니다.")
+
+            save_btn.configure(command=do_save)
+
+        def fetch():
+            try:
+                data = self.google_sheets_service.get_full_sheet_data(case)
+            except Exception as e:
+                data = None
+                err = str(e)
+            else:
+                err = None
+            popup.after(0, lambda: _apply_load(data, err))
+
+        def _apply_load(data, err):
+            if err:
+                loading_label.destroy()
+                messagebox.showerror("시트 로드 실패", err, parent=popup)
+                return
+            load_done(data)
+
+        threading.Thread(target=fetch, daemon=True).start()
 
     def select_all_cases(self):
         """전체 사건 선택"""
@@ -1264,9 +2134,9 @@ class BatchProcessingGUI:
         # 처리 중 플래그를 True로 설정
         self.processing = True
         # 시작 버튼을 "로딩 중..."으로 변경하고 비활성화
-        self.start_btn.config(text="🔄 로딩 중...", state=tk.DISABLED, bg="#95A5A6")
-        # 중지 버튼 활성화 (사용자가 중지할 수 있도록)
-        self.stop_btn.config(state=tk.NORMAL)
+        self.start_btn.configure(text="🔄 로딩 중...")
+        self._set_control_btn_state(self.start_btn, False)
+        self._set_control_btn_state(self.stop_btn, True)
 
         # ============================================================
         # 6단계: 백그라운드 스레드에서 처리 시작
@@ -1287,8 +2157,9 @@ class BatchProcessingGUI:
         self.processing = False
         for ev in getattr(self, "lane_events", {}).values():
             ev.set()
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
+        self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
+        self._set_control_btn_state(self.start_btn, True)
+        self._set_control_btn_state(self.stop_btn, False)
         self.log_message("⏹️ 처리 중지됨")
 
     def cleanup_case_process(self, case_number):
@@ -1381,13 +2252,12 @@ class BatchProcessingGUI:
         self.log_message("🎉 모든 캡차 이미지 로드 완료!")
         self.processing = False
         # 버튼 상태 변경 (Thread-Safe)
-        self.root.after(
-            0,
-            lambda: self.start_btn.config(
-                text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)", state=tk.NORMAL, bg="#E67E22"
-            ),
-        )
-        self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
+        def _restore_start_btn():
+            self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
+            self._set_control_btn_state(self.start_btn, True)
+
+        self.root.after(0, _restore_start_btn)
+        self.root.after(0, lambda: self._set_control_btn_state(self.stop_btn, False))
 
     def _process_auto_case(self, case, case_index):
         """
@@ -1422,10 +2292,14 @@ class BatchProcessingGUI:
                     time.time() - self.case_start_times.get(case_index, time.time())
                 )
                 try:
-                    last_entry_result = self.google_sheets_service.get_last_entry_from_sheet(case)
+                    last_entry_result = (
+                        self.google_sheets_service.get_last_entry_from_sheet(case)
+                    )
                     if last_entry_result is not None:
                         last_entry, sheet_last_row_index = last_entry_result
-                        self.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                        self.log_message(
+                            f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}"
+                        )
                     else:
                         last_entry = None
                         sheet_last_row_index = None
@@ -1434,7 +2308,7 @@ class BatchProcessingGUI:
                     last_entry = self.history_manager.get_last_entry(case_number)
                     sheet_last_row_index = None
                 new_data = self.filter_new_data(result_data, last_entry)
-                
+
                 # 변경없음(빈 리스트)이지만 시트 행 개수가 부족한 경우(기일 등이 마지막에 있어 중간 삽입 발생)
                 # 기일 행을 삭제한 뒤, 새 데이터 + 기일을 순서대로 다시 추가
                 if not new_data and sheet_last_row_index is not None:
@@ -1442,12 +2316,18 @@ class BatchProcessingGUI:
                     current_len = len(result_data)
                     if sheet_data_count < current_len:
                         missing = current_len - sheet_data_count
-                        if self.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
-                            new_data = result_data[-(missing + 1):]
-                            self.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
+                        if self.google_sheets_service.delete_specific_row(
+                            case, sheet_last_row_index
+                        ):
+                            new_data = result_data[-(missing + 1) :]
+                            self.log_message(
+                                f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)"
+                            )
                         else:
                             new_data = result_data[-missing:]
-                            self.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
+                            self.log_message(
+                                f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)"
+                            )
                 if not new_data:
                     self.log_message(f"📭 변경없음: {case_number}")
                     self.update_case_status(
@@ -1457,7 +2337,9 @@ class BatchProcessingGUI:
                     prev_total = 0
                     if isinstance(history.get(case_number), dict):
                         prev_total = history.get(case_number, {}).get("row_count", 0)
-                    current_count = len(result_data) if isinstance(result_data, list) else 0
+                    current_count = (
+                        len(result_data) if isinstance(result_data, list) else 0
+                    )
                     new_total = max(prev_total, current_count)
                     self.update_case_timestamp(case, case_index, new_total)
                     if hasattr(self, "processed_cases"):
@@ -1566,7 +2448,7 @@ class BatchProcessingGUI:
                     f"✅ 캡차 이미지 로드 완료: {case_number} (소요 시간: {elapsed_time}초)"
                 )
                 # 완료 버튼 활성화
-                self.root.after(0, lambda: self.complete_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self._set_control_btn_state(self.complete_btn, True))
                 ev = threading.Event()
                 self.lane_events[case_number] = ev
                 ev.wait()
@@ -1763,10 +2645,14 @@ class BatchProcessingGUI:
                 if isinstance(result_data, list):
                     # 증분 저장: 구글 시트 실제 마지막 행 기준 비교, 없으면 로컬 캐시
                     try:
-                        last_entry_result = self.google_sheets_service.get_last_entry_from_sheet(case)
+                        last_entry_result = (
+                            self.google_sheets_service.get_last_entry_from_sheet(case)
+                        )
                         if last_entry_result is not None:
                             last_entry, sheet_last_row_index = last_entry_result
-                            self.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                            self.log_message(
+                                f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}"
+                            )
                         else:
                             last_entry = None
                             sheet_last_row_index = None
@@ -1783,12 +2669,18 @@ class BatchProcessingGUI:
                         current_len = len(result_data)
                         if sheet_data_count < current_len:
                             missing = current_len - sheet_data_count
-                            if self.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
-                                new_data = result_data[-(missing + 1):]
-                                self.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
+                            if self.google_sheets_service.delete_specific_row(
+                                case, sheet_last_row_index
+                            ):
+                                new_data = result_data[-(missing + 1) :]
+                                self.log_message(
+                                    f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)"
+                                )
                             else:
                                 new_data = result_data[-missing:]
-                                self.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
+                                self.log_message(
+                                    f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)"
+                                )
                     if not new_data:
                         self.log_message(f"📭 변경없음: {case_number}")
                         self.update_case_status(
@@ -1797,8 +2689,12 @@ class BatchProcessingGUI:
                         history = self.load_update_history()
                         prev_total = 0
                         if isinstance(history.get(case_number), dict):
-                            prev_total = history.get(case_number, {}).get("row_count", 0)
-                        current_count = len(result_data) if isinstance(result_data, list) else 0
+                            prev_total = history.get(case_number, {}).get(
+                                "row_count", 0
+                            )
+                        current_count = (
+                            len(result_data) if isinstance(result_data, list) else 0
+                        )
                         new_total = max(prev_total, current_count)
                         self.update_case_timestamp(case, original_index, new_total)
                         self.log_message(
@@ -1840,9 +2736,7 @@ class BatchProcessingGUI:
                     if isinstance(history.get(case_number), dict):
                         old_total = history.get(case_number, {}).get("row_count", 0)
                     total_rows = (old_total + row_count) if row_count else old_total
-                    self.update_case_timestamp(
-                        case, original_index, total_rows
-                    )
+                    self.update_case_timestamp(case, original_index, total_rows)
                     if row_count > 0:
                         self.add_to_search_log(case_number)
                     self.log_message(
@@ -1900,14 +2794,14 @@ class BatchProcessingGUI:
             self.log_message("🔄 모든 캡차 입력 처리 시작")
 
             # 완료 버튼 명시적으로 비활성화 (처리 시작 시)
-            self.root.after(0, lambda: self.complete_btn.config(state=tk.DISABLED))
+            self.root.after(0, lambda: self._set_control_btn_state(self.complete_btn, False))
 
             # Wave Processing: processed_cases 초기화 (없으면 생성)
             if not hasattr(self, "processed_cases"):
                 self.processed_cases = set()
 
-            self.root.after(0, lambda: self.start_btn.config(state=tk.DISABLED))
-            self.root.after(0, lambda: self.stop_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self._set_control_btn_state(self.start_btn, False))
+            self.root.after(0, lambda: self._set_control_btn_state(self.stop_btn, True))
 
             selected_cases = self.get_selected_cases()
             total_cases = len(selected_cases)
@@ -1950,7 +2844,7 @@ class BatchProcessingGUI:
                     f"⏳ 다음 파도 대기 중... (남은 사건: {pending_count}건)"
                 )
                 # "Captcha Input Complete" 버튼 재활성화 (다음 파도 준비)
-                self.root.after(0, lambda: self.complete_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self._set_control_btn_state(self.complete_btn, True))
                 # processing 플래그는 유지 (아직 처리 중)
                 # Chrome 정리는 하지 않음 (다음 파도에서 사용)
             else:
@@ -2041,27 +2935,35 @@ class BatchProcessingGUI:
 
                 # 처리 완료 - 버튼 상태 복원 (Thread-Safe)
                 self.processing = False
-                self.root.after(0, lambda: self.complete_btn.config(state=tk.DISABLED))
                 self.root.after(
-                    0,
-                    lambda: self.start_btn.config(
-                        text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)", state=tk.NORMAL, bg="#E67E22"
-                    ),
+                    0, lambda: self._set_control_btn_state(self.complete_btn, False)
                 )
-                self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
+                def _restore_start():
+                    self.start_btn.configure(
+                        text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
+                    )
+                    self._set_control_btn_state(self.start_btn, True)
+
+                self.root.after(0, _restore_start)
+                self.root.after(
+                    0, lambda: self._set_control_btn_state(self.stop_btn, False)
+                )
 
         except Exception as e:
             self.log_message(f"❌ 캡차 입력 처리 오류: {e}")
             self.update_progress(0, "오류 발생")
             # 버튼 상태 복원 (Thread-Safe)
-            self.root.after(0, lambda: self.complete_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self._set_control_btn_state(self.complete_btn, True))
+            def _restore_start():
+                self.start_btn.configure(
+                    text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
+                )
+                self._set_control_btn_state(self.start_btn, True)
+
+            self.root.after(0, _restore_start)
             self.root.after(
-                0,
-                lambda: self.start_btn.config(
-                    text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)", state=tk.NORMAL, bg="#E67E22"
-                ),
+                0, lambda: self._set_control_btn_state(self.stop_btn, False)
             )
-            self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
             # 오류 발생 시에도 처리 상태 해제
             self.processing = False
 
@@ -2098,7 +3000,7 @@ class BatchProcessingGUI:
                 self.log_message(f"🔐 캡차 입력 대기: {case_number}")
 
                 # 완료 버튼 활성화
-                self.complete_btn.config(state=tk.NORMAL)
+                self._set_control_btn_state(self.complete_btn, True)
 
                 # 사용자가 캡차를 입력할 때까지 대기 (대기 시간: config.CAPTCHA_INPUT_TIMEOUT초)
                 captcha_input = self.wait_for_captcha_input(
@@ -2199,7 +3101,7 @@ class BatchProcessingGUI:
                 self.log_message(f"🔐 캡차 입력 대기: {case_number}")
 
                 # 3. 완료 버튼 활성화 (Thread-Safe)
-                self.root.after(0, lambda: self.complete_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self._set_control_btn_state(self.complete_btn, True))
                 self.log_message(f"✅ 캡차 입력 완료 버튼 활성화됨")
 
                 return image_path
@@ -2383,27 +3285,33 @@ class BatchProcessingGUI:
                     if original_index in self.case_update_labels:
                         display_text = f"D+0{new_rows_text}"
                         color = "#28A745" if new_rows > 0 else "#0D6EFD"
-                        self.case_update_labels[original_index].config(
-                            text=display_text, fg=color
+                        self.case_update_labels[original_index].configure(
+                            text=display_text, text_color=color
                         )
 
                     # 날짜 라벨 업데이트 또는 생성
                     if original_index in self.case_update_date_labels:
                         if self.case_update_date_labels[original_index]:
-                            self.case_update_date_labels[original_index].config(
+                            self.case_update_date_labels[original_index].configure(
                                 text=date_str
                             )
                         else:
                             # 날짜 라벨이 없으면 생성
                             if original_index in self.case_update_labels:
                                 parent = self.case_update_labels[original_index].master
-                                new_date_label = tk.Label(
+                                try:
+                                    parent_fg = (
+                                        parent.cget("fg_color")
+                                        if hasattr(parent, "cget")
+                                        else "#2B2B2B"
+                                    )
+                                except Exception:
+                                    parent_fg = "#2B2B2B"
+                                new_date_label = ctk.CTkLabel(
                                     parent,
                                     text=date_str,
-                                    font=("맑은 고딕", 7),
-                                    fg="#6C757D",
-                                    bg=parent["bg"],
-                                    anchor=tk.CENTER,
+                                    font=ctk.CTkFont(family="맑은 고딕", size=12),
+                                    text_color="#6C757D",
                                 )
                                 new_date_label.pack(
                                     before=self.case_update_labels[original_index]
@@ -2451,6 +3359,36 @@ class BatchProcessingGUI:
         except Exception:
             pass
         return None
+
+    def load_column_order(self):
+        """
+        저장된 열 순서 JSON 로드.
+        리스트 길이가 COL_NAMES와 같고, 0~9 인덱스가 각 한 번씩만 있으면 반환, 아니면 None.
+        """
+        path = getattr(config, "COLUMN_ORDER_FILE", "column_order.json")
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    order = json.load(f)
+                if (
+                    isinstance(order, list)
+                    and len(order) == len(COL_NAMES)
+                    and set(order) == set(range(len(COL_NAMES)))
+                ):
+                    return order
+        except Exception:
+            pass
+        return None
+
+    def _save_column_order(self):
+        """현재 열 순서를 COLUMN_ORDER_FILE에 JSON 배열로 저장."""
+        path = getattr(config, "COLUMN_ORDER_FILE", "column_order.json")
+        try:
+            if hasattr(self, "col_order") and self.col_order:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(self.col_order, f, indent=2)
+        except Exception:
+            pass
 
     def _save_column_widths(self):
         """현재 열 너비를 COLUMN_WIDTHS_FILE에 JSON 배열로 저장."""
@@ -2510,16 +3448,21 @@ class BatchProcessingGUI:
         last_entry가 없거나 일치하는 항목이 없으면 전체 데이터 반환.
         비교 시 공백 정규화를 적용하여 중복 저장을 방지합니다.
         """
-        if not last_entry or not isinstance(scraped_data, list) or len(scraped_data) == 0:
+        if (
+            not last_entry
+            or not isinstance(scraped_data, list)
+            or len(scraped_data) == 0
+        ):
             return scraped_data if isinstance(scraped_data, list) else []
         le_date = self._normalize_text(last_entry.get("date", ""))
         le_content = self._normalize_text(last_entry.get("content", ""))
         for i, row in enumerate(scraped_data):
             if not isinstance(row, dict):
                 continue
-            if self._normalize_text(row.get("date", "")) == le_date and self._normalize_text(
-                row.get("content", "")
-            ) == le_content:
+            if (
+                self._normalize_text(row.get("date", "")) == le_date
+                and self._normalize_text(row.get("content", "")) == le_content
+            ):
                 return scraped_data[i + 1 :]
         return scraped_data
 
@@ -2551,40 +3494,46 @@ class BatchProcessingGUI:
         def _update():
             if case_index in self.case_status:
                 display_text = f"{emoji} {status}" if emoji else status
-                self.case_status[case_index].config(text=display_text, fg=color)
+                self.case_status[case_index].configure(
+                    text=display_text, text_color=color
+                )
                 # 직전 상태 기록 (저장 실패/완료 등 유지)
                 if 0 <= case_index < len(self.case_list):
                     case_number = self.case_list[case_index].get("사건번호", "")
                     if case_number:
                         self.save_status_history(case_number, status, color, emoji)
 
-                # 처리 중인 사건 하이라이트 (처리중* 모두 노란 배경)
                 if case_index in self.case_frames:
                     if status.startswith("처리중"):
-                        # 노란색 배경으로 하이라이트
-                        self.case_frames[case_index].config(bg="#FFF3CD")
-                        # 프레임 내 모든 위젯도 배경색 변경
+                        self.case_frames[case_index].configure(fg_color="#FFF3CD")
                         for widget in self.case_frames[case_index].winfo_children():
                             try:
-                                widget.config(bg="#FFF3CD")
-                            except:
-                                pass
+                                widget.configure(fg_color="#FFF3CD")
+                            except (tk.TclError, AttributeError):
+                                try:
+                                    widget.config(bg="#FFF3CD")
+                                except Exception:
+                                    pass
                     elif status.startswith("완료"):
-                        # 연한 초록색 배경
-                        self.case_frames[case_index].config(bg="#D4EDDA")
+                        self.case_frames[case_index].configure(fg_color="#D4EDDA")
                         for widget in self.case_frames[case_index].winfo_children():
                             try:
-                                widget.config(bg="#D4EDDA")
-                            except:
-                                pass
+                                widget.configure(fg_color="#D4EDDA")
+                            except (tk.TclError, AttributeError):
+                                try:
+                                    widget.config(bg="#D4EDDA")
+                                except Exception:
+                                    pass
                     elif status.startswith("실패") or status.startswith("오류"):
-                        # 연한 빨간색 배경
-                        self.case_frames[case_index].config(bg="#F8D7DA")
+                        self.case_frames[case_index].configure(fg_color="#F8D7DA")
                         for widget in self.case_frames[case_index].winfo_children():
                             try:
-                                widget.config(bg="#F8D7DA")
-                            except:
-                                pass
+                                widget.configure(fg_color="#F8D7DA")
+                            except (tk.TclError, AttributeError):
+                                try:
+                                    widget.config(bg="#F8D7DA")
+                                except Exception:
+                                    pass
 
         # 메인 스레드에서 실행
         self.root.after(0, _update)
@@ -2726,8 +3675,8 @@ class BatchProcessingGUI:
 
     def processing_completed(self):
         """처리 완료 후 UI 업데이트"""
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
+        self._set_control_btn_state(self.start_btn, True)
+        self._set_control_btn_state(self.stop_btn, False)
         self.log_message("🎉 모든 사건 처리 완료!")
         messagebox.showinfo("완료", "모든 사건 처리가 완료되었습니다.")
 
@@ -2748,8 +3697,9 @@ class BatchProcessingGUI:
 
         def _update():
             try:
-                # 진행률 바 업데이트
                 self.progress_var.set(percentage)
+                if hasattr(self, "progress_bar") and self.progress_bar.winfo_exists():
+                    self.progress_bar.set(percentage / 100.0)
 
                 # 상태 텍스트 업데이트
                 if status_text:

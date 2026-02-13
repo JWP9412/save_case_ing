@@ -1,4 +1,5 @@
 # Python 패키지 의존성
+customtkinter>=5.2.0
 gspread==5.11.3
 google-auth==2.23.4
 google-auth-oauthlib==1.1.0

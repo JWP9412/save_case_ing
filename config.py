@@ -7,7 +7,7 @@
 
 사용법:
     from config import GOOGLE_SHEET_ID, SPREADSHEET_NAME
-    
+
     spreadsheet = client.open(SPREADSHEET_NAME)
 """
 
@@ -15,27 +15,31 @@
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "3.3.0"
+APP_VERSION = "4.0.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
 APP_SUBTITLE = "사건 조회 자동화 시스템"
+# 제목 배너 이미지 경로 (없으면 텍스트 헤더 사용)
+HEADER_IMAGE_PATH = "./assets/title_banner.png"
+# 헤더 배경색 (창 리사이즈 시 이미지 양옆 여백 채우는 색, 이미지 배경과 맞추면 됨)
+HEADER_BG_COLOR = "#001A33"
 
 # ============================================================================
 # 구글 시트 설정
 # ============================================================================
 # 구글 시트 스프레드시트 ID (URL에 있는 고유 번호)
 # 예: https://docs.google.com/spreadsheets/d/[여기가 ID]/edit
-GOOGLE_SHEET_ID = '1ShaDTz4pj8SRWvf3ahcVI-gStYK-dFSBPsS6BnDOFzU'
+GOOGLE_SHEET_ID = "1ShaDTz4pj8SRWvf3ahcVI-gStYK-dFSBPsS6BnDOFzU"
 
 # 구글 시트 스프레드시트 이름
-SPREADSHEET_NAME = 'case-ing-test'
+SPREADSHEET_NAME = "case-ing-test"
 
 # 구글 시트 인증 파일 경로
-GOOGLE_AUTH_FILE = './api/certification/service-account.json'
+GOOGLE_AUTH_FILE = "./api/certification/service-account.json"
 
 # 구글 시트 "사건 목록" 워크시트 이름
-CASE_LIST_WORKSHEET_NAME = '사건 목록'
+CASE_LIST_WORKSHEET_NAME = "사건 목록"
 
 # ============================================================================
 # Puppeteer 설정
@@ -72,22 +76,31 @@ DEFAULT_RETRY_DELAY = 2
 # 파일 경로 설정
 # ============================================================================
 # 결과 파일 저장 디렉토리
-RESULTS_DIR = 'results'
+RESULTS_DIR = "results"
 
 # 스크린샷 저장 디렉토리
-SCREENSHOTS_DIR = 'screenshots'
+SCREENSHOTS_DIR = "screenshots"
 
 # 업데이트 기록 파일
-UPDATE_HISTORY_FILE = 'update_history.json'
+UPDATE_HISTORY_FILE = "update_history.json"
 
 # 검색 성공 이력 파일 (캡차 입력 성공한 사건번호 목록, '기록' 열 표시용)
-SEARCH_LOG_FILE = 'search_log.json'
+SEARCH_LOG_FILE = "search_log.json"
 
 # 상태 열 영구 보존용 JSON (사건번호별 직전 상태: 완료/저장 실패 등)
-STATUS_HISTORY_FILE = 'status_history.json'
+STATUS_HISTORY_FILE = "status_history.json"
 
 # 사건 목록 테이블 열 너비 저장 (사용자 리사이즈 값 복원용)
-COLUMN_WIDTHS_FILE = 'column_widths.json'
+COLUMN_WIDTHS_FILE = "column_widths.json"
+
+# 사건 목록 테이블 열 순서 저장 (사용자 설정 복원용)
+COLUMN_ORDER_FILE = "column_order.json"
+
+# 우측(진행상황) 패널 너비 저장 (사용자 조절 값 복원용)
+RIGHT_PANEL_WIDTH_FILE = "right_panel_width.json"
+
+# 테마 설정 저장 (다크/라이트/시스템 선택 복원용)
+THEME_CONFIG_FILE = "theme_config.json"
 
 # ============================================================================
 # 구글 시트 포맷팅 설정
@@ -96,8 +109,8 @@ COLUMN_WIDTHS_FILE = 'column_widths.json'
 EMPTY_ROWS_BEFORE_UPDATE = 5
 
 # 열 너비 설정 (픽셀)
-COLUMN_WIDTH_DATE = 200      # 일자 열
-COLUMN_WIDTH_CONTENT = 500   # 내용 열
+COLUMN_WIDTH_DATE = 200  # 일자 열
+COLUMN_WIDTH_CONTENT = 500  # 내용 열
 
 # ============================================================================
 # GUI 설정
@@ -115,27 +128,46 @@ CASE_ROW_HEIGHT = 60
 # 헤더 높이
 HEADER_HEIGHT = 40
 
-# UI 테마 (색상, 폰트 등) - batch_gui_maker 사건 목록/헤더 등에서 사용
+# UI 테마 (색상, 폰트 등) - (라이트 모드 값, 다크 모드 값) 튜플로 양쪽 대응
+# batch_gui_maker에서 현재 모드에 따라 인덱스 0(라이트) 또는 1(다크) 사용
+# 다크 모드: 사건 목록 밖 영역을 두 번째 참고 사진처럼 통일된 어두운 톤으로 조정
 THEME = {
-    "bg_primary": "#F8F9FA",   # 앱 배경 (아주 연한 회색)
-    "bg_white": "#FFFFFF",    # 카드 배경 (흰색)
-    "bg_header": "#2C3E50",   # 헤더 배경 (다크 블루 그레이)
-    "text_header": "#FFFFFF", # 헤더 텍스트 (흰색)
-    "text_main": "#2C3E50",   # 본문 텍스트 (다크 블루 그레이)
-    "text_sub": "#7F8C8D",    # 보조 텍스트 (회색)
-    "accent": "#3498DB",      # 포인트 컬러 (밝은 파랑)
-    "success": "#27AE60",     # 성공/완료 (초록)
-    "warning": "#F39C12",     # 경고/처리중 (오렌지)
-    "error": "#E74C3C",       # 에러 (빨강)
-    "row_odd": "#FFFFFF",     # 홀수 행 배경
-    "row_even": "#F8F9FA",    # 짝수 행 배경 (미세한 구분)
-    "border": "#E0E0E0",      # 테두리 색상
-    "font_main": ("Segoe UI", 10),
-    "font_bold": ("Segoe UI", 10, "bold"),
-    "font_header": ("Segoe UI", 11, "bold"),
-    "font_small": ("Segoe UI", 9),
+    "bg_primary": ("#F8F9FA", "#1A1A1A"),
+    "bg_white": ("#FFFFFF", "#1A1A1A"),
+    "bg_header": ("#2C3E50", "#2C3E50"),
+    "text_header": ("#FFFFFF", "#FFFFFF"),
+    "text_main": ("#2C3E50", "#FFFFFF"),
+    "text_sub": ("#7F8C8D", "#BDC3C7"),
+    "accent": ("#3498DB", "#3498DB"),
+    "success": ("#27AE60", "#27AE60"),
+    "warning": ("#F39C12", "#F39C12"),
+    "error": ("#E74C3C", "#E74C3C"),
+    "row_odd": ("#FFFFFF", "#242424"),
+    "row_even": ("#F8F9FA", "#2B2B2B"),
+    "border": ("#E0E0E0", "#333333"),
+    "font_main": ("Segoe UI", 12),
+    "font_bold": ("Segoe UI", 12, "bold"),
+    "font_header": ("Segoe UI", 13, "bold"),
+    "font_small": ("Segoe UI", 11),
 }
 
-# 사건 목록 테이블 컬럼 너비 (픽셀) - 순서: 선택, 사건번호, 피고, 법원, 사건명, 비고, 캡차이미지, 캡차입력, 상태, 쿠키(기록), 최근업데이트
-# 선택 열(0): 전체 선택/전체 해제 버튼 두 개가 들어가도록 160
-COL_WIDTHS = [160, 120, 90, 140, 120, 110, 180, 90, 90, 80, 120]
+# 사건 목록 테이블 컬럼 이름 (고정 인덱스 0~9, 코드에서 열 식별용)
+# 인덱스: 0=선택, 1=법원/사건번호, 2=피고/사건명, 3=비고, 4=캡차이미지, 5=캡차입력, 6=상태, 7=기록, 8=최근업데이트, 9=시트
+COL_NAMES = [
+    "선택",
+    "법원/사건번호",
+    "피고/사건명",
+    "비고",
+    "캡차 이미지",
+    "캡차 입력",
+    "상태",
+    "기록",
+    "최근 업데이트",
+    "시트",
+]
+
+# 사건 목록 테이블 기본 표시 순서 (COL_NAMES 인덱스 리스트). 비고=가장 우측, 시트=그 왼쪽.
+DEFAULT_COL_ORDER = [0, 1, 2, 4, 5, 6, 7, 8, 9, 3]
+
+# 사건 목록 테이블 컬럼 너비 (픽셀) - 인덱스 0~9 순서: 선택, 법원/사건번호, 피고/사건명, 비고, 캡차이미지, 캡차입력, 상태, 기록, 최근업데이트, 시트
+COL_WIDTHS = [160, 210, 260, 110, 180, 90, 90, 80, 120, 60]
