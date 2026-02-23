@@ -15,7 +15,7 @@
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.1.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -171,3 +171,77 @@ DEFAULT_COL_ORDER = [0, 1, 2, 4, 5, 6, 7, 8, 9, 3]
 
 # 사건 목록 테이블 컬럼 너비 (픽셀) - 인덱스 0~9 순서: 선택, 법원/사건번호, 피고/사건명, 비고, 캡차이미지, 캡차입력, 상태, 기록, 최근업데이트, 시트
 COL_WIDTHS = [160, 210, 260, 110, 180, 90, 90, 80, 120, 60]
+
+# ============================================================================
+# 사용자 설정 (GUI 편집기용 JSON)
+# ============================================================================
+# user_settings.json에 저장 가능한 키 목록. 새 항목 추가 시 이 튜플과
+# load_user_settings() 내부 매핑, settings_dialog.py 폼을 함께 수정하세요.
+USER_SETTINGS_FILE = "user_settings.json"
+USER_SETTINGS_OVERRIDABLE = (
+    "GOOGLE_SHEET_ID",
+    "SPREADSHEET_NAME",
+    "GOOGLE_AUTH_FILE",
+    "CASE_LIST_WORKSHEET_NAME",
+    "PUPPETEER_CAPTCHA_TIMEOUT",
+    "PUPPETEER_PROCESSING_TIMEOUT",
+    "CAPTCHA_INPUT_TIMEOUT",
+    "HEADER_IMAGE_PATH",
+    "HEADER_BG_COLOR",
+    "MAX_PARALLEL_LIMIT",
+)
+
+
+def load_user_settings():
+    """
+    user_settings.json을 읽어 전역 변수를 덮어씁니다.
+    앱 시작 시 진입점(main.py 등)에서 가장 먼저 호출하세요.
+    """
+    import json
+    import os
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(this_dir, USER_SETTINGS_FILE)
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    g = globals()
+    for key in USER_SETTINGS_OVERRIDABLE:
+        if key not in data:
+            continue
+        val = data[key]
+        if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
+                   "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT"):
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(val, (str, int, float)):
+            continue
+        if key in g:
+            g[key] = val
+
+
+def save_user_settings(data):
+    """
+    사용자 설정 딕셔너리를 user_settings.json에 저장합니다.
+    data는 USER_SETTINGS_OVERRIDABLE에 있는 키만 포함하면 됩니다.
+    """
+    import json
+    import os
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(this_dir, USER_SETTINGS_FILE)
+    out = {}
+    for key in USER_SETTINGS_OVERRIDABLE:
+        if key in data:
+            out[key] = data[key]
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+    except Exception:
+        raise

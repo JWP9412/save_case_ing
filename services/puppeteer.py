@@ -11,6 +11,9 @@ import json
 import os
 import time
 import config
+from services.logger_service import get_logger
+
+logger = get_logger("puppeteer")
 
 
 class PuppeteerService:
@@ -19,16 +22,12 @@ class PuppeteerService:
     """
 
     def __init__(self, log_callback=None, processing_flag=None):
-        self.log_callback = log_callback
         self.processing_flag = processing_flag
         self.running_processes = {}  # {case_number: process}
 
     def _log(self, message):
-        """로그 메시지 출력"""
-        if self.log_callback:
-            self.log_callback(message)
-        else:
-            print(message)
+        """로그 메시지 출력 (표준 로거 사용)"""
+        logger.info(message)
 
     def capture_captcha_image(self, case_number, defendant, court, instance_index=0):
         """
@@ -63,8 +62,12 @@ class PuppeteerService:
 
             image_path = None
 
-            # 출력 모니터링 루프
+            # 출력 모니터링 루프 (처리 중지 시 즉시 중단)
             while time.time() - start_time < timeout:
+                if callable(self.processing_flag) and not self.processing_flag():
+                    self._log(f"⏹️ 처리 중지로 캡차 로드 중단: {case_number}")
+                    self.cleanup_process(case_number)
+                    return None, None, None
                 line = process.stdout.readline()
                 if not line:
                     if process.poll() is not None:
@@ -151,6 +154,10 @@ class PuppeteerService:
             timeout = config.PUPPETEER_PROCESSING_TIMEOUT
 
             while time.time() - start_time < timeout:
+                if callable(self.processing_flag) and not self.processing_flag():
+                    self._log(f"⏹️ 처리 중지로 실행 중단: {case_number}")
+                    self.cleanup_process(case_number)
+                    return False
                 line = process.stdout.readline()
                 if not line:
                     if process.poll() is not None:
@@ -224,4 +231,4 @@ class PuppeteerService:
                     except subprocess.TimeoutExpired:
                         process.kill()
             except Exception as e:
-                print(f"Cleanup error: {e}")
+                logger.debug("Cleanup error: %s", e)

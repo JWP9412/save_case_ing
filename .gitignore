@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,6 +22,7 @@ update_history.json
 theme_config.json
 column_order.json
 right_panel_width.json
+user_settings.json
 
 # IDE / tooling
 .cursor/

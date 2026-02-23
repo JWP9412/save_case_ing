@@ -27,6 +27,9 @@ import time
 import functools
 import threading
 import config
+from services.logger_service import get_logger
+
+logger = get_logger("google_sheets")
 
 
 def retry_on_quota_error(max_retries=5, base_delay=2.0):
@@ -49,10 +52,12 @@ def retry_on_quota_error(max_retries=5, base_delay=2.0):
                         raise
                     if attempt < max_retries - 1:
                         delay = base_delay * (2**attempt)
-                        if args and hasattr(args[0], "_log"):
-                            args[0]._log(
-                                f"⚠️ 구글 시트 할당량 초과(429). {delay}초 후 재시도 ({attempt + 1}/{max_retries})"
-                            )
+                        logger.warning(
+                            "⚠️ 구글 시트 할당량 초과(429). %s초 후 재시도 (%s/%s)",
+                            delay,
+                            attempt + 1,
+                            max_retries,
+                        )
                         time.sleep(delay)
                     else:
                         raise
@@ -76,21 +81,16 @@ class GoogleSheetsService:
         초기화
 
         매개변수:
-            log_callback: 로그 메시지를 출력할 함수 (선택사항)
-                예: lambda msg: print(msg)
+            log_callback: (미사용, 하위 호환용)
         """
-        self.log_callback = log_callback
         self._client = None
         self._spreadsheet = None
         # 저장 직렬화용 락 (429 할당량 초과 방지: 동시 쓰기 제한)
         self._save_lock = threading.Lock()
 
     def _log(self, message):
-        """로그 메시지 출력 (콜백 함수 사용)"""
-        if self.log_callback:
-            self.log_callback(message)
-        else:
-            print(message)
+        """로그 메시지 출력 (표준 로거 사용)"""
+        logger.info(message)
 
     def _get_client(self):
         """
@@ -242,7 +242,7 @@ class GoogleSheetsService:
                     {'date': '2024-01-01', 'content': '...', 'result': '...', 'document': '...'},
                     ...
                 ]
-            log_callback: 로그 메시지를 출력할 함수 (선택사항)
+            log_callback: (미사용, 하위 호환용)
 
         반환값:
             저장된 행 개수 (int) 또는 False (실패 시)
@@ -259,10 +259,6 @@ class GoogleSheetsService:
             9. 업데이트 일시 기록 (현재 시간 + 이전 시간)
             10. 열 너비 자동 조정
         """
-        # 로그 콜백 설정
-        if log_callback:
-            self.log_callback = log_callback
-
         # [Fix] result_data가 True인 경우 (데이터 없음) 빈 리스트로 처리
         if result_data is True:
             result_data = []

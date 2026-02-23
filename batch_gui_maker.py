@@ -95,6 +95,7 @@ from services.google_sheets import GoogleSheetsService, load_google_sheet_data
 
 # services.puppeteer: Puppeteer 서비스 모듈
 from services.puppeteer import PuppeteerService
+from services.logger_service import setup_logger, register_gui_handler, get_logger
 
 # services.update_history: 업데이트 기록 파일 읽기/쓰기
 from services import update_history as update_history_service
@@ -114,6 +115,16 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 캡차 입력 팝업 창 (gui/captcha_dialog.py에서 분리됨)
 from gui.captcha_dialog import CaptchaInputDialog
+# 설정 편집 다이얼로그 (user_settings.json GUI)
+from gui.dialogs.settings_dialog import SettingsDialog
+# UI 패널 모듈 (헤더, 제어, 설정, 사건 목록, 진행상황) - 유지보수용 분리
+from gui.panels import (
+    HeaderPanel,
+    ControlPanel,
+    SettingsPanel,
+    ProgressPanel,
+    CaseListPanel,
+)
 
 # tksheet: 구글 시트 뷰어/편집용 그리드 위젯
 try:
@@ -315,13 +326,16 @@ class BatchProcessingGUI:
         self.retry_delay = tk.IntVar(value=config.DEFAULT_RETRY_DELAY)
 
         # ============================================================
+        # 로거 초기화 (파일 핸들러; GUI 핸들러는 create_progress_panel 후 등록)
+        # ============================================================
+        setup_logger()
+
+        # ============================================================
         # 서비스 객체 생성
         # ============================================================
-        # 구글 시트 서비스 (로그 콜백 함수 연결)
-        self.google_sheets_service = GoogleSheetsService(log_callback=self.log_message)
-        # Puppeteer 서비스 (로그 콜백 함수 연결)
+        self.google_sheets_service = GoogleSheetsService()
         # processing_flag는 나중에 설정 (self.processing이 아직 생성되지 않았음)
-        self.puppeteer_service = PuppeteerService(log_callback=self.log_message)
+        self.puppeteer_service = PuppeteerService()
         # 증분 업데이트용 마지막 저장 항목 관리
         self.history_manager = update_history_service.HistoryManager()
         # 사건번호별 고정 프로필(인스턴스) 사용 시 동일 프로필 동시 접근 방지
@@ -334,296 +348,28 @@ class BatchProcessingGUI:
         return self.root
 
     def create_header(self, parent):
-        """헤더 영역 생성 (CustomTkinter). 배너 이미지가 있으면 중앙에 표시, 여백은 배경색으로 채움."""
-        header_bg = getattr(config, "HEADER_BG_COLOR", "#001A33")
-        header_frame = ctk.CTkFrame(parent, fg_color=(header_bg, header_bg), height=120)
-        header_frame.pack(fill=tk.X, padx=0, pady=0)
-        header_frame.pack_propagate(False)
-
-        banner_path = getattr(config, "HEADER_IMAGE_PATH", "./assets/title_banner.png")
-        if not os.path.isabs(banner_path):
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            banner_path = os.path.normpath(os.path.join(base_dir, banner_path))
-        if os.path.isfile(banner_path):
-            try:
-                if hasattr(self, "log_message"):
-                    self.log_message(f"배너 경로: {banner_path}")
-                from PIL import Image
-                with Image.open(banner_path) as im:
-                    bw, bh = im.size
-                if bw <= 0 or bh <= 0:
-                    if hasattr(self, "log_message"):
-                        self.log_message("배너 이미지 로드 실패: 이미지 크기가 유효하지 않음")
-                else:
-                    # 배너 프레임 높이(120)에 맞춰 세로를 채우고, 가로는 비율 유지·최대 900으로 제한
-                    banner_h = 120
-                    max_banner_w = 900
-                    scale = min(banner_h / bh, max_banner_w / bw)
-                    w, h = int(bw * scale), int(bh * scale)
-                    pil_img = Image.open(banner_path)
-                    ctk_image = ctk.CTkImage(
-                        light_image=pil_img,
-                        dark_image=pil_img,
-                        size=(w, h),
-                    )
-                    banner_label = ctk.CTkLabel(
-                        header_frame,
-                        text="",
-                        image=ctk_image,
-                    )
-                    banner_label.pack(anchor=tk.CENTER, expand=False)
-                    return header_frame
-            except Exception as e:
-                if hasattr(self, "log_message"):
-                    self.log_message(f"배너 이미지 로드 실패: {banner_path} — {e}")
-                else:
-                    print(f"배너 이미지 로드 실패: {banner_path} — {e}")
-        title_label = ctk.CTkLabel(
-            header_frame,
-            text=f"⚖️ {config.APP_TITLE}",
-            font=ctk.CTkFont(family="맑은 고딕", size=26, weight="bold"),
-            text_color="#ECF0F1",
-        )
-        title_label.pack(pady=(20, 5))
-        subtitle_label = ctk.CTkLabel(
-            header_frame,
-            text=f"{config.APP_SUBTITLE} v{config.APP_VERSION}",
-            font=ctk.CTkFont(family="맑은 고딕", size=13),
-            text_color="#BDC3C7",
-        )
-        subtitle_label.pack(pady=(0, 15))
-        return header_frame
+        """헤더 영역 생성. gui.panels.HeaderPanel에 위임."""
+        return HeaderPanel.create(parent, self)
 
     def create_control_panel(self, parent):
-        """제어 패널 생성 (CustomTkinter)"""
-        control_frame = ctk.CTkFrame(
-            parent, fg_color=self.get_theme_color("bg_primary")
-        )
-        control_frame.pack(fill=tk.X, padx=10, pady=10)
-        ctk.CTkLabel(
-            control_frame,
-            text="🎛️ 제어 패널",
-            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
-            text_color="#ECF0F1",
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        button_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        button_frame.pack(fill=tk.X, padx=0, pady=10)
-
-        # 제어 패널 버튼 공통 크기 및 비활성화 시 회색 스타일
-        BTN_W, BTN_H = 200, 36
-        DISABLED_FG = "#5D6D7E"
-        DISABLED_TEXT = "#ECF0F1"
-
-        self._control_btn_colors = {}
-
-        load_btn = ctk.CTkButton(
-            button_frame,
-            text="🔄 새로고침",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            fg_color="#27AE60",
-            hover_color="#229954",
-            text_color="#FFFFFF",
-            width=BTN_W,
-            height=BTN_H,
-            cursor="hand2",
-            command=self.load_google_sheet,
-        )
-        load_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.start_btn = ctk.CTkButton(
-            button_frame,
-            text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            fg_color="#E67E22",
-            hover_color="#D35400",
-            text_color="#FFFFFF",
-            width=BTN_W,
-            height=BTN_H,
-            cursor="hand2",
-            command=self.start_batch_processing,
-        )
-        self._control_btn_colors[self.start_btn] = ("#E67E22", "#D35400", "#FFFFFF")
-        self.start_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.complete_btn = ctk.CTkButton(
-            button_frame,
-            text="✔️ 캡차 입력 완료",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            fg_color=DISABLED_FG,
-            hover_color=DISABLED_FG,
-            text_color=DISABLED_TEXT,
-            width=BTN_W,
-            height=BTN_H,
-            cursor="hand2",
-            command=self.start_processing_thread,
-            state="disabled",
-        )
-        self._control_btn_colors[self.complete_btn] = ("#16A085", "#138D75", "#FFFFFF")
-        self.complete_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.stop_btn = ctk.CTkButton(
-            button_frame,
-            text="⛔ 처리 중지",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            fg_color=DISABLED_FG,
-            hover_color=DISABLED_FG,
-            text_color=DISABLED_TEXT,
-            width=BTN_W,
-            height=BTN_H,
-            cursor="hand2",
-            command=self.stop_batch_processing,
-            state="disabled",
-        )
-        self._control_btn_colors[self.stop_btn] = ("#E74C3C", "#C0392B", "#FFFFFF")
-        self.stop_btn.pack(side=tk.LEFT)
-
-        return control_frame
+        """제어 패널 생성. gui.panels.ControlPanel에 위임."""
+        return ControlPanel.create(parent, self)
 
     def _set_control_btn_state(self, btn, enabled):
-        """제어 패널 버튼 활성/비활성 + 회색 스타일 적용. 비활성 시 글씨가 보이는 회색."""
-        if enabled:
-            colors = self._control_btn_colors.get(btn)
-            if colors:
-                fg, hover, text = colors
-                btn.configure(
-                    state="normal",
-                    fg_color=fg,
-                    hover_color=hover,
-                    text_color=text,
-                )
-            else:
-                btn.configure(state="normal")
-        else:
-            btn.configure(
-                state="disabled",
-                fg_color="#5D6D7E",
-                hover_color="#5D6D7E",
-                text_color="#ECF0F1",
-            )
+        """제어 패널 버튼 활성/비활성 + 회색 스타일 적용. gui.panels.ControlPanel에 위임."""
+        ControlPanel.set_control_btn_state(self, btn, enabled)
+
+    def _open_settings_dialog(self):
+        """설정(Config) 편집 다이얼로그를 엽니다. 저장 시 config가 갱신되며, 일부 항목은 재시작 후 적용됩니다."""
+        dlg = SettingsDialog(
+            self.root,
+            on_save_callback=lambda: self.log_message("설정이 저장되었습니다. 일부 항목은 다음 작업부터 적용됩니다."),
+        )
+        dlg.focus_set()
 
     def create_settings_panel(self, parent):
-        """설정 패널 생성 (CustomTkinter)"""
-        # 구분선: 제어 패널과 설정 패널 사이 (테마 색상 사용)
-        sep = ctk.CTkFrame(
-            parent, fg_color=self.get_theme_color("border"), height=2, corner_radius=0
-        )
-        sep.pack(fill=tk.X, padx=10, pady=(0, 4))
-        sep.pack_propagate(False)
-
-        settings_frame = ctk.CTkFrame(
-            parent, fg_color=self.get_theme_color("bg_primary")
-        )
-        settings_frame.pack(fill=tk.X, padx=10, pady=5)
-        ctk.CTkLabel(
-            settings_frame,
-            text="⚙️ 처리 설정",
-            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        settings_inner = ctk.CTkFrame(
-            settings_frame, fg_color=self.get_theme_color("bg_primary")
-        )
-        settings_inner.pack(fill=tk.X, padx=0, pady=8)
-
-        ctk.CTkLabel(
-            settings_inner,
-            text="⚡ 병렬 처리 수:",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=2)
-        max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
-        parallel_entry = ctk.CTkEntry(
-            settings_inner,
-            width=80,
-            height=28,
-            font=ctk.CTkFont(family="맑은 고딕", size=13),
-        )
-        parallel_entry.grid(row=0, column=1, sticky=tk.W, padx=(0, 25))
-        parallel_entry.insert(0, str(self.max_parallel.get()))
-        parallel_entry.bind(
-            "<FocusOut>",
-            lambda e: self._sync_spin(parallel_entry, self.max_parallel, 1, max_limit),
-        )
-        self._settings_parallel_entry = parallel_entry
-
-        ctk.CTkLabel(
-            settings_inner,
-            text="🔄 캡차 재시도 횟수:",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).grid(row=0, column=2, sticky=tk.W, padx=(0, 10), pady=2)
-        retry_entry = ctk.CTkEntry(
-            settings_inner,
-            width=80,
-            height=28,
-            font=ctk.CTkFont(family="맑은 고딕", size=13),
-        )
-        retry_entry.grid(row=0, column=3, sticky=tk.W, padx=(0, 25))
-        retry_entry.insert(0, str(self.max_retry.get()))
-        retry_entry.bind(
-            "<FocusOut>", lambda e: self._sync_spin(retry_entry, self.max_retry, 1, 10)
-        )
-
-        ctk.CTkLabel(
-            settings_inner,
-            text="⏱️ 재시도 간 대기시간(초):",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).grid(row=0, column=4, sticky=tk.W, padx=(0, 10), pady=2)
-        delay_entry = ctk.CTkEntry(
-            settings_inner,
-            width=80,
-            height=28,
-            font=ctk.CTkFont(family="맑은 고딕", size=13),
-        )
-        delay_entry.grid(row=0, column=5, sticky=tk.W, pady=2)
-        delay_entry.insert(0, str(self.retry_delay.get()))
-        delay_entry.bind(
-            "<FocusOut>",
-            lambda e: self._sync_spin(delay_entry, self.retry_delay, 1, 10),
-        )
-
-        # 테마 선택 (다크 / 라이트 / 시스템)
-        theme_display = {
-            "Dark": "다크(Dark)",
-            "Light": "라이트(Light)",
-            "System": "시스템(System)",
-        }
-        theme_options = ["다크(Dark)", "라이트(Light)", "시스템(System)"]
-        current_display = theme_display.get(self._appearance_mode, "다크(Dark)")
-
-        ctk.CTkLabel(
-            settings_inner,
-            text="🎨 테마:",
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(12, 2))
-
-        def on_theme_change(choice):
-            mode = (
-                "Dark"
-                if choice == "다크(Dark)"
-                else ("Light" if choice == "라이트(Light)" else "System")
-            )
-            self._apply_theme(mode)
-            self._save_theme_setting(mode)
-            if hasattr(self, "case_list") and self.case_list:
-                self.update_case_list_ui()
-
-        theme_var = ctk.StringVar(value=current_display)
-        theme_menu = ctk.CTkOptionMenu(
-            settings_inner,
-            values=theme_options,
-            variable=theme_var,
-            width=140,
-            command=on_theme_change,
-        )
-        theme_menu.grid(row=1, column=1, sticky=tk.W, padx=(0, 25), pady=(12, 2))
-        self._theme_option_var = theme_var
-
-        return settings_frame
+        """설정 패널 생성. gui.panels.SettingsPanel에 위임."""
+        return SettingsPanel.create(parent, self)
 
     def _sync_spin(self, entry_widget, int_var, low, high):
         """Entry 값으로 IntVar 동기화 (범위 클램프)."""
@@ -638,139 +384,8 @@ class BatchProcessingGUI:
             entry_widget.insert(0, str(int_var.get()))
 
     def create_case_list_panel(self, parent):
-        """사건 목록 패널 생성 (CustomTkinter, Canvas 유지 for 가로 스크롤/리사이즈)"""
-        # 구분선: 설정 패널과 사건 목록 사이 (테마 색상 사용)
-        sep = ctk.CTkFrame(
-            parent, fg_color=self.get_theme_color("border"), height=2, corner_radius=0
-        )
-        sep.pack(fill=tk.X, padx=10, pady=(0, 4))
-        sep.pack_propagate(False)
-
-        case_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        case_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        # 제목 + 열 순서 설정 버튼 + 검색창 한 줄
-        title_row = ctk.CTkFrame(case_frame, fg_color="transparent")
-        title_row.pack(anchor=tk.W, pady=(0, 4))
-        ctk.CTkLabel(
-            title_row,
-            text="📋 사건 목록",
-            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).pack(side=tk.LEFT)
-        settings_btn = ctk.CTkButton(
-            title_row,
-            text="⚙",
-            font=ctk.CTkFont(size=16),
-            width=36,
-            height=28,
-            fg_color="transparent",
-            hover_color="#3D5A6C",
-            cursor="hand2",
-            command=self._open_column_order_dialog,
-        )
-        settings_btn.pack(side=tk.LEFT, padx=(8, 0))
-        search_frame = ctk.CTkFrame(title_row, fg_color="transparent")
-        search_frame.pack(side=tk.LEFT, padx=(16, 0))
-        self.search_entry = ctk.CTkEntry(
-            search_frame,
-            width=200,
-            height=28,
-            font=ctk.CTkFont(family="맑은 고딕", size=12),
-            placeholder_text="검색...",
-        )
-        self.search_entry.pack(side=tk.LEFT, padx=(0, 6))
-        self.search_entry.bind("<Return>", lambda e: self.perform_search())
-        search_btn = ctk.CTkButton(
-            search_frame,
-            text="찾기",
-            width=60,
-            height=28,
-            font=ctk.CTkFont(family="맑은 고딕", size=12),
-            cursor="hand2",
-            command=self.perform_search,
-        )
-        search_btn.pack(side=tk.LEFT)
-
-        main_container = ctk.CTkFrame(case_frame, fg_color="transparent")
-        main_container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        # 가로 스크롤 시 헤더/리스트 동기화
-        def _sync_xview(first, last):
-            self.header_canvas.xview_moveto(first)
-            self.case_canvas.xview_moveto(first)
-
-        self.header_canvas = tk.Canvas(
-            main_container,
-            bg="#2B2B2B",
-            height=40,
-            highlightthickness=0,
-            bd=0,
-        )
-        self.header_canvas.pack(fill=tk.X)
-
-        self.case_canvas = tk.Canvas(
-            main_container, bg="#2B2B2B", highlightthickness=0, bd=0
-        )
-        v_scrollbar = ttk.Scrollbar(
-            main_container, orient="vertical", command=self.case_canvas.yview
-        )
-        h_scrollbar = ttk.Scrollbar(
-            main_container, orient="horizontal", command=_sync_xview
-        )
-
-        self.header_container = ctk.CTkFrame(
-            self.header_canvas, fg_color="#34495E", height=40, width=400
-        )
-        self.header_container.pack_propagate(False)
-        self.header_canvas.create_window(
-            (0, 0), window=self.header_container, anchor="nw"
-        )
-        self.header_canvas.configure(xscrollcommand=h_scrollbar.set)
-        self.header_canvas.configure(scrollregion=(0, 0, 400, 40))
-
-        self.case_list_frame = ctk.CTkFrame(
-            self.case_canvas,
-            fg_color="#2B2B2B",
-            width=400,
-            corner_radius=0,
-            border_width=0,
-        )
-        # pack_propagate(False) 사용 안 함 → 세로로 자식(행)만큼 늘어나 전부 표시
-        self.case_canvas.create_window(
-            (0, 0), window=self.case_list_frame, anchor="nw"
-        )
-
-        def _update_scroll_region(_=None):
-            self.case_canvas.update_idletasks()
-            self.case_canvas.configure(scrollregion=self.case_canvas.bbox("all"))
-
-        self.case_list_frame.bind("<Configure>", _update_scroll_region)
-
-        def _on_canvas_configure(_=None):
-            _update_scroll_region()
-            if hasattr(self, "col_order") and len(self.col_order) > 0:
-                self.apply_column_width(len(self.col_order) - 1)
-
-        self.case_canvas.bind("<Configure>", _on_canvas_configure)
-        self.case_canvas.configure(yscrollcommand=v_scrollbar.set)
-        self.case_canvas.configure(xscrollcommand=h_scrollbar.set)
-
-        # 마우스 휠: 목록 영역 세로 스크롤. 하위 위젯(행, 텍스트박스 등)에도 전파되도록 나중에 _bind_mousewheel_to_case_list()에서 일괄 바인딩
-        self._case_list_mousewheel_handler = lambda e: self.case_canvas.yview_scroll(
-            int(-1 * (e.delta / 120)), "units"
-        )
-        self.case_canvas.bind("<MouseWheel>", self._case_list_mousewheel_handler)
-        self.case_list_frame.bind("<MouseWheel>", self._case_list_mousewheel_handler)
-
-        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=0)
-        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=0, pady=0)
-        self.case_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        # Ctrl+F: 찾기 다이얼로그
-        self.root.bind("<Control-f>", self._open_find_dialog)
-
-        return case_frame
+        """사건 목록 패널 생성. gui.panels.CaseListPanel에 위임."""
+        return CaseListPanel.create(parent, self)
 
     _FIND_HIGHLIGHT_TAG = "find_highlight"
 
@@ -1126,46 +741,10 @@ class BatchProcessingGUI:
         return "break"
 
     def create_progress_panel(self, parent):
-        """진행상황 패널 생성 (CustomTkinter)"""
-        progress_frame = ctk.CTkFrame(
-            parent, fg_color=self.get_theme_color("bg_primary")
-        )
-        progress_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        ctk.CTkLabel(
-            progress_frame,
-            text="📊 진행상황",
-            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
-            text_color=self.get_theme_color("text_main"),
-        ).pack(anchor=tk.W, pady=(0, 8))
-
-        self.progress_var = tk.DoubleVar()
-        # width를 제거하여 부모 너비에 맞춰 유동적으로 조절되도록 함
-        self.progress_bar = ctk.CTkProgressBar(progress_frame, height=16)
-        self.progress_bar.pack(fill=tk.X, padx=0, pady=10)
-        self.progress_bar.set(0)
-
-        # 진행률 바와 로그 영역 사이 구분선 (테마 색상 사용)
-        sep = ctk.CTkFrame(
-            progress_frame,
-            fg_color=self.get_theme_color("border"),
-            height=2,
-            corner_radius=0,
-        )
-        sep.pack(fill=tk.X, pady=(0, 8))
-        sep.pack_propagate(False)
-
-        self.status_text = ctk.CTkTextbox(
-            progress_frame,
-            font=ctk.CTkFont(family="맑은 고딕", size=12),
-            fg_color="#34495E",
-            text_color="#ECF0F1",
-            wrap=tk.WORD,
-            height=300,
-            width=100, # 초기 너비 설정 (fill=BOTH에 의해 조절됨)
-        )
-        self.status_text.pack(fill=tk.BOTH, expand=True, padx=0, pady=(0, 10))
-
-        return progress_frame
+        """진행상황 패널 생성. gui.panels.ProgressPanel에 위임. 생성 후 GUI 로그 핸들러 등록."""
+        frame = ProgressPanel.create(parent, self)
+        register_gui_handler(self.root, lambda: self.status_text)
+        return frame
 
     def reset_internal_data(self):
         """
@@ -1233,7 +812,7 @@ class BatchProcessingGUI:
         self.update_case_list_ui()
 
     def load_google_sheet(self):
-        """구글 시트에서 사건 목록 로드"""
+        """구글 시트에서 사건 목록 로드 (비동기). UI 프리징 방지를 위해 백그라운드 스레드에서 데이터를 가져옵니다."""
         # 새로고침 시 '사건 조회 로드 실행' 버튼을 원래 색/텍스트/활성 상태로 복구
         self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
         self._set_control_btn_state(self.start_btn, True)
@@ -1250,44 +829,62 @@ class BatchProcessingGUI:
             except Exception as e:
                 self.log_message(f"⚠️ 검색 기록 초기화 실패: {e}")
 
-        try:
-            self.log_message("구글 시트 연결 중...")
-            # services/google_sheets.py의 함수 사용
-            google_data, spreadsheet = load_google_sheet_data()
+        # 로딩 중 버튼 비활성화 및 문구 변경 (중복 클릭·UI 혼선 방지, 사용자 피드백)
+        if hasattr(self, "refresh_btn") and self.refresh_btn.winfo_exists():
+            self.refresh_btn.configure(text="⏳ 로딩 중...")
+            self._set_control_btn_state(self.refresh_btn, False)
+        self._set_control_btn_state(self.start_btn, False)
+        self.log_message("구글 시트 연결 중...")
 
-            if not google_data:
-                messagebox.showerror("오류", "구글 시트 데이터를 로드할 수 없습니다.")
-                return
+        def worker():
+            try:
+                google_data, spreadsheet = load_google_sheet_data()
+                self.root.after(0, lambda: self._on_load_google_sheet_done(google_data, spreadsheet, None))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_load_google_sheet_done(None, None, e))
 
-            self.case_list = google_data
-            self.sort_case_list()
+        threading.Thread(target=worker, daemon=True).start()
 
-            # 스마트 병렬 수: 사건 수의 절반으로 자동 설정 (최대 config.MAX_PARALLEL_LIMIT)
-            max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
-            n_cases = len(self.case_list)
-            smart_parallel = max(1, min(n_cases // 2, max_limit))
-            self.max_parallel.set(smart_parallel)
-            if (
-                hasattr(self, "_settings_parallel_entry")
-                and self._settings_parallel_entry.winfo_exists()
-            ):
-                self._settings_parallel_entry.delete(0, tk.END)
-                self._settings_parallel_entry.insert(0, str(smart_parallel))
-            if smart_parallel > 10:
-                self.log_message(
-                    "⚠️ 고성능 모드: 인스턴스 폴더가 10개 이상 사용됩니다. 디스크/RAM 사용량이 늘어날 수 있습니다."
-                )
+    def _on_load_google_sheet_done(self, google_data, spreadsheet, error):
+        """비동기 로드 완료 시 메인 스레드에서 호출. UI 갱신 및 버튼 복원."""
+        # 버튼 항상 복원 (새로고침 문구 복구)
+        if hasattr(self, "refresh_btn") and self.refresh_btn.winfo_exists():
+            self.refresh_btn.configure(text="🔄 새로고침")
+            self._set_control_btn_state(self.refresh_btn, True)
+        self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
+        self._set_control_btn_state(self.start_btn, True)
 
+        if error:
+            self.log_message(f"❌ 구글 시트 로드 실패: {error}")
+            messagebox.showerror("오류", f"구글 시트 로드 실패: {error}")
+            return
+
+        if not google_data:
+            self.log_message("구글 시트 데이터를 로드할 수 없습니다.")
+            messagebox.showerror("오류", "구글 시트 데이터를 로드할 수 없습니다.")
+            return
+
+        self.case_list = google_data
+        self.sort_case_list()
+
+        max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+        n_cases = len(self.case_list)
+        smart_parallel = max(1, min(n_cases // 2, max_limit))
+        self.max_parallel.set(smart_parallel)
+        if (
+            hasattr(self, "_settings_parallel_entry")
+            and self._settings_parallel_entry.winfo_exists()
+        ):
+            self._settings_parallel_entry.delete(0, tk.END)
+            self._settings_parallel_entry.insert(0, str(smart_parallel))
+        if smart_parallel > 10:
             self.log_message(
-                f"✅ {len(google_data)}개 사건 로드 완료 (병렬 처리: {smart_parallel}개)"
+                "⚠️ 고성능 모드: 인스턴스 폴더가 10개 이상 사용됩니다. 디스크/RAM 사용량이 늘어날 수 있습니다."
             )
-
-            # 사건 목록 UI 업데이트
-            self.update_case_list_ui()
-
-        except Exception as e:
-            self.log_message(f"❌ 구글 시트 로드 실패: {e}")
-            messagebox.showerror("오류", f"구글 시트 로드 실패: {e}")
+        self.log_message(
+            f"✅ {len(google_data)}개 사건 로드 완료 (병렬 처리: {smart_parallel}개)"
+        )
+        self.update_case_list_ui()
 
     def _display_width_up_to(self, display_idx):
         """표시 순서상 display_idx(포함)까지의 누적 너비. 리사이즈 가이드라인 위치 계산용."""
@@ -1809,6 +1406,9 @@ class BatchProcessingGUI:
     def update_case_list_ui(self):
         """사건 목록 UI 업데이트 (Refactored 2026)"""
         try:
+            n = len(self.case_list) if self.case_list else 0
+            if hasattr(self, "case_list_title_label") and self.case_list_title_label.winfo_exists():
+                self.case_list_title_label.configure(text=f"📋 사건 목록({n})")
             self.log_message(f"🔄 [DEBUG] UI 업데이트 시작: {len(self.case_list)}건")
 
             # 기존 위젯 제거
@@ -2153,10 +1753,15 @@ class BatchProcessingGUI:
         self.processing_thread.start()
 
     def stop_batch_processing(self):
-        """일괄 처리 중지"""
+        """일괄 처리 중지: 플래그 설정, 대기 스레드 깨우기, 실행 중인 Node 프로세스 일괄 종료."""
         self.processing = False
         for ev in getattr(self, "lane_events", {}).values():
             ev.set()
+        # PuppeteerService에 등록된 모든 Node.js 프로세스 강제 종료
+        if hasattr(self, "puppeteer_service") and getattr(self.puppeteer_service, "running_processes", None):
+            for case_number in list(self.puppeteer_service.running_processes.keys()):
+                self.puppeteer_service.cleanup_process(case_number)
+                self.log_message(f"🔄 프로세스 종료: {case_number}")
         self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
         self._set_control_btn_state(self.start_btn, True)
         self._set_control_btn_state(self.stop_btn, False)
@@ -3484,9 +3089,7 @@ class BatchProcessingGUI:
             저장된 행 개수 (int) 또는 False (실패 시)
         """
         # GoogleSheetsService를 사용하여 저장
-        return self.google_sheets_service.save_progress_data(
-            case, result_data, log_callback=self.log_message
-        )
+        return self.google_sheets_service.save_progress_data(case, result_data)
 
     def update_case_status(self, case_index, status, color, emoji=""):
         """사건 상태 업데이트 (이모지 포함) (Thread-Safe). 상태 열 영구 보존용 JSON에도 기록."""
@@ -3681,16 +3284,8 @@ class BatchProcessingGUI:
         messagebox.showinfo("완료", "모든 사건 처리가 완료되었습니다.")
 
     def log_message(self, message):
-        """로그 메시지 추가 (Thread-Safe)"""
-
-        def _log():
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            log_entry = f"[{timestamp}] {message}\n"
-            self.status_text.insert(tk.END, log_entry)
-            self.status_text.see(tk.END)
-
-        # 메인 스레드에서 실행
-        self.root.after(0, _log)
+        """로그 메시지 추가 (표준 로거로 전달 → 파일 + GUI 핸들러)"""
+        get_logger().info("%s", message)
 
     def update_progress(self, percentage, status_text=""):
         """진행률 업데이트 (Thread-Safe)"""
@@ -3718,3 +3313,12 @@ class BatchProcessingGUI:
         """GUI 실행"""
         self.root.after(100, self.load_google_sheet)
         self.root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# 진입점: python batch_gui_maker.py 로 실행 시 gui.main_window.run_app() 호출
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    config.load_user_settings()
+    from gui.main_window import run_app
+    run_app()
