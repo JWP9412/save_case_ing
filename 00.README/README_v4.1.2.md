@@ -23,7 +23,7 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 
 1. **리팩토링 및 구조 정리** *(v4.1.2 신규)*
    - 사건 목록 UI를 `gui/panels/case_list_panel.py`로 분리. 메인 GUI 로직 경량화.
-   - `utils/` 폴더 추가(공통 유틸 모듈용). 백업 파일 제거.
+   - `utils/` 폴더 추가(공통 유틸 모듈용). 백업 파일(`batch_gui_maker_v2_backup.py`) 제거.
 
 2. **표준 로깅 및 로그 뷰어** *(v4.1.0)*
    - `logs/app.log`에 날짜별 순환 저장. 진행상황 패널과 동기화되는 GUI 로그 핸들러.
@@ -53,16 +53,33 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 case-ing/
 ├── batch_gui_maker.py           메인 GUI 로직
 ├── config.py                    설정 상수 (APP_VERSION = "4.1.2" 등)
+├── maintenance.js                유지보수 설정 (브라우저 표시 여부)
 ├── main.py                      진입점 (run_app 호출)
-├── requirements.txt             Python 패키지
 ├── package.json                 Node.js 패키지
+├── requirements.txt             Python 패키지
 ├── logs/                        로그 파일 (app.log, app.log.YYYY-MM-DD)
+│
 ├── src/                         Puppeteer 자동화 코드
-├── services/                    Python 서비스 (logger, puppeteer, google_sheets 등)
-├── gui/                         GUI (main_window, panels, dialogs, captcha_dialog)
+│   ├── interactive_runner.js    대화형 Puppeteer 실행
+│   ├── PageController.js        페이지 자동화 로직
+│   └── single-case-captcha.js   단일 캡차 캡처
+│
+├── services/                    Python 서비스 모듈
+│   ├── logger_service.py       전역 로거, 파일/GUI 핸들러, 과거 로그 목록
+│   ├── puppeteer.py             Node.js 프로세스 통신 및 제어
+│   ├── google_sheets.py        구글 시트 연동
+│   └── update_history.py       로컬 업데이트 기록
+│
+├── gui/                         GUI 컴포넌트
+│   ├── main_window.py          창 조립 및 run_app()
+│   ├── panels/                 헤더, 제어, 설정, 사건 목록, 진행상황 패널
+│   ├── dialogs/                 설정, 과거 로그 뷰어 등 다이얼로그
+│   └── captcha_dialog.py        캡차 입력 팝업
+│
 ├── utils/                       공통 유틸 모듈 (v4.1.2)
 ├── api/certification/           구글 API 인증
 ├── assets/                      배너 등 에셋
+├── screenshots/                 캡차 이미지 저장소
 └── 00.CHANGELOG, 00.README, 00.PROJECT_STRUCTURE   버전별 문서
 ```
 
@@ -72,45 +89,17 @@ case-ing/
 
 ### 1. 사전 준비
 - **Node.js** >= 14, **Python** >= 3.7
-- 의존성: `npm install`, `pip install -r requirements.txt`
+- 의존성 설치: `npm install`, `pip install -r requirements.txt`
 
 ### 2. 구글 시트 설정
 - 서비스 계정 설정 및 `api/certification/service-account.json` 저장
-- `config.py` 또는 앱 내 설정 다이얼로그에서 `GOOGLE_SHEET_ID` 설정
+- `config.py` 또는 설정 다이얼로그에서 `GOOGLE_SHEET_ID` 설정
 
-### 3. 실행
+### 3. 프로그램 실행
 ```bash
 python main.py
 ```
-
----
-
-## 사용법
-
-1. **사건 목록 불러오기**
-   - 제어 패널에서 **「새로고침」** 버튼을 누르면 구글 시트의 사건 목록이 로드됩니다.
-   - 사건 목록 시트 이름을 `config.py` 또는 앱 상단 설정(⚙)에서 일치하게 작성해야 합니다. 
-
-2. **처리할 사건 선택**
-   - 왼쪽 사건 목록에서 처리할 사건의 **체크박스**를 선택합니다.
-   - 상단 「전체 선택」으로 한 번에 선택/해제할 수 있습니다.
-   - 검색창에 키워드를 입력한 뒤 **「찾기」**로 목록을 필터링할 수 있습니다.
-
-3. **옵션 설정 (선택)**
-   - 설정 패널에서 **병렬 처리 수**, **캡차 재시도 횟수**, **재시도 대기 시간** 등을 조절할 수 있습니다.
-
-4. **캡차 이미지 로드**
-   - **「사건 조회 로드」** 버튼을 누르면 선택한 사건들의 캡차 이미지가 로드됩니다.
-   - 각 행의 캡차 이미지와 입력란에 숫자를 입력합니다. (스마트 스킵 시 'CLICK' 입력 가능)
-
-5. **처리 실행**
-   - 모든 선택 사건에 캡차를 입력한 뒤 **「캡차 입력 완료」** 버튼을 누르면 실제 조회·크롤링이 시작됩니다.
-   - 진행 상황은 오른쪽 **진행상황** 패널에서 확인할 수 있습니다.
-   - 중간에 멈추려면 **「처리 중지」** 버튼을 누릅니다.
-
-6. **결과 확인**
-   - 처리된 진행내용은 구글 시트의 해당 사건 시트(피고_사건명_사건번호_법원)에 자동 저장됩니다.
-   - 진행상황 로그는 **「복사」**로 클립보드에 복사하거나 **「과거 로그」**로 이전 로그 파일을 볼 수 있습니다.
+또는 `python batch_gui_maker.py` (레거시 진입점).
 
 ---
 
@@ -118,12 +107,14 @@ python main.py
 
 - **v4.1.2**: 리팩토링(사건 목록 UI 분리), utils 폴더 추가, 백업 파일 제거
 - **v4.1.0**: 표준 로깅, 로그 복사/과거 로그 뷰어, 사건 목록(N), 가로 스크롤바 수정
-- **v4.0.0**: 배너 이미지 PIL 전달 및 크기 최적화
-- **v3.3.0**: 열 너비 Excel 스타일 UX, 열 너비 저장/복원
-- **v3.2.x ~ v3.0.0**: 스마트 병렬 처리, 대화형 러너, 스마트 스킵 등
+- **v4.0.0**: 배너 이미지 PIL 전달 및 배너 높이에 맞춘 크기 최적화
+- **v3.3.0**: 열 너비 Excel 스타일 UX, 열 너비 저장/복원, 캡차 삭제 허용
+- **v3.2.1**: 런타임 오류 수정, 버전 관리 일원화
+- **v3.2.0**: 스마트 병렬 처리, 쿠키·검색 기록 동기화
+- **v3.1.0**: 대화형 러너, 스마트 스킵
+- **v3.0.0**: Puppeteer 기반 Python GUI 일괄 처리
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v4.1.2.md](00.CHANGELOG/CHANGELOG_v4.1.2.md)  
-버전별 README: [00.README/](00.README/)
+자세한 내역: `00.CHANGELOG/CHANGELOG_v4.1.2.md`
 
 ---
 
