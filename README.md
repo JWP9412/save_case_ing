@@ -1,6 +1,6 @@
 # case-ing
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - v4.1.2
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - v4.2.0
 
 ## 원본 출처
 
@@ -17,27 +17,37 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 
 ---
 
-## 현재 버전 특징 (v4.1.2)
+## 현재 버전 특징 (v4.2.0)
 
 ### 주요 개선 사항
 
-1. **리팩토링 및 구조 정리** *(v4.1.2 신규)*
-   - 사건 목록 UI를 `gui/panels/case_list_panel.py`로 분리. 메인 GUI 로직 경량화.
-   - `utils/` 폴더 추가(공통 유틸 모듈용). 백업 파일 제거.
+1. **알림메일 고도화** *(v4.2.0 신규)*
+   - 제어 패널 "모든 사건 메일 발송" 버튼으로 미발송 내역을 구글 시트 '알림메일'에 기록 후 GAS 발송.
+   - 메일 본문 HTML 표에 구글 시트 색상 반영. 시트(피고·사건명)별 단락 구분.
+   - 설정에서 수신 주소·GAS 웹 앱 URL 입력. 웹 앱 URL 설정 시 버튼 클릭 즉시 발송.
 
-2. **표준 로깅 및 로그 뷰어** *(v4.1.0)*
+2. **제어 패널 UI 개선** *(v4.2.0)*
+   - 버튼 2줄 배치·문구 간소화. 높이·모서리 통일. 설정 버튼 진한 색. 메일 버튼은 보낼 내역 있을 때만 활성(파란색).
+
+3. **로깅 시스템 강화** *(v4.2.0)*
+   - 실행마다 새 로그 파일(`logs/app_YYYYMMDD_HHMMSS.log`). 10개 초과 시 자동 삭제. 과거 로그 뷰어에 "클립보드에 복사" 버튼.
+
+4. **리팩토링 및 구조 정리** *(v4.1.2)*
+   - 사건 목록 UI를 `gui/panels/case_list_panel.py`로 분리. `utils/` 폴더 추가.
+
+5. **표준 로깅 및 로그 뷰어** *(v4.1.0)*
    - `logs/app.log`에 날짜별 순환 저장. 진행상황 패널과 동기화되는 GUI 로그 핸들러.
    - 진행상황 하단 "복사" 버튼으로 로그 전체 클립보드 복사, "과거 로그" 버튼으로 이전 로그 파일 조회.
 
-3. **사건 목록 UI 개선** *(v4.1.0)*
+6. **사건 목록 UI 개선** *(v4.1.0)*
    - 제목에 현재 사건 개수 표시: "사건 목록(N)".
    - 사건 목록 가로 스크롤바 정상 작동 수정.
 
-4. **배너 이미지 표시 및 크기 최적화** *(v4.0.0)*
+7. **배너 이미지 표시 및 크기 최적화** *(v4.0.0)*
    - 상단 배너 이미지가 CustomTkinter 요구사항(PIL Image 객체)에 맞게 정상 표시.
    - 배너 영역 높이(120px)에 맞춰 이미지 크기, 가로 최대 900px.
 
-5. **사건 목록 열 너비 UX (Excel 스타일)** *(v3.3.0)*
+8. **사건 목록 열 너비 UX (Excel 스타일)** *(v3.3.0)*
    - 드래그 중 가이드라인만 표시, 열 너비는 `column_widths.json`에 저장·복원.
 
 ### 기존 주요 기능 (v3.2.x 이전)
@@ -52,15 +62,16 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 ```
 case-ing/
 ├── batch_gui_maker.py           메인 GUI 로직
-├── config.py                    설정 상수 (APP_VERSION = "4.1.2" 등)
+├── config.py                    설정 상수 (APP_VERSION = "4.2.0" 등)
 ├── main.py                      진입점 (run_app 호출)
 ├── requirements.txt             Python 패키지
 ├── package.json                 Node.js 패키지
-├── logs/                        로그 파일 (app.log, app.log.YYYY-MM-DD)
+├── logs/                        로그 파일 (app_YYYYMMDD_HHMMSS.log, 최대 10개)
 ├── src/                         Puppeteer 자동화 코드
 ├── services/                    Python 서비스 (logger, puppeteer, google_sheets 등)
 ├── gui/                         GUI (main_window, panels, dialogs, captcha_dialog)
-├── utils/                       공통 유틸 모듈 (v4.1.2)
+├── utils/                       공통 유틸 (email_manager 등)
+├── gas/                         GAS 스크립트 (SendNotificationMail.gs)
 ├── api/certification/           구글 API 인증
 ├── assets/                      배너 등 에셋
 └── 00.CHANGELOG, 00.README, 00.PROJECT_STRUCTURE   버전별 문서
@@ -116,13 +127,14 @@ python main.py
 
 ## 개발 히스토리
 
-- **v4.1.2**: 리팩토링(사건 목록 UI 분리), utils 폴더 추가, 백업 파일 제거
+- **v4.2.0**: 알림메일 고도화(HTML·그룹화·즉시 발송), 제어 패널 UI·로깅 강화
+- **v4.1.2**: 리팩토링(사건 목록 UI 분리), utils 폴더 추가
 - **v4.1.0**: 표준 로깅, 로그 복사/과거 로그 뷰어, 사건 목록(N), 가로 스크롤바 수정
 - **v4.0.0**: 배너 이미지 PIL 전달 및 크기 최적화
 - **v3.3.0**: 열 너비 Excel 스타일 UX, 열 너비 저장/복원
 - **v3.2.x ~ v3.0.0**: 스마트 병렬 처리, 대화형 러너, 스마트 스킵 등
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v4.1.2.md](00.CHANGELOG/CHANGELOG_v4.1.2.md)  
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v4.2.0.md](00.CHANGELOG/CHANGELOG_v4.2.0.md)  
 버전별 README: [00.README/](00.README/)
 
 ---

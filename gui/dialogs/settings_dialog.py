@@ -50,6 +50,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # ---------- 일반 탭 ----------
         tab_gen = tabview.add("일반")
+        self._add_row(tab_gen, "NOTIFICATION_EMAIL_ADDRESS", "알림 수신 메일 주소", 1)
+        self._add_row(tab_gen, "NOTIFICATION_GAS_WEBAPP_URL", "GAS 웹 앱 URL (즉시 발송용)", 1)
         self._add_row(tab_gen, "HEADER_IMAGE_PATH", "배너 이미지 경로", 1)
         self._add_row(tab_gen, "HEADER_BG_COLOR", "헤더 배경색(#RRGGBB)", 1)
         self._add_row(tab_gen, "MAX_PARALLEL_LIMIT", "최대 병렬 처리 수", 1)

@@ -90,11 +90,27 @@ class LogViewerDialog(ctk.CTkToplevel):
         ).pack(side=tk.LEFT, padx=4)
         ctk.CTkButton(
             btn_frame,
+            text="클립보드에 복사",
+            width=120,
+            command=self._copy_to_clipboard,
+        ).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(
+            btn_frame,
             text="닫기",
             width=90,
             fg_color="#5D6D7E",
             command=self.destroy,
         ).pack(side=tk.LEFT, padx=4)
+
+    def _copy_to_clipboard(self):
+        try:
+            text = self._text.get("1.0", "end-1c")
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("복사 완료", "로그 내용이 클립보드에 복사되었습니다.", parent=self)
+        except Exception:
+            pass
 
     def _refresh_list_and_load(self):
         self._paths = get_available_log_paths()

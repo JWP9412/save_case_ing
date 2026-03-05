@@ -640,6 +640,39 @@ class GoogleSheetsService:
             self._log(f"⚠️ 시트 행 삭제 실패: {e}")
             return False
 
+    def append_notification_mail(self, summary_text, recipient_email=""):
+        """
+        '알림메일' 워크시트에 메일 내역 행을 추가합니다.
+        GAS(Apps Script)가 '발송상태'가 '대기'인 행을 감지해 수신주소 열을 보고 메일 발송합니다.
+
+        summary_text: 메일 본문으로 쓸 문자열 (사건별 업데이트 요약).
+        recipient_email: 수신 메일 주소 (GUI 설정에서 입력).
+        반환: True 성공, False 실패.
+        """
+        if not summary_text or not summary_text.strip():
+            return False
+        try:
+            spreadsheet = self._get_spreadsheet()
+            try:
+                worksheet = spreadsheet.worksheet(config.NOTIFICATION_WORKSHEET_NAME)
+            except gspread.WorksheetNotFound:
+                worksheet = spreadsheet.add_worksheet(
+                    title=config.NOTIFICATION_WORKSHEET_NAME, rows=100, cols=10
+                )
+            all_values = worksheet.get_all_values()
+            header = ["일시", "수신주소", "메일내용", "발송상태"]
+            if len(all_values) == 0:
+                worksheet.append_row(header)
+            elif len(all_values) == 1 and len(all_values[0]) < 4:
+                worksheet.update("A1:D1", [header], value_input_option="USER_ENTERED")
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            worksheet.append_row([current_time, (recipient_email or "").strip(), summary_text.strip(), "대기"])
+            self._log(f"✅ 알림메일 시트에 행 추가 완료 (발송상태: 대기)")
+            return True
+        except Exception as e:
+            self._log(f"❌ 알림메일 시트 추가 실패: {e}")
+            return False
+
     def _get_case_worksheet_name(self, case):
         """사건 정보로 개별 시트 이름을 반환."""
         defendant = case.get("피고", "")

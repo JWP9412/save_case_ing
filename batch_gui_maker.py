@@ -58,6 +58,9 @@ import json
 # threading: 여러 작업을 동시에 처리하기 위한 스레드 라이브러리
 import threading
 
+# queue: 메인 스레드 UI 업데이트를 위한 스레드 안전 큐
+import queue
+
 # time: 시간 관련 기능 (대기, 시간 측정 등)
 import time
 
@@ -99,6 +102,9 @@ from services.logger_service import setup_logger, register_gui_handler, get_logg
 
 # services.update_history: 업데이트 기록 파일 읽기/쓰기
 from services import update_history as update_history_service
+
+# utils.email_manager: 알림메일 미발송 내역 누적
+from utils import email_manager as email_manager_module
 
 # sys: 시스템 관련 기능 (경로 추가 등)
 import sys
@@ -184,6 +190,16 @@ class BatchProcessingGUI:
         self.header_select_all_var = None
         # processing_thread: 백그라운드에서 처리 작업을 실행하는 스레드
         self.processing_thread = None
+
+        # UI 업데이트 관련 상태 관리
+        self._ui_updating = False
+        self._extra_width_last_col = 0
+        
+        # UI 업데이트 메시지 큐 (메인 스레드 응답 없음 방지용)
+        self.ui_queue = queue.Queue()
+        
+        # 파일 I/O 동시 접근 방지용 Lock (status_history 등)
+        self._file_lock = threading.Lock()
 
         # ============================================================
         # 브라우저 관련 변수들
@@ -356,7 +372,9 @@ class BatchProcessingGUI:
 
     def create_control_panel(self, parent):
         """제어 패널 생성. gui.panels.ControlPanel에 위임."""
-        return ControlPanel.create(parent, self)
+        frame = ControlPanel.create(parent, self)
+        self.root.after(100, self.update_email_btn_text)
+        return frame
 
     def _set_control_btn_state(self, btn, enabled):
         """제어 패널 버튼 활성/비활성 + 회색 스타일 적용. gui.panels.ControlPanel에 위임."""
@@ -776,7 +794,7 @@ class BatchProcessingGUI:
     def create_progress_panel(self, parent):
         """진행상황 패널 생성. gui.panels.ProgressPanel에 위임. 생성 후 GUI 로그 핸들러 등록."""
         frame = ProgressPanel.create(parent, self)
-        register_gui_handler(self.root, lambda: self.status_text)
+        register_gui_handler(self)
         return frame
 
     def reset_internal_data(self):
@@ -1047,17 +1065,23 @@ class BatchProcessingGUI:
             self.case_inputs[index].set(cleaned)
 
     def update_case_list_ui(self):
-        """사건 목록 UI 업데이트 (Refactored 2026)"""
+        """사건 목록 UI 업데이트 (비동기 배치 처리로 UI 프리징 방지)"""
+        if getattr(self, "_ui_updating", False):
+            self.log_message("⚠️ UI 업데이트가 이미 진행 중입니다. 대기합니다.")
+            return
+        
         try:
+            self._ui_updating = True
             n = len(self.case_list) if self.case_list else 0
             if hasattr(self, "case_list_title_label") and self.case_list_title_label.winfo_exists():
-                self.case_list_title_label.configure(text=f"📋 사건 목록({n})")
-            self.log_message(f"🔄 [DEBUG] UI 업데이트 시작: {len(self.case_list)}건")
+                self.case_list_title_label.configure(text=f"📋 사건 목록({n}) (로딩 중...)")
+            self.log_message(f"🔄 [DEBUG] UI 업데이트 시작: {n}건 (배치 처리)")
 
-            # 기존 위젯 제거
+            # 기존 위젯 제거 (메인 스레드에서 즉시 실행)
             for widget in self.case_list_frame.winfo_children():
                 widget.destroy()
 
+            # 상태 데이터 초기화
             self.case_checkboxes = {}
             self.case_inputs = {}
             self.case_entries = {}
@@ -1072,80 +1096,106 @@ class BatchProcessingGUI:
             self.case_start_times = {}
             self.case_info_text_widgets = {}
 
-            # 컬럼 설정 (픽셀) - 저장된 값 우선, 없으면 기본값 또는 세션 리사이즈 유지
-            loaded = self.load_column_widths()
-            if loaded is not None and len(loaded) == len(COL_WIDTHS):
-                self.col_widths = list(loaded)
-            elif not hasattr(self, "col_widths") or len(self.col_widths) != len(
-                COL_WIDTHS
-            ):
+            # 컬럼 설정 및 너비 계산
+            loaded_widths = self.load_column_widths()
+            if loaded_widths is not None and len(loaded_widths) == len(COL_WIDTHS):
+                self.col_widths = list(loaded_widths)
+            elif not hasattr(self, "col_widths") or len(self.col_widths) != len(COL_WIDTHS):
                 self.col_widths = list(COL_WIDTHS)
 
-            # 열 표시 순서 - 저장된 값 우선, 없으면 기본 순서 (비고=맨 우측, 시트=그 왼쪽)
             order_loaded = self.load_column_order()
             if order_loaded is not None and len(order_loaded) == len(COL_NAMES):
                 self.col_order = list(order_loaded)
-            elif not hasattr(self, "col_order") or len(self.col_order) != len(
-                COL_NAMES
-            ):
+            elif not hasattr(self, "col_order") or len(self.col_order) != len(COL_NAMES):
                 self.col_order = list(DEFAULT_COL_ORDER)
 
-            # 전체 너비: 캔버스 너비만큼 채워 비고 열이 우측 끝까지 닿도록
             effective_total, extra_last = self._get_effective_widths()
             self._extra_width_last_col = extra_last
+            
             if hasattr(self, "header_container") and self.header_container.winfo_exists():
                 self.header_container.configure(width=effective_total)
             if hasattr(self, "header_canvas") and self.header_canvas.winfo_exists():
-                self.header_canvas.configure(
-                    scrollregion=(0, 0, effective_total, 40)
-                )
+                self.header_canvas.configure(scrollregion=(0, 0, effective_total, 40))
             if hasattr(self, "case_list_frame") and self.case_list_frame.winfo_exists():
                 self.case_list_frame.configure(width=effective_total)
 
             # 헤더 생성
             self.create_list_header()
-
-            # 저장된 직전 상태 로드 (저장 실패/완료 등 유지)
+            
+            # 저장된 직전 상태 로드
             status_history = self.load_status_history()
+            
+            # 배치 생성을 위한 변수
+            batch_size = 5  # 한 번에 생성할 행 수 (작을수록 UI 응답성 향상)
+            
+            def process_batch(start_idx):
+                if not self.root.winfo_exists():
+                    self._ui_updating = False
+                    return
+                    
+                end_idx = min(start_idx + batch_size, len(self.case_list))
+                for i in range(start_idx, end_idx):
+                    case = self.case_list[i]
+                    case_number = case.get("사건번호", "")
+                    initial_status = status_history.get(case_number)
+                    
+                    row, comps, cell_frames = self.create_case_row(
+                        self.case_list_frame,
+                        case,
+                        i,
+                        effective_total,
+                        initial_status=initial_status,
+                    )
+                    
+                    self.case_cell_frames[i] = cell_frames
+                    self.case_info_text_widgets[i] = [
+                        comps["label_info_1"],
+                        comps["label_info_2"],
+                        comps["label_info_3"],
+                    ]
+                    self.case_checkboxes[i] = comps["checkbox_var"]
+                    self.case_images[i] = comps["image_label"]
+                    self.case_inputs[i] = comps["captcha_var"]
+                    self.case_entries[i] = comps["captcha_entry"]
+                    self.case_status[i] = comps["status_label"]
+                    self.case_update_date_labels[i] = comps["update_date_label"]
+                    self.case_update_labels[i] = comps["update_d_label"]
 
-            # 사건 목록 생성
-            for i, case in enumerate(self.case_list):
-                case_number = case.get("사건번호", "")
-                initial_status = status_history.get(case_number)
-                row, comps, cell_frames = self.create_case_row(
-                    self.case_list_frame,
-                    case,
-                    i,
-                    effective_total,
-                    initial_status=initial_status,
-                )
-                self.case_cell_frames[i] = cell_frames
-                self.case_info_text_widgets[i] = [
-                    comps["label_info_1"],
-                    comps["label_info_2"],
-                    comps["label_info_3"],
-                ]
+                # 스크롤 영역 실시간 업데이트
+                self.case_list_frame.update_idletasks()
+                self.case_canvas.configure(scrollregion=self.case_canvas.bbox("all"))
+                
+                if end_idx < len(self.case_list):
+                    # 다음 배치 예약
+                    self.root.after(1, lambda: process_batch(end_idx))
+                else:
+                    # 모든 배치 완료
+                    self._on_ui_update_complete()
 
-                self.case_checkboxes[i] = comps["checkbox_var"]
-                self.case_images[i] = comps["image_label"]
-                self.case_inputs[i] = comps["captcha_var"]
-                self.case_entries[i] = comps["captcha_entry"]
-                self.case_status[i] = comps["status_label"]
-                self.case_update_date_labels[i] = comps["update_date_label"]
-                self.case_update_labels[i] = comps["update_d_label"]
+            # 첫 번째 배치 시작
+            if self.case_list:
+                process_batch(0)
+            else:
+                self._on_ui_update_complete()
+                
+        except Exception as e:
+            self.log_message(f"❌ UI 업데이트 중 오류 발생: {e}")
+            self._ui_updating = False
 
-            # 리스트 갱신 후 헤더 토글을 행 선택 상태에 맞춤 (전부 선택이면 체크, 아니면 해제)
+    def _on_ui_update_complete(self):
+        """UI 업데이트 완료 후 마무리 작업"""
+        try:
+            n = len(self.case_list) if self.case_list else 0
+            if hasattr(self, "case_list_title_label") and self.case_list_title_label.winfo_exists():
+                self.case_list_title_label.configure(text=f"📋 사건 목록({n})")
+            
+            # 헤더 토글 상태 맞춤
             if self.case_checkboxes:
-                n = len(self.case_checkboxes)
-                selected_count = sum(
-                    1 for v in self.case_checkboxes.values() if v.get()
-                )
-                self.header_select_all_var.set(selected_count == n)
-
-            # 스크롤 영역 업데이트 (가로/세로)
-            self.case_list_frame.update_idletasks()
-            self.case_canvas.update_idletasks()
-            self.case_canvas.configure(scrollregion=self.case_canvas.bbox("all"))
+                selected_count = sum(1 for v in self.case_checkboxes.values() if v.get())
+                self.header_select_all_var.set(selected_count == len(self.case_checkboxes))
+                
+            self.log_message(f"✅ UI 업데이트 완료: {n}건")
+            
             self.case_canvas.yview_moveto(0)
             self.case_canvas.xview_moveto(0)
             if hasattr(self, "header_canvas") and self.header_canvas.winfo_exists():
@@ -1159,8 +1209,9 @@ class BatchProcessingGUI:
         except Exception as e:
             self.log_message(f"❌ [ERROR] UI 업데이트 오류: {e}")
             import traceback
-
             print(traceback.format_exc())
+        finally:
+            self._ui_updating = False
 
     # _deprecated_update_case_list_ui 는 legacy/deprecated_code.py 로 옮겨 두었습니다 (참고용, 호출 안 함).
 
@@ -1504,8 +1555,49 @@ class BatchProcessingGUI:
             self.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
             self._set_control_btn_state(self.start_btn, True)
 
-        self.root.after(0, _restore_start_btn)
-        self.root.after(0, lambda: self._set_control_btn_state(self.stop_btn, False))
+        self.ui_queue.put(("function", (_restore_start_btn,), {}))
+        self.ui_queue.put(("function", (self._set_control_btn_state, self.stop_btn, False), {}))
+        
+        # 실패한 사건 확인 및 재실행 알림
+        self._check_and_prompt_failed_cases(cases)
+
+    def _check_and_prompt_failed_cases(self, processed_cases):
+        """처리된 사건 중 실패/오류/재입력대기 상태인 사건들을 찾아 재실행 여부를 묻습니다."""
+        failed_cases = []
+        for case in processed_cases:
+            case_number = case.get("사건번호", "")
+            case_index = self.find_case_index(case_number)
+            if case_index != -1 and case_index in self.case_status:
+                # 위젯에서 현재 텍스트 확인
+                status_text = self.case_status[case_index].cget("text")
+                if any(keyword in status_text for keyword in ["실패", "오류", "취소", "재입력대기"]):
+                    failed_cases.append((case_index, case_number))
+        
+        if not failed_cases:
+            return
+
+        def _show_prompt():
+            failed_msg = "\n".join([f"- {num}" for _, num in failed_cases])
+            prompt_msg = f"총 {len(failed_cases)}건의 사건 처리에 실패했습니다.\n\n[실패 목록]\n{failed_msg}\n\n실패한 사건들만 다시 실행하시겠습니까?"
+            
+            if messagebox.askyesno("재실행 확인", prompt_msg):
+                self.log_message(f"🔄 실패한 {len(failed_cases)}건 재실행 시작")
+                
+                # 1. 모든 체크박스 해제
+                self.deselect_all_cases()
+                
+                # 2. 실패한 사건만 체크
+                for case_idx, _ in failed_cases:
+                    if case_idx in self.case_checkboxes:
+                        self.case_checkboxes[case_idx].set(True)
+                
+                # 3. 헤더 체크박스 상태 갱신
+                self.header_select_all_var.set(False)
+                
+                # 4. 재실행
+                self.start_batch_processing()
+
+        self.ui_queue.put(("function", (_show_prompt,), {}))
 
     def _process_auto_case(self, case, case_index):
         """
@@ -1624,6 +1716,13 @@ class BatchProcessingGUI:
                 self.update_case_timestamp(case, case_index, total_rows)
                 if row_count > 0:
                     self.add_to_search_log(case_number)
+                    try:
+                        sheet_name = self.google_sheets_service._get_case_worksheet_name(case)
+                        email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
+                    except Exception:
+                        pass
+                    if hasattr(self, "update_email_btn_text") and callable(getattr(self, "update_email_btn_text", None)):
+                        self.root.after(0, self.update_email_btn_text)
                 if hasattr(self, "processed_cases"):
                     self.processed_cases.add(case_index)
                 self.log_message(
@@ -1987,6 +2086,13 @@ class BatchProcessingGUI:
                     self.update_case_timestamp(case, original_index, total_rows)
                     if row_count > 0:
                         self.add_to_search_log(case_number)
+                        try:
+                            sheet_name = self.google_sheets_service._get_case_worksheet_name(case)
+                            email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
+                        except Exception:
+                            pass
+                        if hasattr(self, "update_email_btn_text") and callable(getattr(self, "update_email_btn_text", None)):
+                            self.root.after(0, self.update_email_btn_text)
                     self.log_message(
                         f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)"
                     )
@@ -2444,14 +2550,15 @@ class BatchProcessingGUI:
         """
         path = getattr(config, "SEARCH_LOG_FILE", "search_log.json")
         try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return (
-                        data
-                        if isinstance(data, list)
-                        else list(data.keys()) if isinstance(data, dict) else []
-                    )
+            with getattr(self, "_file_lock", threading.Lock()):
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        return (
+                            data
+                            if isinstance(data, list)
+                            else list(data.keys()) if isinstance(data, dict) else []
+                        )
             return []
         except Exception as e:
             self.log_message(f"⚠️ 검색 이력 로드 실패: {e}")
@@ -2465,11 +2572,22 @@ class BatchProcessingGUI:
             return
         path = getattr(config, "SEARCH_LOG_FILE", "search_log.json")
         try:
-            log = self.load_search_log()
-            if case_number not in log:
-                log.append(case_number)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(log, f, ensure_ascii=False, indent=2)
+            with getattr(self, "_file_lock", threading.Lock()):
+                # Lock 내에서 직접 로드 및 저장 수행
+                log = []
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            log = data if isinstance(data, list) else list(data.keys()) if isinstance(data, dict) else []
+                    except Exception:
+                        pass
+                
+                if case_number not in log:
+                    log.append(case_number)
+                
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(log, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log_message(f"⚠️ 검색 이력 저장 실패: {e}")
 
@@ -2478,9 +2596,10 @@ class BatchProcessingGUI:
         로컬 업데이트 기록 로드 (services.update_history 사용)
         """
         try:
-            return update_history_service.load_update_history(
-                config.UPDATE_HISTORY_FILE
-            )
+            with getattr(self, "_file_lock", threading.Lock()):
+                return update_history_service.load_update_history(
+                    config.UPDATE_HISTORY_FILE
+                )
         except Exception as e:
             self.log_message(f"⚠️ 업데이트 기록 로드 실패: {e}")
             return {}
@@ -2490,30 +2609,38 @@ class BatchProcessingGUI:
         로컬 업데이트 기록 저장 (services.update_history 사용)
         """
         try:
-            update_history_service.save_update_history(
-                history, config.UPDATE_HISTORY_FILE
-            )
+            with getattr(self, "_file_lock", threading.Lock()):
+                update_history_service.save_update_history(
+                    history, config.UPDATE_HISTORY_FILE
+                )
         except Exception as e:
             self.log_message(f"⚠️ 업데이트 기록 저장 실패: {e}")
 
     def update_case_timestamp(self, case, original_index=None, row_count=0):
         """사건 업데이트 타임스탬프 및 행 개수 기록, GUI 갱신 (기록은 services.update_history 사용)"""
         try:
-            history = self.load_update_history()
             case_number = case.get("사건번호", "")
+            
+            # _file_lock을 사용하여 로드-수정-저장을 원자적으로 처리
+            with getattr(self, "_file_lock", threading.Lock()):
+                # 최신 상태 다시 읽기
+                history = update_history_service.load_update_history(config.UPDATE_HISTORY_FILE)
+                
+                # 이전 행 개수 가져오기
+                old_data = history.get(case_number, {})
+                if isinstance(old_data, str):
+                    old_row_count = 0
+                else:
+                    old_row_count = old_data.get("row_count", 0)
 
-            # 이전 행 개수 가져오기 (기록 저장 전)
-            old_data = history.get(case_number, {})
-            if isinstance(old_data, str):
-                old_row_count = 0
-            else:
-                old_row_count = old_data.get("row_count", 0)
-
-            # 서비스로 기록 갱신 후 저장
-            new_history = update_history_service.update_case_record(
-                case_number, row_count, history
-            )
-            self.save_update_history(new_history)
+                # 기록 갱신 후 저장
+                new_history = update_history_service.update_case_record(
+                    case_number, row_count, history
+                )
+                update_history_service.save_update_history(
+                    new_history, config.UPDATE_HISTORY_FILE
+                )
+                
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             # 새로 추가된 행 개수 계산
@@ -2585,9 +2712,11 @@ class BatchProcessingGUI:
         """
         path = getattr(config, "STATUS_HISTORY_FILE", "status_history.json")
         try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+            # 파일 읽기 시에도 Lock을 적용하여 쓰기 도중 읽는 것을 방지
+            with getattr(self, "_file_lock", threading.Lock()):
+                if os.path.isfile(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        return json.load(f)
         except Exception:
             pass
         return {}
@@ -2632,9 +2761,10 @@ class BatchProcessingGUI:
         """현재 열 순서를 COLUMN_ORDER_FILE에 JSON 배열로 저장."""
         path = getattr(config, "COLUMN_ORDER_FILE", "column_order.json")
         try:
-            if hasattr(self, "col_order") and self.col_order:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(self.col_order, f, indent=2)
+            with getattr(self, "_file_lock", threading.Lock()):
+                if hasattr(self, "col_order") and self.col_order:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(self.col_order, f, indent=2)
         except Exception:
             pass
 
@@ -2642,9 +2772,10 @@ class BatchProcessingGUI:
         """현재 열 너비를 COLUMN_WIDTHS_FILE에 JSON 배열로 저장."""
         path = getattr(config, "COLUMN_WIDTHS_FILE", "column_widths.json")
         try:
-            if hasattr(self, "col_widths") and self.col_widths:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(self.col_widths, f, indent=2)
+            with getattr(self, "_file_lock", threading.Lock()):
+                if hasattr(self, "col_widths") and self.col_widths:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(self.col_widths, f, indent=2)
         except Exception:
             pass
 
@@ -2654,10 +2785,20 @@ class BatchProcessingGUI:
         """
         path = getattr(config, "STATUS_HISTORY_FILE", "status_history.json")
         try:
-            history = self.load_status_history()
-            history[case_number] = {"status": status, "color": color, "emoji": emoji}
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+            with getattr(self, "_file_lock", threading.Lock()):
+                # Lock 안에서 파일을 읽고 쓰도록 변경 (읽기 전용 함수 대신 직접 로드/저장)
+                history = {}
+                if os.path.isfile(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        try:
+                            history = json.load(f)
+                        except Exception:
+                            pass
+                
+                history[case_number] = {"status": status, "color": color, "emoji": emoji}
+                
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(history, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log_message(f"⚠️ 상태 기록 저장 실패: {e}")
 
@@ -2735,54 +2876,28 @@ class BatchProcessingGUI:
         return self.google_sheets_service.save_progress_data(case, result_data)
 
     def update_case_status(self, case_index, status, color, emoji=""):
-        """사건 상태 업데이트 (이모지 포함) (Thread-Safe). 상태 열 영구 보존용 JSON에도 기록."""
+        """사건 상태 업데이트 (이모지 포함) (Thread-Safe). 큐를 통해 메인 스레드에서 처리됩니다."""
 
-        def _update():
-            if case_index in self.case_status:
-                display_text = f"{emoji} {status}" if emoji else status
-                self.case_status[case_index].configure(
-                    text=display_text, text_color=color
-                )
-                # 직전 상태 기록 (저장 실패/완료 등 유지)
-                if 0 <= case_index < len(self.case_list):
-                    case_number = self.case_list[case_index].get("사건번호", "")
-                    if case_number:
-                        self.save_status_history(case_number, status, color, emoji)
+        # 직전 상태 기록 (저장 실패/완료 등 유지) - 메인 UI 스레드 밖에서 실행 (파일 I/O)
+        if 0 <= case_index < len(self.case_list):
+            case_number = self.case_list[case_index].get("사건번호", "")
+            if case_number:
+                # 별도 스레드에서 파일 저장을 수행하여 UI 프리징 방지
+                threading.Thread(target=self.save_status_history, args=(case_number, status, color, emoji), daemon=True).start()
 
-                if case_index in self.case_frames:
-                    if status.startswith("처리중"):
-                        self.case_frames[case_index].configure(fg_color="#FFF3CD")
-                        for widget in self.case_frames[case_index].winfo_children():
-                            try:
-                                widget.configure(fg_color="#FFF3CD")
-                            except (tk.TclError, AttributeError):
-                                try:
-                                    widget.config(bg="#FFF3CD")
-                                except Exception:
-                                    pass
-                    elif status.startswith("완료"):
-                        self.case_frames[case_index].configure(fg_color="#D4EDDA")
-                        for widget in self.case_frames[case_index].winfo_children():
-                            try:
-                                widget.configure(fg_color="#D4EDDA")
-                            except (tk.TclError, AttributeError):
-                                try:
-                                    widget.config(bg="#D4EDDA")
-                                except Exception:
-                                    pass
-                    elif status.startswith("실패") or status.startswith("오류"):
-                        self.case_frames[case_index].configure(fg_color="#F8D7DA")
-                        for widget in self.case_frames[case_index].winfo_children():
-                            try:
-                                widget.configure(fg_color="#F8D7DA")
-                            except (tk.TclError, AttributeError):
-                                try:
-                                    widget.config(bg="#F8D7DA")
-                                except Exception:
-                                    pass
-
-        # 메인 스레드에서 실행
-        self.root.after(0, _update)
+        # UI 업데이트용 데이터 준비
+        display_text = f"{emoji} {status}" if emoji else status
+        
+        bg_color = None
+        if status.startswith("처리중"):
+            bg_color = "#FFF3CD"
+        elif status.startswith("완료"):
+            bg_color = "#D4EDDA"
+        elif status.startswith("실패") or status.startswith("오류"):
+            bg_color = "#F8D7DA"
+            
+        # 큐에 메시지 넣기
+        self.ui_queue.put(("status", (case_index, display_text, color, bg_color), {}))
 
     def update_captcha_image(self, case_index, image_path):
         """
@@ -2919,6 +3034,78 @@ class BatchProcessingGUI:
                 return i
         return -1
 
+    def update_email_btn_text(self):
+        """알림메일 버튼의 텍스트 및 활성/비활성 색상을 갱신합니다. 보낼 내역이 있을 때만 파란색(활성)으로 표시."""
+        btn = getattr(self, "email_btn", None)
+        if not btn or not btn.winfo_exists():
+            return
+        summary_text, last_sent = email_manager_module.get_summary_text()
+        has_content = bool(summary_text and summary_text.strip())
+        ControlPanel.set_control_btn_state(self, btn, has_content)
+        if not last_sent:
+            last_sent = "없음"
+        btn.configure(text=f"📧 모든 사건 메일 발송 (최근: {last_sent})", height=ControlPanel.BTN_H)
+
+    def send_notification_email(self):
+        """미발송 누적 내역을 구글 시트 '알림메일' 시트에 기록하고, 로컬 누적을 비웁니다. (비동기 처리)"""
+        summary_html, last_sent = email_manager_module.get_summary_html()
+        if not summary_html or not summary_html.strip():
+            messagebox.showinfo("알림메일", "보낼 내역이 없습니다.")
+            return
+            
+        recipient = (getattr(config, "NOTIFICATION_EMAIL_ADDRESS", "") or "").strip()
+        if not recipient:
+            messagebox.showwarning("알림메일", "설정에서 알림 수신 메일 주소를 먼저 입력해주세요.")
+            return
+
+        # 버튼 비활성화 (중복 클릭 방지)
+        btn = getattr(self, "email_btn", None)
+        if btn and btn.winfo_exists():
+            self._set_control_btn_state(btn, False)
+            btn.configure(text="⏳ 기록 및 발송 중...")
+
+        def worker():
+            try:
+                # 1. 구글 시트 기록 (네트워크 작업)
+                ok = self.google_sheets_service.append_notification_mail(summary_html, recipient)
+                if not ok:
+                    self.root.after(0, lambda: messagebox.showerror("알림메일", "구글 시트에 기록하는 데 실패했습니다."))
+                    return
+                
+                # 2. 로컬 데이터 비우기
+                email_manager_module.clear_unsent_emails_and_update_last_sent()
+                
+                # 3. 즉시 발송 요청 (웹 앱 URL이 있는 경우)
+                msg_suffix = ""
+                webapp_url = (getattr(config, "NOTIFICATION_GAS_WEBAPP_URL", "") or "").strip()
+                if webapp_url:
+                    try:
+                        import urllib.request
+                        req = urllib.request.Request(webapp_url, method="POST", data=b"")
+                        with urllib.request.urlopen(req, timeout=15) as _:
+                            msg_suffix = "\n\n(웹 앱을 통해 즉시 발송을 요청했습니다.)"
+                    except Exception as e:
+                        self.log_message(f"⚠️ GAS 웹 앱 즉시 발송 호출 실패: {e}")
+                        msg_suffix = "\n\n(웹 앱 호출에 실패했습니다. 트리거가 설정되어 있다면 1분 내로 발송됩니다.)"
+
+                # 4. 완료 후 UI 업데이트
+                def final_update():
+                    self.update_email_btn_text()
+                    messagebox.showinfo("알림메일", f"알림메일 시트에 기록했습니다. (발송상태: 대기){msg_suffix}")
+                
+                self.root.after(0, final_update)
+                
+            except Exception as e:
+                self.log_message(f"❌ 알림메일 기록 실패: {e}")
+                self.root.after(0, lambda: messagebox.showerror("알림메일", f"기록 중 오류가 발생했습니다: {e}"))
+            finally:
+                # 버튼 상태 복원
+                if btn and btn.winfo_exists():
+                    self.root.after(0, lambda: self._set_control_btn_state(btn, True))
+                    self.root.after(0, self.update_email_btn_text)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def processing_completed(self):
         """처리 완료 후 UI 업데이트"""
         self._set_control_btn_state(self.start_btn, True)
@@ -2931,29 +3118,83 @@ class BatchProcessingGUI:
         get_logger().info("%s", message)
 
     def update_progress(self, percentage, status_text=""):
-        """진행률 업데이트 (Thread-Safe)"""
+        """진행률 업데이트 (Thread-Safe). 큐를 통해 메인 스레드에서 처리됩니다."""
+        self.ui_queue.put(("progress", (percentage, status_text), {}))
 
-        def _update():
-            try:
-                self.progress_var.set(percentage)
-                if hasattr(self, "progress_bar") and self.progress_bar.winfo_exists():
-                    self.progress_bar.set(percentage / 100.0)
-
-                # 상태 텍스트 업데이트
-                if status_text:
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    status_entry = f"[{timestamp}] {status_text}\n"
-                    self.status_text.insert(tk.END, status_entry)
-                    self.status_text.see(tk.END)
-
-            except Exception as e:
-                print(f"진행률 업데이트 오류: {e}")
-
-        # 메인 스레드에서 실행
-        self.root.after(0, _update)
+    def _process_ui_queue(self):
+        """
+        메인 스레드에서 주기적으로 호출되어 UI 업데이트 큐를 처리합니다.
+        여러 스레드에서 요청한 UI 변경 사항을 한 번에 모아서 처리하여 병목을 방지합니다.
+        """
+        try:
+            # 큐에 쌓인 메시지를 최대 100개까지만 한 번에 처리하여 메인 스레드 블로킹 방지
+            for _ in range(100):
+                if self.ui_queue.empty():
+                    break
+                task, args, kwargs = self.ui_queue.get_nowait()
+                
+                try:
+                    if task == "log":
+                        # 로그 텍스트 추가
+                        msg = args[0]
+                        if self.status_text and self.status_text.winfo_exists():
+                            self.status_text.insert("end", msg + "\n")
+                            self.status_text.see("end")
+                    
+                    elif task == "status":
+                        # 상태 업데이트 (case_index, display_text, color, emoji_text, bg_color)
+                        case_index, display_text, text_color, bg_color = args
+                        
+                        if case_index in self.case_status and self.case_status[case_index].winfo_exists():
+                            self.case_status[case_index].configure(text=display_text, text_color=text_color)
+                            
+                        if case_index in self.case_frames and self.case_frames[case_index].winfo_exists():
+                            if bg_color:
+                                self.case_frames[case_index].configure(fg_color=bg_color)
+                                for widget in self.case_frames[case_index].winfo_children():
+                                    if widget.winfo_exists():
+                                        try:
+                                            widget.configure(fg_color=bg_color)
+                                        except (tk.TclError, AttributeError):
+                                            try:
+                                                widget.config(bg=bg_color)
+                                            except Exception:
+                                                pass
+                                                
+                    elif task == "progress":
+                        # 진행률 바 업데이트 (percentage, text_status)
+                        percentage, text_status = args
+                        if hasattr(self, "progress_var") and self.progress_var:
+                            self.progress_var.set(percentage)
+                        if hasattr(self, "progress_bar") and self.progress_bar.winfo_exists():
+                            self.progress_bar.set(percentage / 100.0)
+                        if text_status and self.status_text and self.status_text.winfo_exists():
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            self.status_text.insert("end", f"[{timestamp}] {text_status}\n")
+                            self.status_text.see("end")
+                            
+                    elif task == "function":
+                        # 임의의 함수 실행 (버튼 상태 변경 등)
+                        func = args[0]
+                        func(*args[1:], **kwargs)
+                        
+                except Exception as e:
+                    print(f"UI Queue 처리 중 오류: {e}")
+                finally:
+                    self.ui_queue.task_done()
+                    
+        except queue.Empty:
+            pass
+        finally:
+            # 100ms 후 다시 실행되도록 예약
+            if hasattr(self, "root") and self.root and self.root.winfo_exists():
+                self.root.after(100, self._process_ui_queue)
 
     def run(self):
         """GUI 실행"""
+        # UI 업데이트 큐 프로세서 시작
+        self.root.after(100, self._process_ui_queue)
+        
         self.root.after(100, self.load_google_sheet)
         self.root.mainloop()
 

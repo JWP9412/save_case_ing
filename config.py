@@ -15,7 +15,7 @@
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.1.2"
+APP_VERSION = "4.2.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -102,6 +102,12 @@ RIGHT_PANEL_WIDTH_FILE = "right_panel_width.json"
 # 테마 설정 저장 (다크/라이트/시스템 선택 복원용)
 THEME_CONFIG_FILE = "theme_config.json"
 
+# 알림메일: 미발송 내역 저장 파일, 구글 시트 워크시트명, 수신 주소(GUI 설정)
+UNSENT_EMAILS_FILE = "unsent_emails.json"
+NOTIFICATION_WORKSHEET_NAME = "알림메일"
+NOTIFICATION_EMAIL_ADDRESS = ""
+NOTIFICATION_GAS_WEBAPP_URL = ""  # 웹 앱 배포 URL (즉시 발송용, 비어 있으면 호출 안 함)
+
 # ============================================================================
 # 구글 시트 포맷팅 설정
 # ============================================================================
@@ -183,6 +189,8 @@ USER_SETTINGS_OVERRIDABLE = (
     "SPREADSHEET_NAME",
     "GOOGLE_AUTH_FILE",
     "CASE_LIST_WORKSHEET_NAME",
+    "NOTIFICATION_EMAIL_ADDRESS",
+    "NOTIFICATION_GAS_WEBAPP_URL",
     "PUPPETEER_CAPTCHA_TIMEOUT",
     "PUPPETEER_PROCESSING_TIMEOUT",
     "CAPTCHA_INPUT_TIMEOUT",
