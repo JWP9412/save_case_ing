@@ -1,0 +1,113 @@
+[16:32:24] [INFO] test
+[16:32:44] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[16:32:46] [INFO] 구글 시트 연결 중...
+[16:32:47] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[16:32:48] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[16:32:48] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[16:32:48] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[16:32:49] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[16:32:49] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[16:32:49] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:32:53] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:37:30] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[16:37:32] [INFO] 구글 시트 연결 중...
+[16:37:33] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[16:37:33] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[16:37:34] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[16:37:34] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[16:37:34] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[16:37:34] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[16:37:34] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:37:39] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:40:29] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[16:40:31] [INFO] 구글 시트 연결 중...
+[16:40:32] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[16:40:32] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[16:40:33] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[16:40:33] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[16:40:34] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[16:40:34] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[16:40:34] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:40:37] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:41:14] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[16:41:16] [INFO] 구글 시트 연결 중...
+[16:41:17] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[16:41:17] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[16:41:17] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[16:41:17] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[16:41:18] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[16:41:18] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[16:41:18] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:41:22] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:41:34] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:41:37] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:41:37] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:41:41] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:41:41] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:41:45] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:41:45] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:41:48] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:41:49] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:41:52] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:42:45] [INFO] 구글 시트 연결 중...
+[16:42:46] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[16:42:46] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[16:42:46] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[16:42:46] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[16:42:47] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[16:42:47] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[16:42:47] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:42:51] [INFO] ✅ UI 구성 완료 (Modern Style)
+[16:45:46] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[16:45:48] [INFO] 구글 시트 연결 중...
+[16:45:49] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[16:45:50] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[16:45:50] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[16:45:50] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[16:45:51] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[16:45:51] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[16:45:51] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[16:45:54] [INFO] ✅ UI 구성 완료 (Modern Style)
+[17:06:12] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[17:06:13] [INFO] 구글 시트 연결 중...
+[17:06:15] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[17:06:15] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[17:06:15] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[17:06:15] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[17:06:16] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[17:06:16] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[17:06:16] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[17:06:19] [INFO] ✅ UI 구성 완료 (Modern Style)
+[17:23:44] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[17:23:45] [INFO] 구글 시트 연결 중...
+[17:23:47] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[17:23:47] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[17:23:47] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[17:23:47] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[17:23:48] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[17:23:48] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[17:23:48] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[17:23:52] [INFO] ✅ UI 구성 완료 (Modern Style)
+[17:33:17] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[17:33:19] [INFO] 구글 시트 연결 중...
+[17:33:21] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[17:33:21] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[17:33:21] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[17:33:21] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[17:33:22] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[17:33:22] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[17:33:22] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[17:33:25] [INFO] ✅ UI 구성 완료 (Modern Style)
+[17:33:30] [INFO] 구글 시트 연결 중...
+[17:33:30] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[17:33:31] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[17:33:31] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[17:33:31] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[17:33:32] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[17:33:32] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[17:33:32] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[17:33:35] [INFO] ✅ UI 구성 완료 (Modern Style)
+[17:33:42] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[17:33:44] [INFO] ✅ UI 구성 완료 (Modern Style)
+[17:33:48] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[17:33:50] [INFO] ✅ UI 구성 완료 (Modern Style)

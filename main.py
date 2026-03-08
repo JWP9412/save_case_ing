@@ -14,9 +14,14 @@ from gui.main_window import run_app
 
 
 def main():
-    """진입점: run_app()으로 창 생성·패널 조립·이벤트 루프 시작."""
-    print("=== 일괄 처리 GUI 시작 ===")
-    run_app()
+    """진입점: 실행 인자에 따라 CLI 자동 실행 또는 GUI 모드를 시작합니다."""
+    import sys
+    if "--auto" in sys.argv:
+        from auto_runner import run_auto_batch
+        run_auto_batch()
+    else:
+        print("=== 일괄 처리 GUI 시작 ===")
+        run_app()
 
 
 if __name__ == "__main__":

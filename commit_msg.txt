@@ -1,0 +1,7 @@
+v4.2.2 업데이트: batch_gui_maker.py 리팩터링 및 구조 고도화
+
+- batch_gui_maker.py의 핵심 로직을 ProcessController 및 HistoryManager 서비스로 분리
+- 사건 조회 실패 시 알림창 및 실패 건 재실행 기능 추가
+- 제어 패널 버튼 높이 및 스타일 통일로 UI 일관성 확보
+- 과거 로그 뷰어 복사 버튼 추가 및 로깅 시스템 안정화
+- package.json 정리 (Cypress 제거 등) 및 버전별 문서 업데이트 (v4.2.2)

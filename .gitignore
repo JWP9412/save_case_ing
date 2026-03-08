@@ -15,14 +15,7 @@ api/certification/service-account.json
 cookie_data_for_save/
 screenshots/
 results/
-search_log.json
-column_widths.json
-status_history.json
-update_history.json
-theme_config.json
-column_order.json
-right_panel_width.json
-user_settings.json
+data/
 
 # IDE / tooling
 .cursor/

@@ -1,11 +1,11 @@
 {
+  "_comment": "Node.js 쪽 설정. Python GUI가 이 프로젝트 메인이며, 사건 조회/캡차는 Node + Puppeteer(src/)로 동작.",
   "name": "case-ing",
   "version": "1.0.0",
   "description": "Case-ing - 대법원 나의 사건 조회 자동화 API & 크롤러",
   "main": "index.js",
   "scripts": {
-    "start": "cypress run",
-    "test": "cypress open",
+    "_comment_scripts": "start/test는 사용 안 함. fixture/clear는 보조 스크립트용.",
     "fixture": "node create-fixtures.js",
     "clear": "node clear-sheet.js"
   },
@@ -13,8 +13,8 @@
   "author": "Harim Kim <harimkims@gmail.com>",
   "license": "MIT",
   "dependencies": {
+    "_comment_deps": "실제 사용: puppeteer(브라우저 자동화), dayjs. 그 외 axios, googleapis 등은 스크립트/레거시용.",
     "axios": "^1.0.0",
-    "cypress": "^10.9.0",
     "dayjs": "^1.11.5",
     "googleapis": "^159.0.0",
     "jsdom": "^26.1.0",

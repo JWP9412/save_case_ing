@@ -6,7 +6,8 @@
   - v4.1.2: 사건 목록 UI 패널 위임. v4.1.0: 표준 로거·GUI 핸들러·`log_message` 위임. v4.0.0: 배너 PIL·크기 조정.
   - `services/puppeteer.py`, `services/google_sheets.py`, `services/logger_service.py`, `utils/email_manager` 사용.
 - **`config.py`**:
-  - 설정 상수. v4.2.0 기준 `APP_VERSION = "4.2.0"`. `NOTIFICATION_EMAIL_ADDRESS`, `NOTIFICATION_GAS_WEBAPP_URL`, `UNSENT_EMAILS_FILE`, `NOTIFICATION_WORKSHEET_NAME` 등.
+  - 설정 상수. v4.2.0 기준 `APP_VERSION = "4.2.0"`. `NOTIFICATION_EMAIL_ADDRESS`, `NOTIFICATION_GAS_WEBAPP_URL`, `UNSENT_EMAILS_FILE`, `NOTIFICATION_WORKSHEET_NAME` 등. JSON 파일 경로는 `data/` 하위로 통일.
+- **`data/`** (v4.2.0): 설정·이력용 JSON 통합 폴더. `user_settings.json`, `column_widths.json`, `column_order.json`, `right_panel_width.json`, `update_history.json`, `status_history.json`, `theme_config.json`, `unsent_emails.json`, `search_log.json`. `.gitignore`로 제외.
 - **`maintenance.js`**: 유지보수 설정. `src/interactive_runner.js`, `src/single-case-captcha.js`에서 참조.
 - **`main.py`**: 진입점. `config.load_user_settings()` 후 `gui.main_window.run_app()` 호출.
 - **`requirements.txt`**, **`package.json`**: 의존성.

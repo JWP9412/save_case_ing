@@ -1,0 +1,10 @@
+[09:25:06] [INFO] 배너 경로: C:\Users\USER\Desktop\DEV\case-ing\assets\title_banner.png
+[09:25:08] [INFO] 구글 시트 연결 중...
+[09:25:09] [INFO] [INFO] 구글 시트 연결 성공: case-ing-test
+[09:25:09] [INFO] [INFO] 데이터 워크시트 선택: 사건 목록
+[09:25:10] [INFO] [INFO] 191개 행 중 18개 유효한 데이터 로드 완료
+[09:25:10] [INFO] ✅ 구글 시트 클라이언트 생성 완료
+[09:25:10] [INFO] ✅ 스프레드시트 열기 완료: case-ing-test
+[09:25:10] [INFO] ✅ 18개 사건 로드 완료 (병렬 처리: 9개)
+[09:25:10] [INFO] 🔄 [DEBUG] UI 업데이트 시작: 18건
+[09:25:14] [INFO] ✅ UI 구성 완료 (Modern Style)

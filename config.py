@@ -15,7 +15,7 @@
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.2.0"
+APP_VERSION = "4.3.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -82,28 +82,28 @@ RESULTS_DIR = "results"
 SCREENSHOTS_DIR = "screenshots"
 
 # 업데이트 기록 파일
-UPDATE_HISTORY_FILE = "update_history.json"
+UPDATE_HISTORY_FILE = "data/update_history.json"
 
 # 검색 성공 이력 파일 (캡차 입력 성공한 사건번호 목록, '기록' 열 표시용)
-SEARCH_LOG_FILE = "search_log.json"
+SEARCH_LOG_FILE = "data/search_log.json"
 
 # 상태 열 영구 보존용 JSON (사건번호별 직전 상태: 완료/저장 실패 등)
-STATUS_HISTORY_FILE = "status_history.json"
+STATUS_HISTORY_FILE = "data/status_history.json"
 
 # 사건 목록 테이블 열 너비 저장 (사용자 리사이즈 값 복원용)
-COLUMN_WIDTHS_FILE = "column_widths.json"
+COLUMN_WIDTHS_FILE = "data/column_widths.json"
 
 # 사건 목록 테이블 열 순서 저장 (사용자 설정 복원용)
-COLUMN_ORDER_FILE = "column_order.json"
+COLUMN_ORDER_FILE = "data/column_order.json"
 
 # 우측(진행상황) 패널 너비 저장 (사용자 조절 값 복원용)
-RIGHT_PANEL_WIDTH_FILE = "right_panel_width.json"
+RIGHT_PANEL_WIDTH_FILE = "data/right_panel_width.json"
 
 # 테마 설정 저장 (다크/라이트/시스템 선택 복원용)
-THEME_CONFIG_FILE = "theme_config.json"
+THEME_CONFIG_FILE = "data/theme_config.json"
 
 # 알림메일: 미발송 내역 저장 파일, 구글 시트 워크시트명, 수신 주소(GUI 설정)
-UNSENT_EMAILS_FILE = "unsent_emails.json"
+UNSENT_EMAILS_FILE = "data/unsent_emails.json"
 NOTIFICATION_WORKSHEET_NAME = "알림메일"
 NOTIFICATION_EMAIL_ADDRESS = ""
 NOTIFICATION_GAS_WEBAPP_URL = ""  # 웹 앱 배포 URL (즉시 발송용, 비어 있으면 호출 안 함)
@@ -183,7 +183,7 @@ COL_WIDTHS = [160, 210, 260, 110, 180, 90, 90, 80, 120, 60]
 # ============================================================================
 # user_settings.json에 저장 가능한 키 목록. 새 항목 추가 시 이 튜플과
 # load_user_settings() 내부 매핑, settings_dialog.py 폼을 함께 수정하세요.
-USER_SETTINGS_FILE = "user_settings.json"
+USER_SETTINGS_FILE = "data/user_settings.json"
 USER_SETTINGS_OVERRIDABLE = (
     "GOOGLE_SHEET_ID",
     "SPREADSHEET_NAME",
