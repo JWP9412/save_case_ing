@@ -4,7 +4,7 @@
 ============================
 
 검색 로그(search_log.json), 상태 히스토리(status_history.json) 등
-JSON 파일 읽기·쓰기를 담당합니다. batch_gui_maker에서 사용하는 Lock과
+JSON 파일 읽기·쓰기를 담당합니다. app_controller에서 사용하는 Lock과
 로그 콜백은 app을 통해 전달받습니다.
 """
 

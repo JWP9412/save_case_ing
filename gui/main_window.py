@@ -2,16 +2,16 @@
 """
 메인 윈도우 조립 및 실행
 ========================
-BatchProcessingGUI를 생성한 뒤, 헤더·좌측 패널(제어/설정/사건 목록)·우측 패널(진행상황)을
+AppController를 생성한 뒤, 헤더·좌측 패널(제어/설정/사건 목록)·우측 패널(진행상황)을
 조립하고 이벤트 루프를 시작하는 진입점입니다.
-Why: 레이아웃 구성과 실행 순서를 한 곳에서 관리하여, 진입점(batch_gui_maker.py / main.py)이 간단해집니다.
+Why: 레이아웃 구성과 실행 순서를 한 곳에서 관리하여, 진입점(main.py)이 간단해집니다.
 """
 import json
 import os
 import tkinter as tk
 import customtkinter as ctk
 import config
-from batch_gui_maker import BatchProcessingGUI
+from gui.app_controller import AppController
 
 
 def load_right_panel_width():
@@ -37,10 +37,10 @@ def load_right_panel_width():
 def run_app():
     """
     앱을 생성·레이아웃 조립·실행합니다.
-    main.py 또는 batch_gui_maker.py의 __main__에서 호출합니다.
+    main.py의 __main__에서 호출합니다.
     순서: GUI 객체 생성 → create_window() → 헤더 → PanedWindow(좌/우) → 좌측에 제어/설정/사건 목록, 우측에 진행상황 → run().
     """
-    gui = BatchProcessingGUI()
+    gui = AppController()
     root = gui.create_window()
 
     # 헤더 (상단 전체)

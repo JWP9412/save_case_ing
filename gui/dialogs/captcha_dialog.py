@@ -1,21 +1,19 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 캡차 입력 다이얼로그
 ====================
 
 역할: 캡차 이미지를 보여주고 6자리 자동입력방지문구를 입력받는 팝업 창.
-호출 시점: batch_gui_maker에서 캡차 이미지를 팝업으로 보여주고 입력받을 때 사용 (현재 흐름에서는 인라인 입력을 주로 사용).
-반환: show() 가 사용자가 입력한 6자리 문자열 또는 취소 시 None.
+호출: app_controller에서 캡차 이미지를 팝업으로 보여주고 입력받을 때 사용 (인라인 입력을 주로 사용).
+반환: show()는 사용자가 입력한 6자리 문자열 또는 취소 시 None.
 """
-
 import os
 import tkinter as tk
 from tkinter import messagebox
 
 
 class CaptchaInputDialog:
-    """캡차 입력 다이얼로그"""
+    """캡차 입력 다이얼로그. 이미지 표시 후 6자리 입력을 받아 반환합니다."""
 
     def __init__(self, parent, case_number, image_path):
         self.parent = parent

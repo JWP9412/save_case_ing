@@ -11,8 +11,9 @@ from services.google_sheets import GoogleSheetsService
 from services.puppeteer import PuppeteerService
 from services.history_manager import HistoryManager as LogHistoryManager
 from services.update_history import HistoryManager as UpdateHistoryManager
+from services import update_history as update_history_service
 from services.process_controller import ProcessController
-from utils import email_manager as email_manager_module
+from services import email_manager as email_manager_module
 
 
 class MockApp:
@@ -26,6 +27,7 @@ class MockApp:
         self._file_lock = threading.Lock()
         
         # ProcessController가 기대하는 상태 변수들
+        self.case_list = []
         self.browser_ws_urls = {}
         self.browser_processes = {}
         self.case_start_times = {}
@@ -79,8 +81,13 @@ class MockApp:
             safe = msg.encode(enc, errors="replace").decode(enc)
             print(safe)
         
-    def update_case_status(self, case_index, status_text, color, icon=""):
-        self.log_message(f"[상태] {case_index}: {icon} {status_text}")
+    def update_case_status(self, case_number, status_text, color, icon=""):
+        """CLI 처리 중 상태 변경 시 로그 출력 및 파일(status_history.json) 저장"""
+        self.log_message(f"[상태] {case_number}: {icon} {status_text}")
+        try:
+            self.log_history_manager.save_status_history(case_number, status_text, color, icon)
+        except Exception as e:
+            self.log_message(f"⚠️ 상태 기록 저장 실패: {e}")
         
     def update_progress(self, percent, msg):
         self.log_message(f"[진행률 {percent:.1f}%] {msg}")
@@ -97,8 +104,21 @@ class MockApp:
     def load_update_history(self):
         return self.history_manager.load_history()
         
-    def update_case_timestamp(self, case, case_index, total_rows):
-        pass
+    def update_case_timestamp(self, case, original_index, row_count, is_auto=True):
+        """CLI 조회 성공 시 업데이트 기록 저장 (자동 조회 플래그 포함). history_ui.py 시그니처와 동일."""
+        try:
+            case_number = case.get("사건번호", "")
+            with self._file_lock:
+                history = update_history_service.load_update_history(config.UPDATE_HISTORY_FILE)
+                new_history = update_history_service.update_case_record(
+                    case_number, row_count, history, is_auto=is_auto
+                )
+                update_history_service.save_update_history(
+                    new_history, config.UPDATE_HISTORY_FILE
+                )
+            self.log_message(f"📝 자동 조회 기록 완료: {case_number}")
+        except Exception as e:
+            self.log_message(f"⚠️ 자동 조회 기록 실패: {e}")
         
     def update_email_btn_text(self):
         pass
@@ -111,6 +131,31 @@ class MockApp:
         
     def start_batch_processing(self):
         pass
+
+    def reset_internal_data(self):
+        """인터페이스 일관성용. CLI에서는 사용하지 않음."""
+        pass
+
+    def cleanup_case_process(self, case_number):
+        """인터페이스 일관성용. 실제 정리는 ProcessController.cleanup_case_process에서 수행."""
+        pass
+
+    def show_warning(self, message):
+        """CLI: 경고 메시지 로그만 출력."""
+        self.log_message(f"⚠️ [경고] {message}")
+
+    def show_info(self, message):
+        """CLI: 안내 메시지 로그만 출력."""
+        self.log_message(f"ℹ️ [알림] {message}")
+
+    def ask_yesno(self, title, message):
+        """CLI: 대화상자 불가. 항상 False 반환."""
+        self.log_message(f"❓ [{title}] {message} (CLI에서는 자동으로 아니오)")
+        return False
+
+    def get_case_status_text(self, case_index):
+        """CLI: 상태 라벨 없음. 빈 문자열 반환."""
+        return getattr(self, "case_status", {}).get(case_index, "")
 
 
 def run_auto_batch():

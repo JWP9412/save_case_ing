@@ -5,7 +5,7 @@
 ====================
 
 역할: 사건별 "마지막 업데이트 일시"와 "행 개수"를 JSON 파일에 저장/불러오기.
-호출 시점: batch_gui_maker에서 사건 처리 완료 시 기록 저장, 사건 목록 UI에서 D+n 표시 시 load + get_days_since_update 로 조회.
+호출 시점: app_controller에서 사건 처리 완료 시 기록 저장, 사건 목록 UI에서 D+n 표시 시 load + get_days_since_update 로 조회.
 파일 위치: config.UPDATE_HISTORY_FILE (기본 update_history.json).
 """
 
@@ -74,13 +74,14 @@ def get_days_since_update(case, history):
         return -1
 
 
-def update_case_record(case_number, row_count, history):
+def update_case_record(case_number, row_count, history, is_auto=False):
     """
-    사건번호에 대한 업데이트 기록(시간 + 행 개수)을 갱신한 새 딕셔너리 반환.
+    사건번호에 대한 업데이트 기록(시간 + 행 개수 + 자동여부)을 갱신한 새 딕셔너리 반환.
 
     case_number: 사건번호 문자열.
     row_count: 저장된 진행내용 행 개수.
     history: load_update_history()로 얻은 딕셔너리 (수정하지 않음).
+    is_auto: 자동 조회 여부 (기본 False).
     반환: 갱신된 새 딕셔너리 (원본 history와 동일 참조가 아닌 복사본).
     """
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -89,6 +90,7 @@ def update_case_record(case_number, row_count, history):
     new_history[case_number] = {
         "last_update": current_time,
         "row_count": row_count,
+        "is_auto": is_auto,
         **{k: v for k, v in existing.items() if k in ("last_entry",)},
     }
     return new_history

@@ -3,7 +3,7 @@
 사건 처리 컨트롤러 (Process Controller)
 ======================================
 
-batch_gui_maker.py에 있던 병렬 처리·스레딩·캡차 재시도 로직을 전담합니다.
+app_controller.py에 있던 병렬 처리·스레딩·캡차 재시도 로직을 전담합니다.
 GUI는 app 참조를 통해 콜백 형태로 UI 갱신만 수행합니다.
 """
 
@@ -11,24 +11,23 @@ import hashlib
 import subprocess as sp
 import threading
 import time
-from tkinter import messagebox
 
 import psutil
 
 import config
-from utils import email_manager as email_manager_module
+from services import email_manager as email_manager_module
 
 
 class ProcessController:
     """
     사건 조회 로드·캡차 처리·병렬 실행을 담당하는 작업 관리자.
-    BatchProcessingGUI 인스턴스(app)를 받아, 로그/상태/진행률 등은 app 메서드로 전달합니다.
+    AppController 또는 MockApp(CLI) 인스턴스(app)를 받아, 로그/상태/진행률 등은 app 메서드로 전달합니다.
     """
 
     def __init__(self, app):
         """
         Args:
-            app: BatchProcessingGUI 인스턴스. log_message, update_case_status, ui_queue 등에 접근.
+            app: AppController 또는 MockApp. log_message, update_case_status, ui_queue, show_warning 등에 접근.
         """
         self.app = app
 
@@ -108,7 +107,7 @@ class ProcessController:
                 self.app.update_captcha_image(case_index, image_path)
                 self.app.update_case_status(case_index, "캡차입력", "blue")
                 self.app.log_message(f"🔐 캡차 입력 대기: {case_number}")
-                self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.complete_btn, True))
+                self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
                 self.app.log_message("✅ 캡차 입력 완료 버튼 활성화됨")
                 return image_path
             self.app.log_message(f"❌ 캡차 이미지 캡처 실패: {case_number}")
@@ -142,10 +141,10 @@ class ProcessController:
         선택 사건 검증 → processing 플래그·UI 설정 → 스레드에서 execute_actual_processing 실행.
         """
         if not cases:
-            messagebox.showwarning("경고", "처리할 사건을 선택해주세요.")
+            self.app.show_warning("처리할 사건을 선택해주세요.")
             return
         if self.app.processing:
-            messagebox.showwarning("경고", "이미 처리 중입니다.")
+            self.app.show_warning("이미 처리 중입니다.")
             return
 
         self.app.processed_cases = set()
@@ -278,7 +277,7 @@ class ProcessController:
             case_index = self.app.find_case_index(case_number)
             if case_index == -1 or case_index not in getattr(self.app, "case_status", {}):
                 continue
-            status_text = self.app.case_status[case_index].cget("text") or ""
+            status_text = self.app.get_case_status_text(case_index) or ""
             if any(k in status_text for k in ["실패", "오류", "취소", "재입력대기"]):
                 failed_cases.append(case_info)
             elif "변경없음" in status_text:
@@ -299,7 +298,7 @@ class ProcessController:
             case_number = case.get("사건번호", "")
             case_index = self.app.find_case_index(case_number)
             if case_index != -1 and case_index in self.app.case_status:
-                status_text = self.app.case_status[case_index].cget("text")
+                status_text = self.app.get_case_status_text(case_index)
                 if any(keyword in status_text for keyword in ["실패", "오류", "취소", "재입력대기"]):
                     failed_cases.append((case_index, case_number))
 
@@ -312,7 +311,7 @@ class ProcessController:
                 f"총 {len(failed_cases)}건의 사건 처리에 실패했습니다.\n\n[실패 목록]\n{failed_msg}\n\n"
                 "실패한 사건들만 다시 실행하시겠습니까?"
             )
-            if messagebox.askyesno("재실행 확인", prompt_msg):
+            if self.app.ask_yesno("재실행 확인", prompt_msg):
                 self.app.log_message(f"🔄 실패한 {len(failed_cases)}건 재실행 시작")
                 self.app.deselect_all_cases()
                 for case_idx, _ in failed_cases:
@@ -400,14 +399,14 @@ class ProcessController:
                 total_rows = (old_total + row_count) if row_count else old_total
                 self.app.update_case_timestamp(case, case_index, total_rows)
                 if row_count > 0:
-                    self.app.add_to_search_log(case_number)
+                    self.app.log_history_manager.add_to_search_log(case_number)
                     try:
                         sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
                         email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
                     except Exception:
                         pass
                     if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
-                        self.app.root.after(0, self.app.update_email_btn_text)
+                        self.app.ui_queue.put(("function", (self.app.update_email_btn_text,), {}))
                 if hasattr(self.app, "processed_cases"):
                     self.app.processed_cases.add(case_index)
                 self.app.log_message(f"✅ 자동 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
@@ -489,7 +488,7 @@ class ProcessController:
 
                 self.app.update_case_status(case_index, "입력대기", "blue", "⏳")
                 self.app.log_message(f"✅ 캡차 이미지 로드 완료: {case_number} (소요 시간: {elapsed_time}초)")
-                self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.complete_btn, True))
+                self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
                 ev = threading.Event()
                 self.app.lane_events[case_number] = ev
                 ev.wait()
@@ -507,6 +506,128 @@ class ProcessController:
     # -------------------------------------------------------------------------
     # 캡차 입력 완료 플로우 (Wave Processing)
     # -------------------------------------------------------------------------
+
+    def _report_progress(self, selected_cases, original_index, case, total_cases, total_start_time):
+        """진행률 메시지 갱신."""
+        case_number = case.get("사건번호", "")
+        current_progress = len([i for i, _ in selected_cases[: selected_cases.index((original_index, case)) + 1]])
+        progress_percent = (current_progress / total_cases) * 100
+        elapsed = int(time.time() - total_start_time)
+        if current_progress > 0:
+            avg_time = elapsed / current_progress
+            remaining_time = int(avg_time * (total_cases - current_progress))
+            msg = f"🔄 처리 중... ({current_progress}/{total_cases}) - {case_number} | 예상 남은 시간: {remaining_time}초"
+        else:
+            msg = f"🔄 처리 중... ({current_progress}/{total_cases}) - {case_number}"
+        self.app.update_progress(progress_percent, msg)
+
+    def _validate_captcha_input(self, original_index, case_number, captcha_input):
+        """캡차 입력 검증. 유효하면 True, 아니면 False(상태 업데이트 후)."""
+        if not (captcha_input and captcha_input.strip()):
+            self.app.log_message(f"⚠️ 캡차 입력이 비어있음: {case_number}")
+            self.app.update_case_status(original_index, "입력없음", "red", "⚠️")
+            return False
+        is_click = captcha_input == "CLICK"
+        is_valid_captcha = len(captcha_input) == 6 and captcha_input.isdigit()
+        if not (is_click or is_valid_captcha):
+            self.app.log_message(
+                f"⚠️ 캡차 입력 형식 오류: {case_number} (입력: {captcha_input}, 길이: {len(captcha_input)})"
+            )
+            self.app.update_case_status(original_index, "형식오류", "red", "⚠️")
+            return False
+        return True
+
+    def _resolve_last_entry(self, case, case_number):
+        """시트/로컬에서 마지막 저장 항목 조회. (last_entry, sheet_last_row_index)."""
+        try:
+            last_entry_result = self.app.google_sheets_service.get_last_entry_from_sheet(case)
+            if last_entry_result is not None:
+                last_entry, sheet_last_row_index = last_entry_result
+                self.app.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
+                return last_entry, sheet_last_row_index
+        except Exception as e:
+            self.app.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
+        return self.app.history_manager.get_last_entry(case_number), None
+
+    def _apply_sheet_correction(self, case, case_number, result_data, new_data, sheet_last_row_index):
+        """시트 보정 필요 시 new_data 갱신. 반환: 보정된 new_data."""
+        if new_data or sheet_last_row_index is None:
+            return new_data
+        sheet_data_count = sheet_last_row_index - 1
+        current_len = len(result_data)
+        if sheet_data_count >= current_len:
+            return new_data
+        missing = current_len - sheet_data_count
+        if self.app.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
+            new_data = result_data[-(missing + 1) :]
+            self.app.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
+        else:
+            new_data = result_data[-missing:]
+            self.app.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
+        return new_data
+
+    def _finish_case_no_change(self, case, original_index, case_number, result_data, elapsed_time):
+        """변경없음 처리: 상태·타임스탬프 갱신 후 (1, 0) 반환."""
+        self.app.log_message(f"📭 변경없음: {case_number}")
+        self.app.update_case_status(original_index, "완료 (변경없음)", "#7F8C8D", "✅")
+        history = self.app.load_update_history()
+        prev_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
+        current_count = len(result_data) if isinstance(result_data, list) else 0
+        new_total = max(prev_total, current_count)
+        self.app.update_case_timestamp(case, original_index, new_total)
+        self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
+        return (1, 0)
+
+    def _finish_case_with_save(self, case, original_index, case_number, new_data, row_count, elapsed_time):
+        """저장 결과 반영: 상태·타임스탬프·이메일 준비 후 (1, 0) 또는 (0, 1) 반환."""
+        if row_count is False or row_count is None:
+            self.app.update_case_status(original_index, "저장 실패", "red", "❌")
+            self.app.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
+            return (0, 1)
+        if row_count == 0:
+            self.app.update_case_status(original_index, "데이터 없음", "#7F8C8D", "📭")
+        else:
+            self.app.history_manager.update_last_entry(case_number, new_data[-1])
+            self.app.google_sheets_service.update_main_remark(case_number, row_count)
+            self.app.update_case_status(original_index, f"완료 (+{row_count}건)", "green", "✅")
+        history = self.app.load_update_history()
+        old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
+        total_rows = (old_total + row_count) if row_count else old_total
+        self.app.update_case_timestamp(case, original_index, total_rows)
+        if row_count > 0:
+            self.app.log_history_manager.add_to_search_log(case_number)
+            try:
+                sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
+                email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
+            except Exception:
+                pass
+            if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
+                self.app.ui_queue.put(("function", (self.app.update_email_btn_text,), {}))
+        self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
+        return (1, 0)
+
+    def _process_result_list(
+        self, case, original_index, case_number, result_data, case_start_time
+    ):
+        """크롤링 결과 리스트 처리: last_entry 조회, new_data 계산, 저장/타임스탬프. (completed_delta, failed_delta)."""
+        last_entry, sheet_last_row_index = self._resolve_last_entry(case, case_number)
+        new_data = self.filter_new_data(result_data, last_entry)
+        new_data = self._apply_sheet_correction(
+            case, case_number, result_data, new_data, sheet_last_row_index
+        )
+        elapsed_time = int(time.time() - case_start_time)
+        if not new_data:
+            return self._finish_case_no_change(
+                case, original_index, case_number, result_data, elapsed_time
+            )
+        try:
+            row_count = self.save_to_google_sheets(case, new_data)
+        except Exception as save_err:
+            self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
+            row_count = False
+        return self._finish_case_with_save(
+            case, original_index, case_number, new_data, row_count, elapsed_time
+        )
 
     def _process_one_case(
         self, original_index, case, total_cases, total_start_time, selected_cases
@@ -527,52 +648,19 @@ class ProcessController:
             case_start_time = time.time()
             self.app.case_start_times[original_index] = case_start_time
 
-            current_progress = len(
-                [
-                    i
-                    for i, _ in selected_cases[
-                        : selected_cases.index((original_index, case)) + 1
-                    ]
-                ]
+            self._report_progress(
+                selected_cases, original_index, case, total_cases, total_start_time
             )
-            progress_percent = (current_progress / total_cases) * 100
-            elapsed = int(time.time() - total_start_time)
-            if current_progress > 0:
-                avg_time = elapsed / current_progress
-                remaining_time = int(avg_time * (total_cases - current_progress))
-                self.app.update_progress(
-                    progress_percent,
-                    f"🔄 처리 중... ({current_progress}/{total_cases}) - {case_number} | 예상 남은 시간: {remaining_time}초",
-                )
-            else:
-                self.app.update_progress(
-                    progress_percent,
-                    f"🔄 처리 중... ({current_progress}/{total_cases}) - {case_number}",
-                )
-
-            if not (captcha_input and captcha_input.strip()):
-                self.app.log_message(f"⚠️ 캡차 입력이 비어있음: {case_number}")
-                self.app.update_case_status(original_index, "입력없음", "red", "⚠️")
+            if not self._validate_captcha_input(original_index, case_number, captcha_input):
                 return (0, 1)
 
             self.app.log_message(
                 f"📋 [DEBUG] GUI에서 가져온 캡차 입력: '{captcha_input}' (타입: {type(captcha_input).__name__}, 길이: {len(captcha_input)})"
             )
-            is_click = captcha_input == "CLICK"
-            is_valid_captcha = len(captcha_input) == 6 and captcha_input.isdigit()
-            if not (is_click or is_valid_captcha):
-                self.app.log_message(
-                    f"⚠️ 캡차 입력 형식 오류: {case_number} (입력: {captcha_input}, 길이: {len(captcha_input)})"
-                )
-                self.app.update_case_status(original_index, "형식오류", "red", "⚠️")
-                return (0, 1)
-
             self.app.log_message(f"✅ [DEBUG] 캡차 형식 검증 통과: {captcha_input}")
             self.app.log_message(f"🔄 처리 시작: {case_number} (캡차: {captcha_input})")
             self.app.update_case_status(original_index, "처리중(크롤링)", "orange", "🔄")
 
-            self.app.log_message("🔄 [DEBUG] execute_case_processing 호출 전")
-            should_cleanup_and_release = True
             result_data = self.execute_case_processing(case, captcha_input.strip())
             self.app.log_message(
                 f"🔄 [DEBUG] execute_case_processing 호출 후 - result_data 타입: {type(result_data)}"
@@ -587,126 +675,23 @@ class ProcessController:
                     self.app.log_message("⚠️ 캡차 불일치 - 재시도 필요")
                     new_path = result_data.get("image_path")
                     if new_path:
-                        self.app.root.after(
-                            0,
-                            lambda p=new_path, i=original_index: self.app.update_captcha_image(
-                                i, p
-                            ),
+                        self.app.ui_queue.put(
+                            ("function", (self.app.update_captcha_image, original_index, new_path), {})
                         )
                     self.app.update_case_status(original_index, "재입력대기", "red", "⚠️")
                     should_cleanup_and_release = False
                     return (0, 0)
 
                 if isinstance(result_data, list):
-                    try:
-                        last_entry_result = (
-                            self.app.google_sheets_service.get_last_entry_from_sheet(case)
-                        )
-                        if last_entry_result is not None:
-                            last_entry, sheet_last_row_index = last_entry_result
-                            self.app.log_message(
-                                f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}"
-                            )
-                        else:
-                            last_entry = None
-                            sheet_last_row_index = None
-                    except Exception as e:
-                        self.app.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
-                        last_entry = self.app.history_manager.get_last_entry(case_number)
-                        sheet_last_row_index = None
-                    new_data = self.filter_new_data(result_data, last_entry)
+                    return self._process_result_list(
+                        case, original_index, case_number, result_data, case_start_time
+                    )
 
-                    if not new_data and sheet_last_row_index is not None:
-                        sheet_data_count = sheet_last_row_index - 1
-                        current_len = len(result_data)
-                        if sheet_data_count < current_len:
-                            missing = current_len - sheet_data_count
-                            if self.app.google_sheets_service.delete_specific_row(
-                                case, sheet_last_row_index
-                            ):
-                                new_data = result_data[-(missing + 1) :]
-                                self.app.log_message(
-                                    f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)"
-                                )
-                            else:
-                                new_data = result_data[-missing:]
-                                self.app.log_message(
-                                    f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)"
-                                )
-                    if not new_data:
-                        self.app.log_message(f"📭 변경없음: {case_number}")
-                        self.app.update_case_status(
-                            original_index, "완료 (변경없음)", "#7F8C8D", "✅"
-                        )
-                        history = self.app.load_update_history()
-                        prev_total = 0
-                        if isinstance(history.get(case_number), dict):
-                            prev_total = history.get(case_number, {}).get(
-                                "row_count", 0
-                            )
-                        current_count = (
-                            len(result_data) if isinstance(result_data, list) else 0
-                        )
-                        new_total = max(prev_total, current_count)
-                        self.app.update_case_timestamp(case, original_index, new_total)
-                        self.app.log_message(
-                            f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)"
-                        )
-                        return (1, 0)
-                    row_count = None
-                    try:
-                        row_count = self.save_to_google_sheets(case, new_data)
-                    except Exception as save_err:
-                        self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
-                        row_count = False
-                    if row_count is False or row_count is None:
-                        self.app.update_case_status(
-                            original_index, "저장 실패", "red", "❌"
-                        )
-                        self.app.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
-                        return (0, 1)
-                    if row_count == 0:
-                        self.app.update_case_status(
-                            original_index, "데이터 없음", "#7F8C8D", "📭"
-                        )
-                    else:
-                        self.app.history_manager.update_last_entry(
-                            case_number, new_data[-1]
-                        )
-                        self.app.google_sheets_service.update_main_remark(
-                            case_number, row_count
-                        )
-                        self.app.update_case_status(
-                            original_index,
-                            f"완료 (+{row_count}건)",
-                            "green",
-                            "✅",
-                        )
-                    history = self.app.load_update_history()
-                    old_total = 0
-                    if isinstance(history.get(case_number), dict):
-                        old_total = history.get(case_number, {}).get("row_count", 0)
-                    total_rows = (old_total + row_count) if row_count else old_total
-                    self.app.update_case_timestamp(case, original_index, total_rows)
-                    if row_count > 0:
-                        self.app.add_to_search_log(case_number)
-                        try:
-                            sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
-                            email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
-                        except Exception:
-                            pass
-                        if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
-                            self.app.root.after(0, self.app.update_email_btn_text)
-                    self.app.log_message(
-                        f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)"
-                    )
-                    return (1, 0)
-                else:
-                    self.app.update_case_status(
-                        original_index, f"실패 ({elapsed_time}초)", "red", "❌"
-                    )
-                    self.app.log_message(f"❌ 처리 실패: {case_number}")
-                    return (0, 1)
+                self.app.update_case_status(
+                    original_index, f"실패 ({elapsed_time}초)", "red", "❌"
+                )
+                self.app.log_message(f"❌ 처리 실패: {case_number}")
+                return (0, 1)
             except Exception as e:
                 self.app.log_message(f"❌ [DEBUG] 사건 처리 중 예외 발생: {e}")
                 import traceback
@@ -724,11 +709,97 @@ class ProcessController:
                 if ev:
                     ev.set()
 
+    def _kill_chrome_debug_processes(self):
+        """원격 디버깅 포트 사용 중인 Chrome 프로세스 종료."""
+        try:
+            self.app.log_message("🔄 [DEBUG] Chrome 프로세스 정리 중...")
+            chrome_killed = 0
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    if (
+                        proc.info.get("name")
+                        and "chrome.exe" in (proc.info.get("name") or "").lower()
+                    ):
+                        cmdline = proc.info.get("cmdline", []) or []
+                        if any(
+                            "--remote-debugging-port" in str(arg)
+                            for arg in cmdline
+                        ):
+                            self.app.log_message(
+                                f"🔄 [DEBUG] Chrome 프로세스 종료: PID {proc.info.get('pid')}"
+                            )
+                            proc.kill()
+                            chrome_killed += 1
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                ):
+                    pass
+            if chrome_killed > 0:
+                self.app.log_message(f"✅ Chrome 프로세스 {chrome_killed}개 종료 완료")
+            else:
+                self.app.log_message("ℹ️ 종료할 Chrome 프로세스 없음")
+        except Exception as e:
+            self.app.log_message(f"⚠️ Chrome 프로세스 정리 오류: {e}")
+            try:
+                sp.run(
+                    ["taskkill", "/F", "/IM", "chrome.exe"],
+                    capture_output=True,
+                    timeout=3,
+                )
+                self.app.log_message("⚠️ taskkill로 Chrome 강제 종료 시도")
+            except Exception:
+                pass
+
+    def _finish_captcha_batch_ui(
+        self, completed, failed, total_cases, total_elapsed, selected_cases
+    ):
+        """캡차 배치 완료 후 진행률·완료 메시지·버튼 복구를 UI 큐에 넣음."""
+        self.app.update_progress(
+            100,
+            f"✅ 처리 완료! (성공: {completed}, 실패: {failed}) | 총 소요 시간: {total_elapsed}초",
+        )
+        self.app.log_message(
+            f"🎉 모든 캡차 입력 처리 완료! (총 소요 시간: {total_elapsed}초)"
+        )
+        self._save_run_result_for_email([c for _, c in selected_cases])
+        completion_msg = (
+            f"🎉 처리가 완료되었습니다!\n\n"
+            f"✅ 성공: {completed}개\n"
+            f"❌ 실패: {failed}개\n"
+            f"📊 총 사건: {total_cases}개\n"
+            f"⏱️ 총 소요 시간: {total_elapsed}초"
+        )
+        self.app.ui_queue.put(("function", (self.app.show_info, completion_msg), {}))
+        self.app.processing = False
+        self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
+
+        def _restore_start():
+            self.app.start_btn.configure(
+                text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
+            )
+            self.app._set_control_btn_state(self.app.start_btn, True)
+
+        self.app.ui_queue.put(("function", (_restore_start,), {}))
+        self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.stop_btn, False), {}))
+
+    def _queue_restore_ui_after_captcha_batch(self):
+        """캡차 배치 오류/중지 후 시작·중지 버튼 복구를 UI 큐에 넣음."""
+        def _restore_start():
+            self.app.start_btn.configure(
+                text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
+            )
+            self.app._set_control_btn_state(self.app.start_btn, True)
+
+        self.app.ui_queue.put(("function", (_restore_start,), {}))
+        self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.stop_btn, False), {}))
+
     def process_all_captcha_inputs(self):
         """
         모든 캡차 입력을 한번에 처리.
         '캡차 입력 완료' 버튼 클릭 시 start_processing_thread()가 이 메서드를 백그라운드 스레드에서 실행.
-        GUI 갱신은 self.app.root.after(0, ...) 로 메인 스레드에 위임.
+        GUI 갱신은 app.ui_queue를 통해 메인 스레드에 위임.
         """
         try:
             total_start_time = time.time()
@@ -736,12 +807,12 @@ class ProcessController:
             self.app.puppeteer_service.processing_flag = lambda: self.app.processing
             self.app.log_message("🔄 모든 캡차 입력 처리 시작")
 
-            self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.complete_btn, False))
+            self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
             if not hasattr(self.app, "processed_cases"):
                 self.app.processed_cases = set()
 
-            self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.start_btn, False))
-            self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.stop_btn, True))
+            self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.start_btn, False), {}))
+            self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.stop_btn, True), {}))
 
             selected_cases = self.app.get_selected_cases()
             total_cases = len(selected_cases)
@@ -780,110 +851,21 @@ class ProcessController:
                 self.app.log_message(
                     f"⏳ 다음 파도 대기 중... (남은 사건: {pending_count}건)"
                 )
-                self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.complete_btn, True))
+                self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
             else:
                 self.app.log_message("🎉 모든 사건 처리 완료!")
-
-                try:
-                    self.app.log_message("🔄 [DEBUG] Chrome 프로세스 정리 중...")
-                    chrome_killed = 0
-                    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-                        try:
-                            if (
-                                proc.info.get("name")
-                                and "chrome.exe" in (proc.info.get("name") or "").lower()
-                            ):
-                                cmdline = proc.info.get("cmdline", []) or []
-                                if any(
-                                    "--remote-debugging-port" in str(arg)
-                                    for arg in cmdline
-                                ):
-                                    self.app.log_message(
-                                        f"🔄 [DEBUG] Chrome 프로세스 종료: PID {proc.info.get('pid')}"
-                                    )
-                                    proc.kill()
-                                    chrome_killed += 1
-                        except (
-                            psutil.NoSuchProcess,
-                            psutil.AccessDenied,
-                            psutil.ZombieProcess,
-                        ):
-                            pass
-
-                    if chrome_killed > 0:
-                        self.app.log_message(
-                            f"✅ Chrome 프로세스 {chrome_killed}개 종료 완료"
-                        )
-                    else:
-                        self.app.log_message("ℹ️ 종료할 Chrome 프로세스 없음")
-
-                except Exception as e:
-                    self.app.log_message(f"⚠️ Chrome 프로세스 정리 오류: {e}")
-                    try:
-                        sp.run(
-                            ["taskkill", "/F", "/IM", "chrome.exe"],
-                            capture_output=True,
-                            timeout=3,
-                        )
-                        self.app.log_message("⚠️ taskkill로 Chrome 강제 종료 시도")
-                    except Exception:
-                        pass
-
+                self._kill_chrome_debug_processes()
                 self.app.browser_processes.clear()
                 self.app.browser_ws_urls.clear()
                 self.app.log_message("✅ 모든 브라우저 프로세스 종료 완료")
-
                 total_elapsed = int(time.time() - total_start_time)
-                self.app.update_progress(
-                    100,
-                    f"✅ 처리 완료! (성공: {completed}, 실패: {failed}) | 총 소요 시간: {total_elapsed}초",
-                )
-                self.app.log_message(
-                    f"🎉 모든 캡차 입력 처리 완료! (총 소요 시간: {total_elapsed}초)"
-                )
-                self._save_run_result_for_email([c for _, c in selected_cases])
-
-                self.app.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "처리 완료",
-                        f"🎉 처리가 완료되었습니다!\n\n"
-                        f"✅ 성공: {completed}개\n"
-                        f"❌ 실패: {failed}개\n"
-                        f"📊 총 사건: {total_cases}개\n"
-                        f"⏱️ 총 소요 시간: {total_elapsed}초",
-                    ),
-                )
-
-                self.app.processing = False
-                self.app.root.after(
-                    0, lambda: self.app._set_control_btn_state(self.app.complete_btn, False)
-                )
-
-                def _restore_start():
-                    self.app.start_btn.configure(
-                        text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
-                    )
-                    self.app._set_control_btn_state(self.app.start_btn, True)
-
-                self.app.root.after(0, _restore_start)
-                self.app.root.after(
-                    0, lambda: self.app._set_control_btn_state(self.app.stop_btn, False)
+                self._finish_captcha_batch_ui(
+                    completed, failed, total_cases, total_elapsed, selected_cases
                 )
 
         except Exception as e:
             self.app.log_message(f"❌ 캡차 입력 처리 오류: {e}")
             self.app.update_progress(0, "오류 발생")
-            self.app.root.after(0, lambda: self.app._set_control_btn_state(self.app.complete_btn, True))
-
-            def _restore_start():
-                self.app.start_btn.configure(
-                    text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
-                )
-                self.app._set_control_btn_state(self.app.start_btn, True)
-
-            self.app.root.after(0, _restore_start)
-            self.app.root.after(
-                0, lambda: self.app._set_control_btn_state(self.app.stop_btn, False)
-            )
+            self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
+            self._queue_restore_ui_after_captcha_batch()
             self.app.processing = False

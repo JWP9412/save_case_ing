@@ -1,6 +1,6 @@
 # case-ing
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - v4.3.0
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - v4.3.99
 
 ## 원본 출처
 
@@ -17,28 +17,27 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 
 ---
 
-## 현재 버전 특징 (v4.3.0)
+## 현재 버전 특징 (v4.3.99)
 
 ### 주요 개선 사항
 
-1. **CLI 자동 실행(Auto-run) 안정화** *(v4.3.0 신규)*
-   - `--auto` 옵션을 통한 백그라운드 자동 조회 시 발생하던 즉시 실패 오류 완벽 해결.
-   - GUI 모드와 동일한 2단계(브라우저 기동 -> 클릭 명령) 조회 프로세스 정립.
-   - 다중 접속 시의 프로필 락(Profile Lock) 지원으로 안정적인 대량 처리 지원.
+1. **아키텍처 정리** *(v4.3.99)*
+   - 메인 GUI를 `gui/app_controller.py`의 `AppController`로 통합. `batch_gui_maker.py` 제거.
+   - `utils/` 폴더 제거. `email_manager.py`를 `services/`로 이동.
+   - ProcessController에서 Tkinter 의존성 제거, UI는 app 위임 및 ui_queue로만 처리.
 
-2. **이메일 요약 리포트 디자인 개편** *(v4.3.0)*
-   - 단순 나열되던 사건번호를 **[사건번호 | 피고/사건명]** 구조의 명확한 HTML 표로 변경.
-   - 결과 상태(성공, 실패, 캡차 재시도 등)에 따른 그룹화로 시각적 분석 편의성 증대.
+2. **CLI 자동 실행(Auto-run) 안정화** *(v4.3.0)*
+   - `--auto` 옵션으로 백그라운드 자동 조회. GUI와 동일한 2단계(브라우저 기동 -> 클릭 명령) 프로세스.
+   - 다중 접속 시 프로필 락 지원.
 
-3. **구조적 리팩터링 (batch_gui_maker.py 다이어트)** *(v4.2.2)*
-   - 메인 GUI 파일인 `batch_gui_maker.py`의 비대해진 코드를 서비스 모듈로 분리.
-   - 사건 처리 핵심 로직을 `services/process_controller.py`로 이전.
+3. **이메일 요약 리포트 디자인 개편** *(v4.3.0)*
+   - **[사건번호 | 피고/사건명]** 구조의 HTML 표. 결과 상태별 그룹화.
 
 4. **안정성 및 오류 처리 강화** *(v4.2.2)*
-   - 사건 조회 실패 시 사용자 알림 및 실패 건 대상 자동 재실행 기능 도입.
+   - 사건 조회 실패 시 알림 및 실패 건 자동 재실행.
 
 5. **알림메일 고도화** *(v4.2.0)*
-   - 메일 본문 HTML 표 생성 및 시트별 그룹화. GAS 웹 앱 연동 즉시 발송.
+   - 메일 본문 HTML 표·시트별 그룹화. GAS 웹 앱 연동 즉시 발송.
 
 ---
 
@@ -46,15 +45,13 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 
 ```
 case-ing/
-├── auto_runner.py               CLI 실행기 (v4.3.0 강화)
-├── batch_gui_maker.py           메인 GUI (UI 구성 및 이벤트 위임)
-├── config.py                    설정 상수 (APP_VERSION = "4.3.0" 등)
+├── auto_runner.py               CLI 실행기 (MockApp 인터페이스 통일)
+├── config.py                    설정 상수 (APP_VERSION = "4.3.99" 등)
 ├── main.py                      진입점 (run_app 또는 run_auto_batch)
 ├── data/                        설정 및 이력용 JSON 통합 폴더
 ├── src/                         Puppeteer 자동화 코드
-├── services/                    비즈니스 로직 (process_controller, history_manager 등)
-├── gui/                         UI 컴포넌트 (panels, dialogs)
-├── utils/                       공통 유틸 (email_manager 등)
+├── services/                    비즈니스 로직 (process_controller, email_manager, google_sheets 등)
+├── gui/                         UI (app_controller, main_window, panels, dialogs, utils)
 ├── gas/                         GAS 스크립트 (즉시 발송 지원)
 └── 00.CHANGELOG, 00.README      버전별 문서
 ```
@@ -78,12 +75,13 @@ python main.py --auto
 
 ## 개발 히스토리
 
-- **v4.3.0**: CLI 자동 실행 안정화, 이메일 요약 표 디자인 개편, 결과 리스트 상세화
-- **v4.2.2**: batch_gui_maker.py 리팩터링, 프로세스 컨트롤러 분리, UI 일관성 강화
-- **v4.2.0**: 알림메일 고도화(HTML·그룹화·즉시 발송), 제어 패널 UI·로깅 강화
-- **v4.1.2**: 리팩토링(사건 목록 UI 분리), utils 폴더 추가
+- **v4.3.99**: 아키텍처 정리(AppController 통합, utils 제거, services 리팩터링), GitHub 푸시 전 정리
+- **v4.3.0**: CLI 자동 실행 안정화, 이메일 요약 표 디자인 개편
+- **v4.2.2**: batch_gui_maker 리팩터링, 프로세스 컨트롤러 분리
+- **v4.2.0**: 알림메일 고도화(HTML·그룹화·즉시 발송)
+- **v4.1.2**: 사건 목록 UI 분리
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v4.3.0.md](00.CHANGELOG/CHANGELOG_v4.3.0.md)  
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v4.3.99.md](00.CHANGELOG/CHANGELOG_v4.3.99.md)  
 버전별 README: [00.README/](00.README/)
 
 ---
