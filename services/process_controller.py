@@ -8,6 +8,7 @@ GUI는 app 참조를 통해 콜백 형태로 UI 갱신만 수행합니다.
 """
 
 import hashlib
+import re
 import subprocess as sp
 import threading
 import time
@@ -56,6 +57,46 @@ class ProcessController:
         if text is None:
             return ""
         return "".join(str(text).split())
+
+    @staticmethod
+    def _extract_hearing_from_result(result_data):
+        """
+        result_data(크롤링 결과 리스트)에서 최신 변론기일 또는 판결선고기일 하나만 추출.
+        UI에는 최신 기일 하나만 표기하므로, 역순 순회 시 첫 매치 하나만 반환.
+        반환: "변론기일 YY.MM.DD.(HH:MM)" 또는 "판결선고기일 YY.MM.DD.(HH:MM)" 형식 문자열, 없으면 None.
+        """
+        if not result_data or not isinstance(result_data, list):
+            return None
+        for i in range(len(result_data) - 1, -1, -1):
+            row = result_data[i]
+            if not isinstance(row, dict):
+                continue
+            raw_date = (row.get("date") or "").strip()
+            raw_content = (row.get("content") or "").strip()
+            if not raw_content:
+                continue
+            raw_content = re.sub(r"\s+", " ", raw_content)
+            m = re.search(
+                r"(변론기일|판결선고기일).*?([0-9]{1,2}:[0-9]{2})",
+                raw_content,
+                re.DOTALL,
+            )
+            if not m:
+                continue
+            kind = m.group(1)
+            time_str = m.group(2)
+            formatted_date = ""
+            if raw_date:
+                parts = raw_date.replace("-", ".").split(".")
+                if len(parts) >= 3:
+                    y = parts[0].strip()
+                    if len(y) >= 4:
+                        y = y[-2:]
+                    formatted_date = f"{y}.{parts[1].strip()}.{parts[2].strip()}."
+            if formatted_date:
+                return f"{kind} {formatted_date}({time_str})"
+            return f"{kind}({time_str})"
+        return None
 
     def filter_new_data(self, scraped_data, last_entry):
         """last_entry 이후 신규 데이터만 반환. 없으면 전체 반환."""
@@ -369,11 +410,14 @@ class ProcessController:
                 if not new_data:
                     self.app.log_message(f"📭 변경없음: {case_number}")
                     self.app.update_case_status(case_index, "완료 (변경없음)", "#7F8C8D", "✅")
+                    self.app.log_history_manager.add_to_search_log(case_number)
+                    self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
                     history = self.app.load_update_history()
                     prev_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
                     current_count = len(result_data) if isinstance(result_data, list) else 0
                     new_total = max(prev_total, current_count)
-                    self.app.update_case_timestamp(case, case_index, new_total)
+                    hearing_info = self._extract_hearing_from_result(result_data) or ""
+                    self.app.update_case_timestamp(case, case_index, new_total, hearing_info=hearing_info)
                     if hasattr(self.app, "processed_cases"):
                         self.app.processed_cases.add(case_index)
                     self.app.log_message(f"✅ 자동 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
@@ -397,9 +441,11 @@ class ProcessController:
                 history = self.app.load_update_history()
                 old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
                 total_rows = (old_total + row_count) if row_count else old_total
-                self.app.update_case_timestamp(case, case_index, total_rows)
+                hearing_info = self._extract_hearing_from_result(result_data) or ""
+                self.app.update_case_timestamp(case, case_index, total_rows, hearing_info=hearing_info)
                 if row_count > 0:
                     self.app.log_history_manager.add_to_search_log(case_number)
+                    self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
                     try:
                         sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
                         email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
@@ -566,20 +612,22 @@ class ProcessController:
             self.app.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
         return new_data
 
-    def _finish_case_no_change(self, case, original_index, case_number, result_data, elapsed_time):
-        """변경없음 처리: 상태·타임스탬프 갱신 후 (1, 0) 반환."""
+    def _finish_case_no_change(self, case, original_index, case_number, result_data, elapsed_time, hearing_info=None):
+        """변경없음 처리: 상태·타임스탬프·기일 캐시 갱신 후 (1, 0) 반환."""
         self.app.log_message(f"📭 변경없음: {case_number}")
         self.app.update_case_status(original_index, "완료 (변경없음)", "#7F8C8D", "✅")
+        self.app.log_history_manager.add_to_search_log(case_number)
+        self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
         history = self.app.load_update_history()
         prev_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
         current_count = len(result_data) if isinstance(result_data, list) else 0
         new_total = max(prev_total, current_count)
-        self.app.update_case_timestamp(case, original_index, new_total)
+        self.app.update_case_timestamp(case, original_index, new_total, hearing_info=hearing_info)
         self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
         return (1, 0)
 
-    def _finish_case_with_save(self, case, original_index, case_number, new_data, row_count, elapsed_time):
-        """저장 결과 반영: 상태·타임스탬프·이메일 준비 후 (1, 0) 또는 (0, 1) 반환."""
+    def _finish_case_with_save(self, case, original_index, case_number, new_data, row_count, elapsed_time, hearing_info=None):
+        """저장 결과 반영: 상태·타임스탬프·기일 캐시·이메일 준비 후 (1, 0) 또는 (0, 1) 반환."""
         if row_count is False or row_count is None:
             self.app.update_case_status(original_index, "저장 실패", "red", "❌")
             self.app.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
@@ -593,9 +641,10 @@ class ProcessController:
         history = self.app.load_update_history()
         old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
         total_rows = (old_total + row_count) if row_count else old_total
-        self.app.update_case_timestamp(case, original_index, total_rows)
+        self.app.update_case_timestamp(case, original_index, total_rows, hearing_info=hearing_info)
         if row_count > 0:
             self.app.log_history_manager.add_to_search_log(case_number)
+            self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
             try:
                 sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
                 email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
@@ -616,9 +665,10 @@ class ProcessController:
             case, case_number, result_data, new_data, sheet_last_row_index
         )
         elapsed_time = int(time.time() - case_start_time)
+        hearing_info = self._extract_hearing_from_result(result_data) or ""
         if not new_data:
             return self._finish_case_no_change(
-                case, original_index, case_number, result_data, elapsed_time
+                case, original_index, case_number, result_data, elapsed_time, hearing_info=hearing_info
             )
         try:
             row_count = self.save_to_google_sheets(case, new_data)
@@ -626,7 +676,7 @@ class ProcessController:
             self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
             row_count = False
         return self._finish_case_with_save(
-            case, original_index, case_number, new_data, row_count, elapsed_time
+            case, original_index, case_number, new_data, row_count, elapsed_time, hearing_info=hearing_info
         )
 
     def _process_one_case(

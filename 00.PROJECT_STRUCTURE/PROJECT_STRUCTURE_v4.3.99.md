@@ -37,3 +37,65 @@
 ## 문서
 - **`00.CHANGELOG/`**, **`00.README/`**, **`00.PROJECT_STRUCTURE/`**: 버전별 변경 이력 및 구조 문서.
 - **`utils/` 폴더는 v4.3.99에서 제거됨.** 이메일 로직은 `services/email_manager.py`로 통합.
+
+---
+
+## 트리 형식 (요약)
+
+```
+case-ing/
+├── config.py
+├── main.py
+├── auto_runner.py
+├── data/
+├── logs/
+├── src/
+│   ├── interactive_runner.js
+│   └── PageController.js
+├── services/
+│   ├── process_controller.py
+│   ├── google_sheets.py
+│   ├── email_manager.py
+│   ├── history_manager.py
+│   ├── update_history.py
+│   ├── puppeteer.py
+│   ├── logger_service.py
+│   ├── search_manager.py
+│   ├── sort_manager.py
+│   └── theme_manager.py
+├── gui/
+│   ├── main_window.py
+│   ├── app_controller.py
+│   ├── panels/
+│   │   ├── case_list_panel.py
+│   │   ├── case_row.py
+│   │   └── ...
+│   ├── dialogs/
+│   │   ├── captcha_dialog.py
+│   │   ├── settings_dialog.py
+│   │   ├── find_dialog.py
+│   │   ├── sheet_viewer_dialog.py
+│   │   └── column_order_dialog.py
+│   └── utils/
+│       ├── ui_queue_manager.py
+│       ├── case_list_builder.py
+│       ├── history_ui.py
+│       ├── column_resizer.py
+│       ├── google_sheet_ui.py
+│       ├── search_ui.py
+│       ├── selection_manager.py
+│       ├── email_ui.py
+│       ├── captcha_ui.py
+│       ├── window_lifecycle.py
+│       ├── window_bootstrap.py
+│       ├── bind_utils.py
+│       └── case_list_columns.py
+├── gas/
+│   └── SendNotificationMail.gs
+├── docs/
+│   └── architecture/
+│       └── mvc_refactoring.md
+├── 00.CHANGELOG/
+├── 00.README/
+└── 00.PROJECT_STRUCTURE/
+```

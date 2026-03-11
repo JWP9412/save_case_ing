@@ -16,9 +16,10 @@ class ColumnOrderDialog(ctk.CTkToplevel):
     def __init__(self, parent, current_order, theme_color_getter, on_apply_callback):
         super().__init__(parent)
         self.title("사건 목록 열 순서")
-        self.geometry("320x380")
+        self.geometry("400x480")
+        self.minsize(360, 420)
         self.transient(parent)
-        self.resizable(False, False)
+        self.resizable(True, True)
         
         self.theme_color_getter = theme_color_getter
         self.on_apply_callback = on_apply_callback
@@ -30,6 +31,36 @@ class ColumnOrderDialog(ctk.CTkToplevel):
         frm = ctk.CTkFrame(self, fg_color="transparent")
         frm.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
 
+        # 버튼 행·구분선을 먼저 하단에 고정해 적용 버튼이 항상 보이도록
+        btn_row = ctk.CTkFrame(frm, fg_color="transparent")
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+        btn_row.grid_columnconfigure(2, weight=1)
+
+        BTN_PAD = 8
+        btn_w, btn_h = 63, 32
+        ctk.CTkButton(
+            btn_row, text="위로", width=btn_w, height=btn_h, text_color="#FFFFFF",
+            command=self._move_up
+        ).grid(row=0, column=0, padx=(0, BTN_PAD), sticky="w")
+        ctk.CTkButton(
+            btn_row, text="아래로", width=btn_w, height=btn_h, text_color="#FFFFFF",
+            command=self._move_down
+        ).grid(row=0, column=1, padx=(0, 0), sticky="w")
+        ctk.CTkButton(
+            btn_row, text="취소", width=btn_w, height=btn_h, text_color="#FFFFFF",
+            command=self.destroy
+        ).grid(row=0, column=3, padx=(BTN_PAD * 2, BTN_PAD), sticky="e")
+        ctk.CTkButton(
+            btn_row, text="적용", width=btn_w, height=btn_h, text_color="#FFFFFF",
+            command=self._apply_and_close
+        ).grid(row=0, column=4, padx=(0, 0), sticky="e")
+
+        sep_line = ctk.CTkFrame(
+            frm, fg_color=self.theme_color_getter("border"), height=2, corner_radius=0
+        )
+        sep_line.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 8))
+        sep_line.pack_propagate(False)
+
         # 제목 라벨
         ctk.CTkLabel(
             frm,
@@ -37,7 +68,7 @@ class ColumnOrderDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family="맑은 고딕", size=13),
         ).pack(anchor=tk.W, pady=(0, 6))
 
-        # 리스트 영역
+        # 리스트 영역 (남는 공간을 채우고, 리사이즈 시 스크롤로 확인)
         list_frame = ctk.CTkFrame(frm, fg_color=("#2B2B2B", "#2B2B2B"))
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
 
@@ -53,43 +84,10 @@ class ColumnOrderDialog(ctk.CTkToplevel):
             height=12,
         )
         self.listbox.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        
+
         self._refresh_list()
         if self.order:
             self.listbox.selection_set(0)
-
-        # 구분선
-        sep_line = ctk.CTkFrame(
-            frm, fg_color=self.theme_color_getter("border"), height=2, corner_radius=0
-        )
-        sep_line.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
-        sep_line.pack_propagate(False)
-
-        # 버튼 행
-        btn_row = ctk.CTkFrame(frm, fg_color="transparent")
-        btn_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 4))
-        btn_row.grid_columnconfigure(2, weight=1)
-
-        BTN_PAD = 8
-        ctk.CTkButton(
-            btn_row, text="위로", width=70, height=36, text_color="#FFFFFF",
-            command=self._move_up
-        ).grid(row=0, column=0, padx=(0, BTN_PAD), sticky="w")
-        
-        ctk.CTkButton(
-            btn_row, text="아래로", width=70, height=36, text_color="#FFFFFF",
-            command=self._move_down
-        ).grid(row=0, column=1, padx=(0, 0), sticky="w")
-        
-        ctk.CTkButton(
-            btn_row, text="취소", width=70, height=36, text_color="#FFFFFF",
-            command=self.destroy
-        ).grid(row=0, column=3, padx=(BTN_PAD * 2, BTN_PAD), sticky="e")
-        
-        ctk.CTkButton(
-            btn_row, text="적용", width=70, height=36, text_color="#FFFFFF",
-            command=self._apply_and_close
-        ).grid(row=0, column=4, padx=(0, 0), sticky="e")
 
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 

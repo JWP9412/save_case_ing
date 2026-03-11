@@ -52,6 +52,7 @@ from gui.dialogs.captcha_dialog import CaptchaInputDialog
 from gui.dialogs.settings_dialog import SettingsDialog
 from gui.dialogs.find_dialog import FindDialog
 from gui.dialogs.sheet_viewer_dialog import SheetViewerDialog
+from gui.dialogs.case_list_manage_dialog import CaseListManageDialog
 from gui.panels import (
     HeaderPanel,
     ControlPanel,
@@ -106,7 +107,8 @@ class AppController:
         self.browser_ws_urls = {}
         self.browser_processes = {}
 
-        self.sort_column_index = 8
+        # 기본 정렬: 최근 업데이트 열(내부 인덱스 9)
+        self.sort_column_index = 9
         self.sort_reverse = False
         self._resize_col = None
         self._resize_start_x = None
@@ -235,6 +237,17 @@ class AppController:
     def _open_column_order_dialog(self):
         """Open column order dialog. Delegated to case_list_columns."""
         case_list_columns_module.open_column_order_dialog(self)
+
+    def _open_case_list_manage_dialog(self):
+        """Open case list manage dialog (add/edit/delete/hide/unhide)."""
+        if (
+            getattr(self, "_case_list_manage_dialog", None) is not None
+            and self._case_list_manage_dialog.winfo_exists()
+        ):
+            self._case_list_manage_dialog.focus_set()
+            return
+        self._case_list_manage_dialog = CaseListManageDialog(self.root, self)
+        self._case_list_manage_dialog.focus_set()
 
     def _open_find_dialog(self, event=None):
         """Open find dialog."""
@@ -526,16 +539,20 @@ class AppController:
         except Exception as e:
             self.log_message(f"Failed to save update history: {e}")
 
-    def update_case_timestamp(self, case, original_index=None, row_count=0, is_auto=False):
+    def update_case_timestamp(self, case, original_index=None, row_count=0, is_auto=False, hearing_info=None):
         """Update case timestamp. Delegated to history_ui."""
         history_ui_module.update_case_timestamp(
-            self, case, original_index=original_index, row_count=row_count, is_auto=is_auto
+            self, case, original_index=original_index, row_count=row_count, is_auto=is_auto, hearing_info=hearing_info
         )
 
     def get_days_since_update(self, case):
         """Return days since last update. Delegated to update_history_service."""
         history = self.load_update_history()
         return update_history_service.get_days_since_update(case, history)
+
+    def get_days_until_hearing(self, hearing_info):
+        """기일 문자열에서 오늘로부터 기일까지의 일수. Delegated to update_history_service."""
+        return update_history_service.get_days_until_hearing(hearing_info)
 
     def load_column_widths(self):
         """Load column widths. Delegated to case_list_columns."""
@@ -617,6 +634,21 @@ class AppController:
             return self.case_status[case_index].cget("text") or ""
         except Exception:
             return ""
+
+    def update_auto_search_label(self, case_number):
+        """Update the '자동 조회' column label to '자동 가능' after a successful search. Called from ProcessController via ui_queue."""
+        case_index = self.find_case_index(case_number)
+        if case_index == -1:
+            return
+        labels = getattr(self, "case_record_labels", {})
+        if case_index not in labels:
+            return
+        lbl = labels[case_index]
+        if lbl and getattr(lbl, "winfo_exists", lambda: False)() and lbl.winfo_exists():
+            try:
+                lbl.configure(text="자동 가능", text_color=self.get_theme_color("success"))
+            except Exception:
+                pass
 
     def _process_ui_queue(self):
         """Process UI update queue. Delegated to ui_queue_manager."""

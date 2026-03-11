@@ -210,7 +210,8 @@ class GoogleSheetsService:
             # ============================================================
             filtered_data = []
             for row in all_data:
-                case_number = row.get("사건번호", "").strip()
+                raw = row.get("사건번호", "")
+                case_number = (str(raw).strip() if raw is not None else "")
                 if case_number:  # 사건번호가 있는 경우만 추가
                     filtered_data.append(row)
 
@@ -730,6 +731,113 @@ class GoogleSheetsService:
                         return
         except Exception as e:
             self._log(f"⚠️ 메인 시트 비고 갱신 실패: {e}")
+
+    def _get_case_list_worksheet(self):
+        """사건 목록 워크시트 반환. 없으면 None."""
+        spreadsheet = self._get_spreadsheet()
+        for ws in spreadsheet.worksheets():
+            if config.CASE_LIST_WORKSHEET_NAME in ws.title:
+                return ws
+        return None
+
+    def _header_order_row(self, headers, row_dict):
+        """헤더 순서대로 row_dict에서 값 리스트 생성 (없는 키는 빈 문자열)."""
+        return [str(row_dict.get(h, "") or "") for h in headers]
+
+    def append_row_to_case_list(self, row_dict):
+        """
+        사건 목록 시트에 1행 추가.
+        row_dict: 헤더 이름을 키로 하는 딕셔너리 (법원, 사건번호, 피고, 사건명, 비고, 일자, 내용 등).
+        반환: True 성공, False 실패.
+        """
+        try:
+            ws = self._get_case_list_worksheet()
+            if not ws:
+                self._log("[ERROR] 사건 목록 워크시트를 찾을 수 없습니다")
+                return False
+            all_values = ws.get_all_values()
+            headers = all_values[0] if all_values else []
+            if not headers:
+                self._log("[ERROR] 사건 목록 헤더가 비어 있습니다")
+                return False
+            row_list = self._header_order_row(headers, row_dict)
+            ws.append_row(row_list, value_input_option="USER_ENTERED")
+            self._log(f"✅ 사건 목록에 행 추가 완료: {row_dict.get('사건번호', '')}")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ 사건 목록 행 추가 실패: {e}")
+            return False
+
+    def update_row_by_case_number(self, case_number, row_dict):
+        """
+        사건 목록 시트에서 사건번호가 일치하는 첫 번째 행을 row_dict 값으로 갱신.
+        반환: True 성공, False 실패(행 미발견 포함).
+        """
+        try:
+            ws = self._get_case_list_worksheet()
+            if not ws:
+                return False
+            all_values = ws.get_all_values()
+            if len(all_values) < 2:
+                return False
+            headers = all_values[0]
+            try:
+                col_case = headers.index("사건번호")
+            except ValueError:
+                return False
+            row_index_1based = None
+            for r in range(1, len(all_values)):
+                row = all_values[r]
+                if col_case < len(row) and str(row[col_case]).strip() == str(case_number).strip():
+                    row_index_1based = r + 1
+                    break
+            if row_index_1based is None:
+                return False
+            row_list = self._header_order_row(headers, row_dict)
+            num_cols = len(headers)
+            end_col = ""
+            i = num_cols - 1
+            while i >= 0:
+                end_col = chr(65 + i % 26) + end_col
+                i = i // 26 - 1
+            range_str = f"A{row_index_1based}:{end_col}{row_index_1based}"
+            ws.update(range_str, [row_list], value_input_option="USER_ENTERED")
+            self._log(f"✅ 사건 목록 행 갱신 완료: {case_number}")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ 사건 목록 행 갱신 실패: {e}")
+            return False
+
+    def delete_row_by_case_number(self, case_number):
+        """
+        사건 목록 시트에서 사건번호가 일치하는 첫 번째 행 삭제.
+        반환: True 성공, False 실패(행 미발견 포함).
+        """
+        try:
+            ws = self._get_case_list_worksheet()
+            if not ws:
+                return False
+            all_values = ws.get_all_values()
+            if len(all_values) < 2:
+                return False
+            try:
+                col_case = all_values[0].index("사건번호")
+            except ValueError:
+                return False
+            row_index_1based = None
+            for r in range(1, len(all_values)):
+                row = all_values[r]
+                if col_case < len(row) and str(row[col_case]).strip() == str(case_number).strip():
+                    row_index_1based = r + 1
+                    break
+            if row_index_1based is None:
+                return False
+            ws.delete_rows(row_index_1based, row_index_1based + 1)
+            self._log(f"✅ 사건 목록에서 행 삭제 완료: {case_number}")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ 사건 목록 행 삭제 실패: {e}")
+            return False
 
 
 # ============================================================================

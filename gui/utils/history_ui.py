@@ -15,8 +15,8 @@ import customtkinter as ctk
 from services import update_history as update_history_service
 
 
-def update_case_timestamp(app, case, original_index=None, row_count=0, is_auto=False):
-    """사건 업데이트 타임스탬프 및 행 개수 기록, GUI 갱신 (기록은 services.update_history 사용)"""
+def update_case_timestamp(app, case, original_index=None, row_count=0, is_auto=False, hearing_info=None):
+    """사건 업데이트 타임스탬프 및 행 개수·기일 정보 기록, GUI 갱신 (기록은 services.update_history 사용)"""
     try:
         case_number = case.get("사건번호", "")
 
@@ -30,7 +30,7 @@ def update_case_timestamp(app, case, original_index=None, row_count=0, is_auto=F
                 old_row_count = old_data.get("row_count", 0)
 
             new_history = update_history_service.update_case_record(
-                case_number, row_count, history, is_auto=is_auto
+                case_number, row_count, history, is_auto=is_auto, hearing_info=hearing_info
             )
             update_history_service.save_update_history(
                 new_history, config.UPDATE_HISTORY_FILE
@@ -44,18 +44,23 @@ def update_case_timestamp(app, case, original_index=None, row_count=0, is_auto=F
         )
 
         if original_index is not None:
-            date_str = current_time.split(" ")[0]
+            # Format YYYY-MM-DD HH:MM:SS to YY.MM.DD.\nHH:MM:SS
+            try:
+                dt = datetime.strptime(current_time, "%Y-%m-%d %H:%M:%S")
+                date_str = dt.strftime("%y.%m.%d.\n%H:%M:%S")
+            except:
+                date_str = current_time
+            
             new_rows_text = f" (+{new_rows})" if new_rows > 0 else ""
             d_suffix = " (자동 조회)" if is_auto else ""
+            display_text = f"D+0{d_suffix}{new_rows_text}"
+            color = "#28A745" if new_rows > 0 else "#0D6EFD"
 
             def update_labels():
                 if original_index in app.case_update_labels:
-                    display_text = f"D+0{d_suffix}{new_rows_text}"
-                    color = "#28A745" if new_rows > 0 else "#0D6EFD"
                     app.case_update_labels[original_index].configure(
                         text=display_text, text_color=color
                     )
-
                 if original_index in app.case_update_date_labels:
                     if app.case_update_date_labels[original_index]:
                         app.case_update_date_labels[original_index].configure(

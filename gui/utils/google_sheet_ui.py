@@ -5,7 +5,9 @@
 
 구글 시트에서 사건 목록을 비동기로 불러오고, 완료 시 app의 UI·데이터를 갱신합니다.
 app_controller에서 load_google_sheet 호출 시 이 모듈에 위임합니다.
+숨긴 사건(hidden_cases.json) 로드/저장 및 로드 시 필터 적용.
 """
+import json
 import os
 import threading
 import tkinter as tk
@@ -13,6 +15,31 @@ from tkinter import messagebox
 
 import config
 from services.google_sheets import load_google_sheet_data
+
+
+def load_hidden_cases():
+    """data/hidden_cases.json에서 숨긴 사건번호 리스트 로드. 없거나 오류 시 []."""
+    path = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [str(x).strip() for x in data if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def save_hidden_cases(hidden_list):
+    """숨긴 사건번호 리스트를 data/hidden_cases.json에 저장."""
+    path = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(hidden_list, f, ensure_ascii=False, indent=2)
+    except Exception:
+        raise
 
 
 def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
@@ -33,7 +60,21 @@ def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
         messagebox.showerror("오류", "구글 시트 데이터를 로드할 수 없습니다.")
         return
 
-    app.case_list = google_data
+    hidden_set = set(load_hidden_cases())
+    def _case_number_str(c):
+        raw = c.get("사건번호") or ""
+        return (str(raw).strip() if raw is not None else "")
+
+    app.case_list = [
+        c for c in google_data
+        if _case_number_str(c) not in hidden_set
+    ]
+    if not app.case_list and google_data:
+        app.log_message(
+            "⚠️ 숨긴 사건이 전체와 같아 목록이 비었습니다. 숨김을 해제하고 목록을 표시합니다."
+        )
+        save_hidden_cases([])
+        app.case_list = list(google_data)
     app.sort_case_list()
 
     max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)

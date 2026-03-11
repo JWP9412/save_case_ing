@@ -57,7 +57,8 @@ def sort_case_list(app):
 
 def on_header_click(app, col_idx):
     """헤더 클릭 시 정렬 기준 변경 후 목록 재정렬 및 UI 갱신."""
-    sortable = (1, 2, 3, 7, 8)
+    # 1=법원/사건번호, 2=피고/사건명, 3=기일, 4=비고, 8=자동 조회, 9=최근 업데이트
+    sortable = (1, 2, 3, 4, 8, 9)
     if col_idx not in sortable:
         return
     if app.sort_column_index == col_idx:

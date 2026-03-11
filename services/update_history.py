@@ -9,9 +9,10 @@
 파일 위치: config.UPDATE_HISTORY_FILE (기본 update_history.json).
 """
 
+import re
 import json
 import os
-from datetime import datetime
+from datetime import datetime, date
 
 import config
 
@@ -74,25 +75,62 @@ def get_days_since_update(case, history):
         return -1
 
 
-def update_case_record(case_number, row_count, history, is_auto=False):
+def get_days_until_hearing(hearing_info):
     """
-    사건번호에 대한 업데이트 기록(시간 + 행 개수 + 자동여부)을 갱신한 새 딕셔너리 반환.
+    기일 문자열에서 날짜를 파싱하여 오늘로부터 기일까지의 일수 반환.
+
+    hearing_info: "변론기일 26.03.11.(14:00)" 또는 "판결선고기일 26.03.11.(14:00)" 형식.
+    반환: (hearing_date - today).days. 미래면 양수, 당일 0, 과거면 음수. 파싱 실패 시 None.
+    """
+    if not hearing_info or not isinstance(hearing_info, str):
+        return None
+    s = hearing_info.strip()
+    # Y.MM.DD, YY.MM.DD 또는 YYYY.MM.DD 패턴 추출 (괄호 앞까지)
+    m = re.search(r"(\d{1,4})\.(\d{1,2})\.(\d{1,2})\.?", s)
+    if not m:
+        return None
+    try:
+        y_str, mo_str, d_str = m.group(1), m.group(2), m.group(3)
+        y = int(y_str)
+        mo = int(mo_str)
+        d = int(d_str)
+        if y < 10:
+            y = 2020 + y
+        elif y < 100:
+            y = 2000 + y
+        if not (1 <= mo <= 12 and 1 <= d <= 31):
+            return None
+        hearing_date = date(y, mo, d)
+        return (hearing_date - date.today()).days
+    except (ValueError, TypeError):
+        return None
+
+
+def update_case_record(case_number, row_count, history, is_auto=False, hearing_info=None):
+    """
+    사건번호에 대한 업데이트 기록(시간 + 행 개수 + 자동여부 + 기일정보)을 갱신한 새 딕셔너리 반환.
 
     case_number: 사건번호 문자열.
     row_count: 저장된 진행내용 행 개수.
     history: load_update_history()로 얻은 딕셔너리 (수정하지 않음).
     is_auto: 자동 조회 여부 (기본 False).
+    hearing_info: 기일 정보 문자열 (예: "판결선고기일 26.03.11.(14:00)"). None이면 기존 값 유지.
     반환: 갱신된 새 딕셔너리 (원본 history와 동일 참조가 아닌 복사본).
     """
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     new_history = dict(history)
     existing = new_history.get(case_number) if isinstance(new_history.get(case_number), dict) else {}
-    new_history[case_number] = {
+    keep_keys = ("last_entry", "hearing_info")
+    merged = {k: v for k, v in existing.items() if k in keep_keys}
+    record = {
         "last_update": current_time,
         "row_count": row_count,
         "is_auto": is_auto,
-        **{k: v for k, v in existing.items() if k in ("last_entry",)},
+        **merged,
     }
+    if hearing_info is not None:
+        record["hearing_info"] = hearing_info
+    new_history[case_number] = record
     return new_history
 
 

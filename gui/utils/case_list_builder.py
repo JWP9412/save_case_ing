@@ -24,6 +24,7 @@ def reset_internal_data(app):
         "case_frames",
         "case_update_labels",
         "case_update_date_labels",
+        "case_record_labels",
         "case_start_times",
         "case_info_text_widgets",
         "case_cell_frames",
@@ -61,6 +62,7 @@ def update_case_list_ui(app):
         app.case_separators = {}
         app.case_update_labels = {}
         app.case_update_date_labels = {}
+        app.case_record_labels = {}
         app.case_start_times = {}
         app.case_info_text_widgets = {}
 
@@ -114,7 +116,7 @@ def update_case_list_ui(app):
                 app.case_info_text_widgets[i] = [
                     comps["label_info_1"],
                     comps["label_info_2"],
-                    comps["label_info_3"],
+                    comps["label_info_4"],
                 ]
                 app.case_checkboxes[i] = comps["checkbox_var"]
                 app.case_images[i] = comps["image_label"]
@@ -123,6 +125,7 @@ def update_case_list_ui(app):
                 app.case_status[i] = comps["status_label"]
                 app.case_update_date_labels[i] = comps["update_date_label"]
                 app.case_update_labels[i] = comps["update_d_label"]
+                app.case_record_labels[i] = comps["record_label"]
 
             app.case_list_frame.update_idletasks()
             app.case_canvas.configure(scrollregion=app.case_canvas.bbox("all"))

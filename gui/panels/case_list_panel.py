@@ -62,9 +62,35 @@ class CaseListPanel:
         case_frame = ctk.CTkFrame(parent, fg_color="transparent")
         case_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # ---- 제목 + 열 순서 설정 버튼 + 검색창 한 줄 ----
+        # ---- 제목 + 열 순서 설정 버튼 + 검색창 한 줄 (사건목록 관리 버튼 최우측) ----
         title_row = ctk.CTkFrame(case_frame, fg_color="transparent")
-        title_row.pack(anchor=tk.W, pady=(0, 4))
+        title_row.pack(fill=tk.X, pady=(0, 4))
+        manage_btn = ctk.CTkButton(
+            title_row,
+            text="사건목록 관리",
+            font=ctk.CTkFont(family="맑은 고딕", size=12),
+            width=100,
+            height=28,
+            fg_color="#5DADE2",
+            hover_color="#4A9FD4",
+            cursor="hand2",
+            command=app._open_case_list_manage_dialog,
+        )
+        manage_btn.pack(side=tk.RIGHT, padx=(8, 0))
+        search_frame = ctk.CTkFrame(title_row, fg_color="transparent")
+        search_frame.pack(side=tk.RIGHT, padx=(16, 0))
+        settings_btn = ctk.CTkButton(
+            title_row,
+            text="⚙",
+            font=ctk.CTkFont(size=16),
+            width=36,
+            height=28,
+            fg_color="#5DADE2",
+            hover_color="#4A9FD4",
+            cursor="hand2",
+            command=app._open_column_order_dialog,
+        )
+        settings_btn.pack(side=tk.LEFT, padx=(8, 0))
         app.case_list_title_label = ctk.CTkLabel(
             title_row,
             text="📋 사건 목록(0)",
@@ -72,20 +98,6 @@ class CaseListPanel:
             text_color=app.get_theme_color("text_main"),
         )
         app.case_list_title_label.pack(side=tk.LEFT)
-        settings_btn = ctk.CTkButton(
-            title_row,
-            text="⚙",
-            font=ctk.CTkFont(size=16),
-            width=36,
-            height=28,
-            fg_color="transparent",
-            hover_color="#3D5A6C",
-            cursor="hand2",
-            command=app._open_column_order_dialog,
-        )
-        settings_btn.pack(side=tk.LEFT, padx=(8, 0))
-        search_frame = ctk.CTkFrame(title_row, fg_color="transparent")
-        search_frame.pack(side=tk.LEFT, padx=(16, 0))
         app.search_entry = ctk.CTkEntry(
             search_frame,
             width=200,
@@ -211,7 +223,7 @@ class CaseListPanel:
         for widget in app.header_container.winfo_children():
             widget.destroy()
         app.header_cell_frames = []
-        sortable_internal = (1, 2, 3, 7, 8)
+        sortable_internal = (1, 2, 3, 4, 8, 9)
         header_frame = ctk.CTkFrame(app.header_container, fg_color="#34495E")
         header_frame.pack(fill=tk.BOTH, expand=True)
         extra_last = getattr(app, "_extra_width_last_col", 0)

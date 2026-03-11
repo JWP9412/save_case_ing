@@ -104,14 +104,14 @@ class MockApp:
     def load_update_history(self):
         return self.history_manager.load_history()
         
-    def update_case_timestamp(self, case, original_index, row_count, is_auto=True):
-        """CLI 조회 성공 시 업데이트 기록 저장 (자동 조회 플래그 포함). history_ui.py 시그니처와 동일."""
+    def update_case_timestamp(self, case, original_index, row_count, is_auto=True, hearing_info=None):
+        """CLI 조회 성공 시 업데이트 기록 저장 (자동 조회 플래그·기일 캐시 포함). history_ui.py 시그니처와 동일."""
         try:
             case_number = case.get("사건번호", "")
             with self._file_lock:
                 history = update_history_service.load_update_history(config.UPDATE_HISTORY_FILE)
                 new_history = update_history_service.update_case_record(
-                    case_number, row_count, history, is_auto=is_auto
+                    case_number, row_count, history, is_auto=is_auto, hearing_info=hearing_info
                 )
                 update_history_service.save_update_history(
                     new_history, config.UPDATE_HISTORY_FILE
@@ -156,6 +156,10 @@ class MockApp:
     def get_case_status_text(self, case_index):
         """CLI: 상태 라벨 없음. 빈 문자열 반환."""
         return getattr(self, "case_status", {}).get(case_index, "")
+
+    def update_auto_search_label(self, case_number):
+        """CLI: UI 없음. no-op."""
+        pass
 
 
 def run_auto_batch():

@@ -12,7 +12,7 @@ from gui.utils import case_list_columns as case_list_columns_module
 
 
 def on_resize_press(app, display_idx, event):
-    """display_idx: 표시 순서상 열 인덱스 (0~9). 내부 열 인덱스는 col_order[display_idx]."""
+    """display_idx: 표시 순서상 열 인덱스 (0~10). 내부 열 인덱스는 col_order[display_idx]."""
     app._resize_col = display_idx
     internal_idx = app.col_order[display_idx]
     app._resize_start_x = event.x_root
