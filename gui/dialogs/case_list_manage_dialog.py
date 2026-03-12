@@ -827,7 +827,7 @@ class CaseListManageDialog(ctk.CTkToplevel):
         ]
         hidden.extend(u.get("hidden_remove_items") or [])
         save_hidden_cases(hidden)
-        self.app.load_google_sheet()
+        self.app.load_google_sheet(force_network=True)
         self._last_apply_undo = None
         self._refresh_case_list()
         self._refresh_unhide_list()
@@ -841,7 +841,7 @@ class CaseListManageDialog(ctk.CTkToplevel):
     def _on_confirm_and_close(self):
         """확인 버튼: 적용할 항목이 있으면 적용, 그 다음 새로고침 후 창 닫기."""
         self._on_apply()
-        self.app.load_google_sheet()
+        self.app.load_google_sheet(force_network=True)
         self._on_close()
 
     def _hidden_item_to_case_number(self, s):

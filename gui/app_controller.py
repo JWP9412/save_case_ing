@@ -304,9 +304,9 @@ class AppController:
         """Handle header click for sorting. Delegated to case_list_columns."""
         case_list_columns_module.on_header_click(self, col_idx)
 
-    def load_google_sheet(self):
-        """Load Google Sheet data. Delegated to sheet_loader."""
-        sheet_loader_module.load_google_sheet(self)
+    def load_google_sheet(self, force_network=False):
+        """Load Google Sheet data. force_network=False면 캐시 우선, True면 구글 시트에서 조회. Delegated to sheet_loader."""
+        sheet_loader_module.load_google_sheet(self, force_network)
 
     def _display_width_up_to(self, display_idx):
         """Return cumulative width up to display_idx."""
@@ -655,7 +655,18 @@ class AppController:
         ui_queue_manager_module.process_ui_queue(self)
 
     def run(self):
-        """Start GUI event loop."""
+        """Start GUI event loop. 캐시가 있으면 창을 띄우기 전에 목록을 그려 두어, 열리자마자 사건 항목이 보이도록 함."""
         self.root.after(100, self._process_ui_queue)
-        self.root.after(100, self.load_google_sheet)
+
+        cached = sheet_loader_module.load_case_list_cache()
+        if cached is not None:
+            self.root.withdraw()
+            self.root.update()
+            self.reset_internal_data()
+            sheet_loader_module._apply_loaded_data_to_app(self, cached)
+            self.log_message(f"캐시에서 {len(cached)}개 사건 로드")
+            self.root.deiconify()
+        else:
+            self.root.after(100, self.load_google_sheet)
+
         self.root.mainloop()

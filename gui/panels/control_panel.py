@@ -76,7 +76,7 @@ class ControlPanel:
 
         app.refresh_btn = ctk.CTkButton(
             row1,
-            text="🔄 새로고침",
+            text="🔄 새로고침 (F5)",
             font=btn_font,
             fg_color="#27AE60",
             hover_color="#229954",
@@ -85,7 +85,7 @@ class ControlPanel:
             height=ControlPanel.BTN_H,
             corner_radius=ControlPanel.BTN_CORNER_RADIUS,
             cursor="hand2",
-            command=app.load_google_sheet,
+            command=lambda: app.load_google_sheet(force_network=True),
         )
         app._control_btn_colors[app.refresh_btn] = ("#27AE60", "#229954", "#FFFFFF")
         app.refresh_btn.pack(side=tk.LEFT, padx=(0, 10), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)

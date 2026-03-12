@@ -15,7 +15,7 @@
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.6.0"
+APP_VERSION = "4.6.2"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -98,6 +98,9 @@ COLUMN_ORDER_FILE = "data/column_order.json"
 
 # 숨긴 사건번호 목록 (사건목록 관리 - 숨기기/숨김 해제)
 HIDDEN_CASES_FILE = "data/hidden_cases.json"
+
+# 사건 목록 캐시 (시작 시 빠른 로딩용, 새로고침 시 구글 시트에서 갱신)
+CASE_LIST_CACHE_FILE = "data/case_list_cache.json"
 
 # 사건목록 관리 다이얼로그 왼쪽(사건 목록) 패널 너비 (기본값 및 저장 파일)
 CASE_LIST_MANAGE_LEFT_WIDTH = 220

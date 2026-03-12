@@ -91,7 +91,9 @@ def update_case_list_ui(app):
         app.create_list_header()
 
         status_history = app.log_history_manager.load_status_history()
-        batch_size = 5
+        # 한 번에 그리는 행 수. 30건 이하는 한 번에 그려 목록이 한꺼번에 나타나도록 함.
+        n_cases = len(app.case_list)
+        batch_size = n_cases if n_cases <= 30 else min(25, (n_cases + 1) // 2)
 
         def process_batch(start_idx):
             if not app.root.winfo_exists():

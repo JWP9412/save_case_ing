@@ -86,4 +86,6 @@ def run_app():
     gui.create_case_list_panel(left_panel)
     gui.create_progress_panel(right_panel)
 
+    root.bind("<F5>", lambda e: gui.load_google_sheet(force_network=True))
+
     gui.run()
