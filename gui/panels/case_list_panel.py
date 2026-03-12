@@ -253,13 +253,13 @@ class CaseListPanel:
                 handle.config(cursor="sb_h_double_arrow")
                 handle.bind(
                     "<ButtonPress-1>",
-                    lambda e, d=disp_idx: app._on_resize_press(d, e),
+                    lambda e=None, d=disp_idx: app._on_resize_press(d, e),
                 )
                 handle.bind(
                     "<B1-Motion>",
-                    lambda e, d=disp_idx: app._on_resize_motion(d, e),
+                    lambda e=None, d=disp_idx: app._on_resize_motion(d, e),
                 )
-                handle.bind("<ButtonRelease-1>", lambda e: app._on_resize_release(e))
+                handle.bind("<ButtonRelease-1>", lambda e=None: app._on_resize_release(e))
                 header_cb = ctk.CTkCheckBox(
                     cell,
                     text="",
@@ -309,13 +309,13 @@ class CaseListPanel:
                 handle.config(cursor="sb_h_double_arrow")
                 handle.bind(
                     "<ButtonPress-1>",
-                    lambda e, d=disp_idx: app._on_resize_press(d, e),
+                    lambda e=None, d=disp_idx: app._on_resize_press(d, e),
                 )
                 handle.bind(
                     "<B1-Motion>",
-                    lambda e, d=disp_idx: app._on_resize_motion(d, e),
+                    lambda e=None, d=disp_idx: app._on_resize_motion(d, e),
                 )
-                handle.bind("<ButtonRelease-1>", lambda e: app._on_resize_release(e))
+                handle.bind("<ButtonRelease-1>", lambda e=None: app._on_resize_release(e))
 
     @staticmethod
     def create_case_row(app, parent, case, index, total_width, initial_status=None):

@@ -13,6 +13,8 @@ from gui.utils import case_list_columns as case_list_columns_module
 
 def on_resize_press(app, display_idx, event):
     """display_idx: 표시 순서상 열 인덱스 (0~10). 내부 열 인덱스는 col_order[display_idx]."""
+    if event is None:
+        return
     app._resize_col = display_idx
     internal_idx = app.col_order[display_idx]
     app._resize_start_x = event.x_root
@@ -29,7 +31,7 @@ def on_resize_press(app, display_idx, event):
 
 
 def on_resize_motion(app, display_idx, event):
-    if app._resize_col is None:
+    if event is None or app._resize_col is None:
         return
     delta = event.x_root - app._resize_start_x
     new_w = max(30, min(500, app._resize_start_width + delta))
@@ -43,6 +45,8 @@ def on_resize_motion(app, display_idx, event):
 
 
 def on_resize_release(app, event):
+    if event is None:
+        return
     if app._resize_col is not None:
         display_idx = app._resize_col
         internal_idx = app.col_order[display_idx]

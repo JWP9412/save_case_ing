@@ -18,7 +18,7 @@ from services.google_sheets import load_google_sheet_data
 
 
 def load_hidden_cases():
-    """data/hidden_cases.json에서 숨긴 사건번호 리스트 로드. 없거나 오류 시 []."""
+    """data/hidden_cases.json에서 숨긴 사건 리스트 로드. 항목은 표시 문자열 또는 사건번호. 없거나 오류 시 []."""
     path = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
     try:
         if os.path.isfile(path):
@@ -29,6 +29,12 @@ def load_hidden_cases():
     except Exception:
         pass
     return []
+
+
+def _hidden_item_to_case_number(s):
+    """저장 항목(표시 문자열 '사건번호 - ...' 또는 사건번호만)에서 사건번호만 추출."""
+    s = str(s).strip()
+    return s.split(" - ")[0].strip() if " - " in s else s
 
 
 def save_hidden_cases(hidden_list):
@@ -60,7 +66,7 @@ def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
         messagebox.showerror("오류", "구글 시트 데이터를 로드할 수 없습니다.")
         return
 
-    hidden_set = set(load_hidden_cases())
+    hidden_set = set(_hidden_item_to_case_number(x) for x in load_hidden_cases())
     def _case_number_str(c):
         raw = c.get("사건번호") or ""
         return (str(raw).strip() if raw is not None else "")
@@ -95,6 +101,10 @@ def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
         f"✅ {len(google_data)}개 사건 로드 완료 (병렬 처리: {smart_parallel}개)"
     )
     app.update_case_list_ui()
+    dlg = getattr(app, "_case_list_manage_dialog", None)
+    if dlg is not None and dlg.winfo_exists():
+        dlg._refresh_case_list()
+        dlg._refresh_unhide_list()
 
 
 def load_google_sheet(app):
