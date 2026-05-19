@@ -39,6 +39,7 @@ from services.logger_service import setup_logger, register_gui_handler, get_logg
 from services.search_manager import find_match_indices
 from services import theme_manager as theme_manager_module
 from services import update_history as update_history_service
+from services import google_oauth
 
 import sys
 
@@ -172,9 +173,39 @@ class AppController:
         """Open settings dialog."""
         dlg = SettingsDialog(
             self.root,
+            app=self,
             on_save_callback=lambda: self.log_message("Settings saved. Some items apply after restart."),
         )
         dlg.focus_set()
+
+    def ensure_google_linked_on_startup(self):
+        """OAuth 모드에서 미연동이면 최초 1회 연동을 안내합니다."""
+        mode = str(getattr(config, "GOOGLE_AUTH_MODE", "oauth")).strip().lower()
+        if mode != "oauth":
+            return
+        if google_oauth.has_valid_token():
+            return
+        should_link = messagebox.askyesno(
+            "Google 계정 연동",
+            "처음 사용을 위해 Google 계정 연동이 필요합니다.\n\n"
+            "지금 연동하시겠습니까?\n"
+            "- 시트 읽기/쓰기\n"
+            "- 기일 캘린더 등록",
+            parent=self.root,
+        )
+        if not should_link:
+            self.log_message("⚠️ Google OAuth 연동을 건너뛰었습니다. 서비스 계정으로만 시도합니다.")
+            return
+        try:
+            google_oauth.get_credentials(interactive=True, log_callback=self.log_message)
+            self.log_message("✅ Google 계정 연동 완료")
+        except Exception as e:
+            messagebox.showwarning(
+                "Google 연동 실패",
+                f"Google 연동에 실패했습니다.\n{e}\n\n"
+                "서비스 계정으로 계속 시도합니다.",
+                parent=self.root,
+            )
 
     def create_settings_panel(self, parent):
         """Create settings panel. Delegated to SettingsPanel."""
@@ -602,6 +633,93 @@ class AppController:
         """Send notification email. Delegated to email_ui."""
         email_ui_module.send_notification_email(self)
 
+    def remove_duplicates_for_selected_cases(self):
+        """
+        선택된 사건들의 구글 시트 탭에서 중복 진행내용 행을 제거합니다.
+
+        주니어 개발자 참고:
+        - 일자·내용·결과·공시문이 모두 같은 행은 첫 번째만 남기고 삭제합니다.
+        - API 호출이 있으므로 백그라운드 스레드에서 실행하고 UI는 ui_queue로 갱신합니다.
+        """
+        selected = self.get_selected_cases()
+        if not selected:
+            self.show_warning("중복을 제거할 사건을 선택해주세요.")
+            return
+
+        case_labels = "\n".join(
+            f"- {c.get('사건번호', '')}" for _, c in selected[:15]
+        )
+        extra = ""
+        if len(selected) > 15:
+            extra = f"\n... 외 {len(selected) - 15}건"
+
+        if not self.ask_yesno(
+            "중복 오류 제거",
+            f"선택한 {len(selected)}건의 시트에서\n"
+            "동일한 진행내용(일자·내용·결과·공시문) 중복 행을 제거합니다.\n\n"
+            f"[대상]\n{case_labels}{extra}\n\n"
+            "계속하시겠습니까?",
+        ):
+            return
+
+        def _worker():
+            total_removed = 0
+            success_count = 0
+            fail_count = 0
+            no_dup_count = 0
+            n = len(selected)
+
+            for idx, (_, case) in enumerate(selected):
+                case_number = case.get("사건번호", "")
+                pct = int((idx / max(n, 1)) * 100)
+                self.ui_queue.put(
+                    (
+                        "function",
+                        (
+                            self.update_progress,
+                            pct,
+                            f"🧹 중복 제거 중... ({idx + 1}/{n}) {case_number}",
+                        ),
+                        {},
+                    )
+                )
+                try:
+                    result = self.google_sheets_service.remove_duplicate_rows_from_sheet(
+                        case
+                    )
+                    if result.get("success"):
+                        removed = int(result.get("removed", 0))
+                        total_removed += removed
+                        if removed > 0:
+                            success_count += 1
+                            self.log_message(result.get("message", ""))
+                        else:
+                            no_dup_count += 1
+                    else:
+                        fail_count += 1
+                        self.log_message(
+                            f"❌ {result.get('message', case_number + ': 실패')}"
+                        )
+                except Exception as e:
+                    fail_count += 1
+                    self.log_message(f"❌ 중복 제거 오류 ({case_number}): {e}")
+
+            summary = (
+                f"🧹 중복 오류 제거 완료\n\n"
+                f"• 중복 제거됨: {success_count}건 (총 {total_removed}행 삭제)\n"
+                f"• 중복 없음: {no_dup_count}건\n"
+                f"• 실패: {fail_count}건"
+            )
+
+            def _finish():
+                self.update_progress(100, "🧹 중복 오류 제거 완료")
+                self.show_info(summary)
+
+            self.ui_queue.put(("function", (_finish,), {}))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self.log_message(f"🧹 중복 오류 제거 시작: {len(selected)}건")
+
     def processing_completed(self):
         """Finish processing. Delegated to ui_queue_manager."""
         ui_queue_manager_module.processing_completed(self)
@@ -657,6 +775,7 @@ class AppController:
     def run(self):
         """Start GUI event loop. 캐시가 있으면 창을 띄우기 전에 목록을 그려 두어, 열리자마자 사건 항목이 보이도록 함."""
         self.root.after(100, self._process_ui_queue)
+        self.ensure_google_linked_on_startup()
 
         cached = sheet_loader_module.load_case_list_cache()
         if cached is not None:

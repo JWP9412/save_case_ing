@@ -144,6 +144,28 @@ class ControlPanel:
         row2.pack(fill=tk.X, padx=0, pady=(0, 10))
         row2.pack_propagate(False)
 
+        # 중복 오류 제거: 선택 사건 시트에서 동일 진행내용 행 정리
+        if hasattr(app, "remove_duplicates_for_selected_cases"):
+            app.dedup_btn = ctk.CTkButton(
+                row2,
+                text="🧹 중복 오류 제거",
+                font=btn_font,
+                width=ControlPanel.BTN_W,
+                height=ControlPanel.BTN_H,
+                corner_radius=ControlPanel.BTN_CORNER_RADIUS,
+                cursor="hand2",
+                fg_color="#8E44AD",
+                hover_color="#7D3C98",
+                text_color="#FFFFFF",
+                command=app.remove_duplicates_for_selected_cases,
+            )
+            app._control_btn_colors[app.dedup_btn] = ("#8E44AD", "#7D3C98", "#FFFFFF")
+            app.dedup_btn.pack(
+                side=tk.LEFT,
+                padx=(0, 10),
+                pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
+            )
+
         # 알림메일 발송 버튼 (미발송 내역이 있을 때만 활성 색상 표시)
         if hasattr(app, "send_notification_email"):
             app.email_btn = ctk.CTkButton(

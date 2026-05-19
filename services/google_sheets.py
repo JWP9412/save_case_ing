@@ -28,8 +28,28 @@ import functools
 import threading
 import config
 from services.logger_service import get_logger
+from services import google_oauth
 
 logger = get_logger("google_sheets")
+
+
+def _a1_end_column_letter(num_cols: int) -> str:
+    """
+    열 개수(1=A만, 6=A~F)에 맞는 A1 표기의 마지막 열 글자를 반환합니다.
+
+    주니어 개발자 참고:
+    - Google Sheets의 `append_rows`는 시트 안의 '표' 범위를 추정해 빈 칸을 찾기 때문에,
+      오른쪽 열에 값이 있으면 새 행이 A열이 아니라 G열 등으로 밀릴 수 있습니다.
+    - 그래서 `update("A10:F56", values)`처럼 범위를 명시하면 항상 A열부터 기록됩니다.
+    """
+    if num_cols < 1:
+        raise ValueError("num_cols는 1 이상이어야 합니다.")
+    n = num_cols
+    parts = []
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        parts.append(chr(65 + rem))
+    return "".join(reversed(parts))
 
 
 def retry_on_quota_error(max_retries=5, base_delay=2.0):
@@ -100,14 +120,26 @@ class GoogleSheetsService:
             gspread.Client 객체
         """
         if self._client is None:
-            # 서비스 계정 인증
             scope = [
                 "https://spreadsheets.google.com/feeds",
                 "https://www.googleapis.com/auth/drive",
             ]
-            creds = Credentials.from_service_account_file(
-                config.GOOGLE_AUTH_FILE, scopes=scope
-            )
+            creds = None
+            auth_mode = str(getattr(config, "GOOGLE_AUTH_MODE", "oauth")).strip().lower()
+            if auth_mode != "service_account":
+                creds = google_oauth.get_credentials(
+                    scopes=scope,
+                    interactive=False,
+                    log_callback=self._log,
+                )
+                if creds is not None:
+                    self._log("✅ Google OAuth 사용자 인증으로 시트 연결")
+            if creds is None:
+                # OAuth 토큰이 없거나 service_account 모드면 서비스 계정으로 폴백
+                creds = Credentials.from_service_account_file(
+                    config.GOOGLE_AUTH_FILE, scopes=scope
+                )
+                self._log("✅ 서비스 계정 인증으로 시트 연결")
             self._client = gspread.authorize(creds)
             self._log("✅ 구글 시트 클라이언트 생성 완료")
 
@@ -143,15 +175,8 @@ class GoogleSheetsService:
             실패 시: None
         """
         try:
-            # ============================================================
-            # 1단계: 구글 시트 연결
-            # ============================================================
-            gc = gspread.service_account(filename=config.GOOGLE_AUTH_FILE)
-
-            # ============================================================
-            # 2단계: 특정 스프레드시트 열기 (ID로)
-            # ============================================================
-            spreadsheet = gc.open_by_key(config.GOOGLE_SHEET_ID)
+            # 1단계: 구글 시트 연결 (OAuth 우선, 없으면 서비스 계정)
+            spreadsheet = self._get_spreadsheet()
             self._log(f"[INFO] 구글 시트 연결 성공: {spreadsheet.title}")
 
             # ============================================================
@@ -289,14 +314,26 @@ class GoogleSheetsService:
             })
         return processed_new_data, color_info
 
-    def _append_empty_and_timestamp_rows(self, worksheet, num_cols=6):
-        """빈 행과 '업데이트 일시' 행 추가."""
+    def _append_empty_and_timestamp_rows(
+        self, worksheet, start_row_1based, num_cols=6
+    ):
+        """
+        빈 행과 '업데이트 일시' 행을 지정 행부터 A열 기준으로 기록합니다.
+
+        주니어 개발자 참고:
+        append_rows 대신 update를 쓰는 이유는 save_progress_data와 동일하게
+        열 밀림(우측 열에 붙는 현상)을 막기 위함입니다.
+        """
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         empty_rows = [[""] * num_cols for _ in range(config.EMPTY_ROWS_BEFORE_UPDATE)]
-        worksheet.append_rows(empty_rows, value_input_option="USER_ENTERED")
-        worksheet.append_rows(
-            [["업데이트 일시", current_time, "", "", "", ""][:num_cols]],
-            value_input_option="USER_ENTERED",
+        rows_to_write = empty_rows + [
+            ["업데이트 일시", current_time, "", "", "", ""][:num_cols]
+        ]
+        end_col = _a1_end_column_letter(num_cols)
+        end_row = start_row_1based + len(rows_to_write) - 1
+        range_a1 = f"A{start_row_1based}:{end_col}{end_row}"
+        worksheet.update(
+            range_a1, rows_to_write, value_input_option="USER_ENTERED"
         )
 
     @retry_on_quota_error(max_retries=5, base_delay=2.0)
@@ -335,19 +372,30 @@ class GoogleSheetsService:
                 processed_new_data, color_info = self._build_result_rows_and_color_info(
                     result_data, start_row_1based
                 )
-                worksheet.append_rows(
-                    processed_new_data, value_input_option="USER_ENTERED"
+                n_new = len(processed_new_data)
+                # 타임스탬프 행 = 데이터 직후 빈 행(EMPTY_ROWS_BEFORE_UPDATE) 다음 한 줄
+                timestamp_row_1based = (
+                    start_row_1based
+                    + n_new
+                    + config.EMPTY_ROWS_BEFORE_UPDATE
+                )
+                self._ensure_worksheet_rows(worksheet, timestamp_row_1based + 2)
+
+                end_col = _a1_end_column_letter(6)
+                end_data_row = start_row_1based + n_new - 1
+                data_range = f"A{start_row_1based}:{end_col}{end_data_row}"
+                worksheet.update(
+                    data_range,
+                    processed_new_data,
+                    value_input_option="USER_ENTERED",
                 )
 
                 self._apply_text_colors(worksheet, color_info)
-                self._append_empty_and_timestamp_rows(worksheet, num_cols=6)
-                current_row = (
-                    start_row_1based
-                    + len(processed_new_data)
-                    + config.EMPTY_ROWS_BEFORE_UPDATE
-                    + 1
+                after_data_row = start_row_1based + n_new
+                self._append_empty_and_timestamp_rows(
+                    worksheet, after_data_row, num_cols=6
                 )
-                self._ensure_worksheet_rows(worksheet, current_row + 2)
+                current_row = timestamp_row_1based
                 self._format_update_timestamp_rows(worksheet, current_row, num_cols=6)
                 self._auto_resize_columns(worksheet, num_cols=6)
 
@@ -644,6 +692,36 @@ class GoogleSheetsService:
             self._log(f"❌ 알림메일 시트 추가 실패: {e}")
             return False
 
+    def get_case_worksheet_url(self, case):
+        """
+        사건 정보에 해당하는 구글 시트 탭의 URL(gid 포함)을 반환합니다.
+
+        주니어 개발자 참고:
+        - gspread 5.1.1의 `worksheet.url`은 사람이 보는 문서 URL이 아니라
+          Sheets API URL(`https://sheets.googleapis.com/...`)을 반환합니다.
+        - 메일에서 클릭 가능한 링크를 만들기 위해 `worksheet.id`(=gid)를 사용해
+          docs.google.com 주소를 직접 조립합니다.
+        - 메일에 "바로가기" 링크로 넣어 수신자가 해당 탭을 즉시 열 수 있도록 사용합니다.
+        - 어떤 이유로든 조회에 실패하면 스프레드시트 루트 URL을 폴백으로 반환합니다.
+        """
+        fallback_url = (
+            f"https://docs.google.com/spreadsheets/d/{config.GOOGLE_SHEET_ID}/edit"
+        )
+        try:
+            spreadsheet = self._get_spreadsheet()
+            worksheet_name = self._get_case_worksheet_name(case)
+            try:
+                worksheet = spreadsheet.worksheet(worksheet_name)
+            except gspread.WorksheetNotFound:
+                return fallback_url
+            gid = getattr(worksheet, "id", None)
+            if gid is None:
+                return fallback_url
+            return f"{fallback_url}#gid={gid}"
+        except Exception as e:
+            self._log(f"⚠️ 시트 URL 조회 실패(폴백 사용): {e}")
+            return fallback_url
+
     def _get_case_worksheet_name(self, case):
         """사건 정보로 개별 시트 이름을 반환."""
         defendant = case.get("피고", "")
@@ -669,6 +747,109 @@ class GoogleSheetsService:
         except gspread.WorksheetNotFound:
             return []
         return worksheet.get_all_values()
+
+    @staticmethod
+    def _normalize_sheet_cell(text):
+        """시트 비교용: 공백 제거 후 문자열화 (중복 판별 시 오판 방지)."""
+        if text is None:
+            return ""
+        return "".join(str(text).split())
+
+    @classmethod
+    def _sheet_row_dedup_key(cls, row):
+        """
+        진행내용 한 행의 중복 판별 키.
+        일자·내용·결과·공시문 4열이 모두 같으면 동일 기록으로 봅니다.
+        """
+        parts = []
+        for col_idx in range(4):
+            val = row[col_idx] if col_idx < len(row) else ""
+            parts.append(cls._normalize_sheet_cell(val))
+        return tuple(parts)
+
+    @classmethod
+    def _is_progress_data_row(cls, row):
+        """
+        헤더·업데이트 일시·빈 구분 행이 아닌, 실제 진행내용 데이터 행인지 판별.
+        """
+        if not row:
+            return False
+        first_cell = cls._normalize_sheet_cell(row[0] if len(row) > 0 else "")
+        if not first_cell:
+            return False
+        if first_cell in ("업데이트일시", "업데이트 일시", "최근 과거 업데이트", "일자"):
+            return False
+        return True
+
+    @retry_on_quota_error(max_retries=5, base_delay=2.0)
+    def remove_duplicate_rows_from_sheet(self, case):
+        """
+        사건별 시트에서 중복된 진행내용 행을 제거합니다.
+
+        주니어 개발자 참고:
+        - 무한 증식 버그 등으로 동일 (일자, 내용, 결과, 공시문)이 여러 번 쌓인 경우 정리용.
+        - 위에서부터 순회하며 첫 번째만 남기고, 이후 동일 키 행은 삭제합니다.
+        - '업데이트 일시' 등 메타 행은 그대로 유지합니다.
+
+        반환:
+            dict: success(bool), removed(int), remaining_data_rows(int), message(str)
+        """
+        case_number = case.get("사건번호", "")
+        all_values = self.get_full_sheet_data(case)
+        if not all_values:
+            return {
+                "success": True,
+                "removed": 0,
+                "remaining_data_rows": 0,
+                "message": f"{case_number}: 시트 없음 또는 비어 있음",
+            }
+
+        header = all_values[0]
+        body = all_values[1:]
+
+        data_out = []
+        footer_out = []
+        seen_keys = set()
+        removed = 0
+
+        for row in body:
+            if self._is_progress_data_row(row):
+                key = self._sheet_row_dedup_key(row)
+                if key in seen_keys:
+                    removed += 1
+                    continue
+                seen_keys.add(key)
+                data_out.append(list(row))
+            else:
+                footer_out.append(list(row))
+
+        if removed == 0:
+            return {
+                "success": True,
+                "removed": 0,
+                "remaining_data_rows": len(data_out),
+                "message": f"{case_number}: 제거할 중복 없음",
+            }
+
+        new_values = [header] + data_out + footer_out
+        ok = self.overwrite_sheet_data(case, new_values)
+        if not ok:
+            return {
+                "success": False,
+                "removed": 0,
+                "remaining_data_rows": len(data_out),
+                "message": f"{case_number}: 시트 덮어쓰기 실패",
+            }
+
+        self._log(
+            f"🧹 중복 제거 완료: {case_number} (-{removed}행, 데이터 {len(data_out)}행 유지)"
+        )
+        return {
+            "success": True,
+            "removed": removed,
+            "remaining_data_rows": len(data_out),
+            "message": f"{case_number}: 중복 {removed}행 제거",
+        }
 
     def overwrite_sheet_data(self, case, data):
         """

@@ -12,11 +12,13 @@ import re
 import subprocess as sp
 import threading
 import time
+from datetime import datetime
 
 import psutil
 
 import config
 from services import email_manager as email_manager_module
+from services import google_calendar as google_calendar_module
 
 
 class ProcessController:
@@ -77,7 +79,7 @@ class ProcessController:
                 continue
             raw_content = re.sub(r"\s+", " ", raw_content)
             m = re.search(
-                r"(변론기일|판결선고기일).*?([0-9]{1,2}:[0-9]{2})",
+                r"(변론기일|감정기일|판결선고기일).*?([0-9]{1,2}:[0-9]{2})",
                 raw_content,
                 re.DOTALL,
             )
@@ -98,20 +100,110 @@ class ProcessController:
             return f"{kind}({time_str})"
         return None
 
+    @staticmethod
+    def _parse_datetime_from_row(raw_date, time_str):
+        raw_date = (raw_date or "").strip()
+        if not raw_date:
+            return None
+        parts = raw_date.replace("-", ".").split(".")
+        if len(parts) < 3:
+            return None
+        try:
+            y = int(parts[0].strip())
+            mo = int(parts[1].strip())
+            d = int(parts[2].strip())
+            hh, mm = time_str.split(":")
+            hh = int(hh)
+            mm = int(mm)
+            if y < 10:
+                y = 2020 + y
+            elif y < 100:
+                y = 2000 + y
+            return datetime(y, mo, d, hh, mm)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _extract_hearing_events_from_result(cls, result_data):
+        """
+        result_data에서 캘린더 등록용 기일 이벤트 목록을 추출.
+        반환: [{"kind": str, "start_dt": datetime, "label": str}, ...]
+        """
+        if not isinstance(result_data, list):
+            return []
+        events = []
+        seen = set()
+        for row in result_data:
+            if not isinstance(row, dict):
+                continue
+            raw_content = re.sub(r"\s+", " ", (row.get("content") or "").strip())
+            if not raw_content:
+                continue
+            raw_date = (row.get("date") or "").strip()
+            for m in re.finditer(
+                r"(변론기일|감정기일|판결선고기일).*?([0-9]{1,2}:[0-9]{2})",
+                raw_content,
+                re.DOTALL,
+            ):
+                kind = m.group(1)
+                time_str = m.group(2)
+                start_dt = cls._parse_datetime_from_row(raw_date, time_str)
+                if start_dt is None:
+                    continue
+                key = (kind, start_dt.isoformat())
+                if key in seen:
+                    continue
+                seen.add(key)
+                events.append(
+                    {
+                        "kind": kind,
+                        "start_dt": start_dt,
+                        "label": f"{kind} {start_dt.strftime('%y.%m.%d.(%H:%M)')}",
+                    }
+                )
+        return events
+
+    def _maybe_sync_hearing_calendar(self, case, result_data):
+        if int(getattr(config, "GOOGLE_CALENDAR_ENABLED", 1)) != 1:
+            return
+        events = self._extract_hearing_events_from_result(result_data)
+        if not events:
+            return
+        try:
+            res = google_calendar_module.sync_hearing_events(
+                case, events, log_callback=self.app.log_message
+            )
+            self.app.log_message(
+                "📅 캘린더 동기화 완료: 생성 %s / 갱신 %s / 건너뜀 %s"
+                % (res.get("created", 0), res.get("updated", 0), res.get("skipped", 0))
+            )
+        except Exception as e:
+            self.app.log_message(f"⚠️ 캘린더 동기화 실패: {e}")
+
     def filter_new_data(self, scraped_data, last_entry):
-        """last_entry 이후 신규 데이터만 반환. 없으면 전체 반환."""
+        """
+        last_entry 이후 신규 데이터만 반환. 없으면 전체 반환.
+
+        주니어 개발자 참고:
+        - 대법원 진행내용에 동일 일자·내용이 여러 행(파란/주황 등) 있을 수 있습니다.
+        - 정순 탐색 시 첫 번째 동일 행에서 끊기면, 아래쪽 중복 행이 매번 '신규'로 저장되어
+          구글 시트에 같은 기록이 무한히 쌓이는 버그가 발생합니다.
+        - 따라서 scraped_data를 역순으로 탐색해, 시트 마지막 저장 내역과 일치하는
+          '가장 아래쪽' 행을 기준으로 그 이후만 신규로 판단합니다.
+        """
         if not last_entry or not isinstance(scraped_data, list) or len(scraped_data) == 0:
             return scraped_data if isinstance(scraped_data, list) else []
         le_date = self._normalize_text(last_entry.get("date", ""))
         le_content = self._normalize_text(last_entry.get("content", ""))
-        for i, row in enumerate(scraped_data):
+        for i in range(len(scraped_data) - 1, -1, -1):
+            row = scraped_data[i]
             if not isinstance(row, dict):
                 continue
             if (
                 self._normalize_text(row.get("date", "")) == le_date
                 and self._normalize_text(row.get("content", "")) == le_content
             ):
-                return scraped_data[i + 1:]
+                return scraped_data[i + 1 :]
         return scraped_data
 
     def save_to_google_sheets(self, case, result_data):
@@ -285,6 +377,10 @@ class ProcessController:
             t.join()
 
         self.app.log_message("🎉 모든 캡차 이미지 로드 완료!")
+        # 선택한 사건들에 대한 캡차 이미지 로드가 모두 끝났을 때 안내 다이얼로그 표시
+        self.app.ui_queue.put(
+            ("function", (self.app.show_info, "선택한 모든 작업 조회 완료!"), {})
+        )
         self.app.processing = False
 
         def _restore_start_btn():
@@ -418,6 +514,7 @@ class ProcessController:
                     new_total = max(prev_total, current_count)
                     hearing_info = self._extract_hearing_from_result(result_data) or ""
                     self.app.update_case_timestamp(case, case_index, new_total, hearing_info=hearing_info)
+                    self._maybe_sync_hearing_calendar(case, result_data)
                     if hasattr(self.app, "processed_cases"):
                         self.app.processed_cases.add(case_index)
                     self.app.log_message(f"✅ 자동 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
@@ -443,12 +540,19 @@ class ProcessController:
                 total_rows = (old_total + row_count) if row_count else old_total
                 hearing_info = self._extract_hearing_from_result(result_data) or ""
                 self.app.update_case_timestamp(case, case_index, total_rows, hearing_info=hearing_info)
+                self._maybe_sync_hearing_calendar(case, result_data)
                 if row_count > 0:
                     self.app.log_history_manager.add_to_search_log(case_number)
                     self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
                     try:
                         sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
-                        email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
+                        try:
+                            sheet_url = self.app.google_sheets_service.get_case_worksheet_url(case)
+                        except Exception:
+                            sheet_url = ""
+                        email_manager_module.add_new_update(
+                            case_number, new_data, sheet_name=sheet_name, sheet_url=sheet_url,
+                        )
                     except Exception:
                         pass
                     if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
@@ -623,10 +727,11 @@ class ProcessController:
         current_count = len(result_data) if isinstance(result_data, list) else 0
         new_total = max(prev_total, current_count)
         self.app.update_case_timestamp(case, original_index, new_total, hearing_info=hearing_info)
+        self._maybe_sync_hearing_calendar(case, result_data)
         self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
         return (1, 0)
 
-    def _finish_case_with_save(self, case, original_index, case_number, new_data, row_count, elapsed_time, hearing_info=None):
+    def _finish_case_with_save(self, case, original_index, case_number, result_data, new_data, row_count, elapsed_time, hearing_info=None):
         """저장 결과 반영: 상태·타임스탬프·기일 캐시·이메일 준비 후 (1, 0) 또는 (0, 1) 반환."""
         if row_count is False or row_count is None:
             self.app.update_case_status(original_index, "저장 실패", "red", "❌")
@@ -642,12 +747,19 @@ class ProcessController:
         old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
         total_rows = (old_total + row_count) if row_count else old_total
         self.app.update_case_timestamp(case, original_index, total_rows, hearing_info=hearing_info)
+        self._maybe_sync_hearing_calendar(case, result_data)
         if row_count > 0:
             self.app.log_history_manager.add_to_search_log(case_number)
             self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
             try:
                 sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
-                email_manager_module.add_new_update(case_number, new_data, sheet_name=sheet_name)
+                try:
+                    sheet_url = self.app.google_sheets_service.get_case_worksheet_url(case)
+                except Exception:
+                    sheet_url = ""
+                email_manager_module.add_new_update(
+                    case_number, new_data, sheet_name=sheet_name, sheet_url=sheet_url,
+                )
             except Exception:
                 pass
             if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
@@ -676,7 +788,7 @@ class ProcessController:
             self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
             row_count = False
         return self._finish_case_with_save(
-            case, original_index, case_number, new_data, row_count, elapsed_time, hearing_info=hearing_info
+            case, original_index, case_number, result_data, new_data, row_count, elapsed_time, hearing_info=hearing_info
         )
 
     def _process_one_case(

@@ -15,7 +15,7 @@
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.6.2"
+APP_VERSION = "4.6.3"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -38,8 +38,32 @@ SPREADSHEET_NAME = "case-ing-test"
 # 구글 시트 인증 파일 경로
 GOOGLE_AUTH_FILE = "./api/certification/service-account.json"
 
+# Google OAuth(앱 내 연동) 클라이언트/토큰 파일
+GOOGLE_OAUTH_CLIENT_SECRET_FILE = "./api/certification/client_secret.json"
+GOOGLE_USER_TOKEN_FILE = "data/google_user_token.json"
+# 인증 모드: "oauth"(권장) | "service_account"
+GOOGLE_AUTH_MODE = "oauth"
+
 # 구글 시트 "사건 목록" 워크시트 이름
 CASE_LIST_WORKSHEET_NAME = "사건 목록"
+
+# Google Calendar 자동 등록 설정 (기본: 비활성, 사용자가 설정에서 옵트인)
+GOOGLE_CALENDAR_ENABLED = 0
+GOOGLE_CALENDAR_ID = "primary"
+GOOGLE_CALENDAR_TIMEZONE = "Asia/Seoul"
+GOOGLE_CALENDAR_EVENT_DURATION_MINUTES = 60
+GOOGLE_CALENDAR_SUMMARY_TEMPLATE = "[case-ing] {case_number} {kind}"
+GOOGLE_CALENDAR_DESCRIPTION_TEMPLATE = (
+    "피고: {defendant}\n"
+    "사건명: {case_name}\n"
+    "법원: {court}\n"
+    "기일: {label}"
+)
+GOOGLE_OAUTH_SCOPES = (
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/calendar.events",
+)
 
 # ============================================================================
 # Puppeteer 설정
@@ -205,7 +229,15 @@ USER_SETTINGS_OVERRIDABLE = (
     "GOOGLE_SHEET_ID",
     "SPREADSHEET_NAME",
     "GOOGLE_AUTH_FILE",
+    "GOOGLE_OAUTH_CLIENT_SECRET_FILE",
+    "GOOGLE_USER_TOKEN_FILE",
+    "GOOGLE_AUTH_MODE",
     "CASE_LIST_WORKSHEET_NAME",
+    "GOOGLE_CALENDAR_ENABLED",
+    "GOOGLE_CALENDAR_ID",
+    "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES",
+    "GOOGLE_CALENDAR_SUMMARY_TEMPLATE",
+    "GOOGLE_CALENDAR_DESCRIPTION_TEMPLATE",
     "NOTIFICATION_EMAIL_ADDRESS",
     "NOTIFICATION_GAS_WEBAPP_URL",
     "PUPPETEER_CAPTCHA_TIMEOUT",
@@ -241,7 +273,8 @@ def load_user_settings():
             continue
         val = data[key]
         if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
-                   "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT"):
+                   "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT",
+                   "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES"):
             try:
                 val = int(val)
             except (TypeError, ValueError):
