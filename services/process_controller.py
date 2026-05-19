@@ -976,10 +976,10 @@ class ProcessController:
             f"⏱️ 총 소요 시간: {total_elapsed}초"
         )
         self.app.ui_queue.put(("function", (self.app.show_info, completion_msg), {}))
-            self.app.processing = False
-            if hasattr(self.app, "is_dedup_mode"):
-                self.app.is_dedup_mode = False
-            self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
+        self.app.processing = False
+        if hasattr(self.app, "is_dedup_mode"):
+            self.app.is_dedup_mode = False
+        self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
 
         def _restore_start():
             self.app.start_btn.configure(
