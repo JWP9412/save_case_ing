@@ -781,74 +781,89 @@ class GoogleSheetsService:
             return False
         return True
 
-    @retry_on_quota_error(max_retries=5, base_delay=2.0)
-    def remove_duplicate_rows_from_sheet(self, case):
+    @classmethod
+    def _dict_row_dedup_key(cls, row_dict):
         """
-        사건별 시트에서 중복된 진행내용 행을 제거합니다.
+        scraped_data의 딕셔너리 요소에 대한 중복 판별 키.
+        """
+        if not row_dict:
+            return ("", "", "", "")
+        return (
+            cls._normalize_sheet_cell(row_dict.get("date", "")),
+            cls._normalize_sheet_cell(row_dict.get("content", "")),
+            cls._normalize_sheet_cell(row_dict.get("result", "")),
+            cls._normalize_sheet_cell(row_dict.get("document", ""))
+        )
+
+    @retry_on_quota_error(max_retries=5, base_delay=2.0)
+    def sync_and_remove_duplicates(self, case, scraped_data):
+        """
+        scraped_data(대법원 실제 데이터)와 시트 데이터를 대조하여,
+        시트에 잘못 증식된 중복 행을 제거합니다.
 
         주니어 개발자 참고:
-        - 무한 증식 버그 등으로 동일 (일자, 내용, 결과, 공시문)이 여러 번 쌓인 경우 정리용.
-        - 위에서부터 순회하며 첫 번째만 남기고, 이후 동일 키 행은 삭제합니다.
-        - '업데이트 일시' 등 메타 행은 그대로 유지합니다.
+        - 무한 증식 버그 등으로 시트에 데이터가 더 많이 쌓인 경우 정리용.
+        - 대법원 기록과 1:1로 매칭하고, 남는 잉여 행들이 실제 대법원의 마지막 기록과
+          중복되는 가짜 데이터라면 삭제합니다.
 
         반환:
-            dict: success(bool), removed(int), remaining_data_rows(int), message(str)
+            dict: success(bool), removed(int), message(str)
         """
         case_number = case.get("사건번호", "")
         all_values = self.get_full_sheet_data(case)
-        if not all_values:
-            return {
-                "success": True,
-                "removed": 0,
-                "remaining_data_rows": 0,
-                "message": f"{case_number}: 시트 없음 또는 비어 있음",
-            }
+        if len(all_values) <= 1:
+            return {"success": True, "removed": 0, "message": "시트 없음 또는 비어 있음"}
 
         header = all_values[0]
         body = all_values[1:]
 
-        data_out = []
-        footer_out = []
-        seen_keys = set()
-        removed = 0
-
+        progress_rows = []
+        footer_rows = []
         for row in body:
             if self._is_progress_data_row(row):
-                key = self._sheet_row_dedup_key(row)
-                if key in seen_keys:
-                    removed += 1
-                    continue
-                seen_keys.add(key)
-                data_out.append(list(row))
+                progress_rows.append(row)
             else:
-                footer_out.append(list(row))
+                footer_rows.append(row)
 
-        if removed == 0:
-            return {
-                "success": True,
-                "removed": 0,
-                "remaining_data_rows": len(data_out),
-                "message": f"{case_number}: 제거할 중복 없음",
-            }
+        n_scraped = len(scraped_data)
+        n_sheet = len(progress_rows)
 
-        new_values = [header] + data_out + footer_out
+        if n_sheet <= n_scraped:
+            return {"success": True, "removed": 0, "message": "중복 없음 (시트 행 수가 대법원 기록과 같거나 적음)"}
+
+        # 대법원 기록에 해당하는 만큼은 그대로 보존 (메모 등 유지)
+        valid_progress_rows = progress_rows[:n_scraped]
+        removed_count = 0
+
+        last_scraped_key = self._dict_row_dedup_key(scraped_data[-1]) if scraped_data else None
+
+        for i in range(n_scraped, n_sheet):
+            row = progress_rows[i]
+            row_key = self._sheet_row_dedup_key(row)
+            
+            # 바로 앞 행 또는 대법원 마지막 기록과 완전히 일치하면 무한증식 버그로 인한 가짜 중복 행으로 판단
+            prev_row_key = self._sheet_row_dedup_key(progress_rows[i-1]) if i > 0 else None
+            
+            if row_key == prev_row_key or row_key == last_scraped_key:
+                removed_count += 1
+            else:
+                valid_progress_rows.append(row)
+
+        if removed_count == 0:
+            return {"success": True, "removed": 0, "message": "제거할 중복 행 없음 (사용자 수동 추가 행 등)"}
+
+        new_values = [header] + valid_progress_rows + footer_rows
         ok = self.overwrite_sheet_data(case, new_values)
         if not ok:
-            return {
-                "success": False,
-                "removed": 0,
-                "remaining_data_rows": len(data_out),
-                "message": f"{case_number}: 시트 덮어쓰기 실패",
-            }
+            return {"success": False, "removed": 0, "message": "시트 덮어쓰기 실패"}
 
         self._log(
-            f"🧹 중복 제거 완료: {case_number} (-{removed}행, 데이터 {len(data_out)}행 유지)"
+            f"🧹 중복 제거 완료: {case_number} (-{removed_count}행, 데이터 {len(valid_progress_rows)}행 유지)"
         )
         return {
             "success": True,
-            "removed": removed,
-            "remaining_data_rows": len(data_out),
-            "message": f"{case_number}: 중복 {removed}행 제거",
+            "removed": removed_count,
+            "message": f"대법원 기록과 대조하여 중복 {removed_count}행 제거",
         }
 
     def overwrite_sheet_data(self, case, data):

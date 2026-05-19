@@ -304,6 +304,8 @@ class ProcessController:
         self.app.start_btn.configure(text="🖼️ 사건 조회 로드")
         self.app._set_control_btn_state(self.app.start_btn, True)
         self.app._set_control_btn_state(self.app.stop_btn, False)
+        if hasattr(self.app, "is_dedup_mode"):
+            self.app.is_dedup_mode = False
         self.app.log_message("⏹️ 처리 중지됨")
 
     # -------------------------------------------------------------------------
@@ -478,6 +480,26 @@ class ProcessController:
 
             if isinstance(result_data, list):
                 elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
+                
+                is_dedup_mode = getattr(self.app, "is_dedup_mode", False)
+                if is_dedup_mode:
+                    res = self.app.google_sheets_service.sync_and_remove_duplicates(case, result_data)
+                    removed = res.get("removed", 0)
+                    if res.get("success"):
+                        if removed > 0:
+                            self.app.update_case_status(case_index, f"중복 {removed}건 제거", "green", "🧹")
+                        else:
+                            self.app.update_case_status(case_index, "중복 없음", "#7F8C8D", "✅")
+                    else:
+                        self.app.update_case_status(case_index, "제거 실패", "red", "❌")
+                    hearing_info = self._extract_hearing_from_result(result_data) or ""
+                    self.app.update_case_timestamp(case, case_index, len(result_data), hearing_info=hearing_info)
+                    self._maybe_sync_hearing_calendar(case, result_data)
+                    if hasattr(self.app, "processed_cases"):
+                        self.app.processed_cases.add(case_index)
+                    self.app.log_message(f"✅ 자동 대조/중복 제거 완료: {case_number} (소요 시간: {elapsed_time}초)")
+                    return True
+
                 try:
                     last_entry_result = self.app.google_sheets_service.get_last_entry_from_sheet(case)
                     if last_entry_result is not None:
@@ -771,6 +793,26 @@ class ProcessController:
         self, case, original_index, case_number, result_data, case_start_time
     ):
         """크롤링 결과 리스트 처리: last_entry 조회, new_data 계산, 저장/타임스탬프. (completed_delta, failed_delta)."""
+        is_dedup_mode = getattr(self.app, "is_dedup_mode", False)
+        if is_dedup_mode:
+            res = self.app.google_sheets_service.sync_and_remove_duplicates(case, result_data)
+            removed = res.get("removed", 0)
+            elapsed_time = int(time.time() - case_start_time)
+            
+            if res.get("success"):
+                if removed > 0:
+                    self.app.update_case_status(original_index, f"중복 {removed}건 제거", "green", "🧹")
+                else:
+                    self.app.update_case_status(original_index, "중복 없음", "#7F8C8D", "✅")
+            else:
+                self.app.update_case_status(original_index, "제거 실패", "red", "❌")
+                
+            hearing_info = self._extract_hearing_from_result(result_data) or ""
+            self.app.update_case_timestamp(case, original_index, len(result_data), hearing_info=hearing_info)
+            self._maybe_sync_hearing_calendar(case, result_data)
+            self.app.log_message(f"✅ 대조/중복 제거 완료: {case_number} (소요 시간: {elapsed_time}초)")
+            return (1, 0)
+
         last_entry, sheet_last_row_index = self._resolve_last_entry(case, case_number)
         new_data = self.filter_new_data(result_data, last_entry)
         new_data = self._apply_sheet_correction(
@@ -934,8 +976,10 @@ class ProcessController:
             f"⏱️ 총 소요 시간: {total_elapsed}초"
         )
         self.app.ui_queue.put(("function", (self.app.show_info, completion_msg), {}))
-        self.app.processing = False
-        self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
+            self.app.processing = False
+            if hasattr(self.app, "is_dedup_mode"):
+                self.app.is_dedup_mode = False
+            self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
 
         def _restore_start():
             self.app.start_btn.configure(

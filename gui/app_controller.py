@@ -638,8 +638,8 @@ class AppController:
         선택된 사건들의 구글 시트 탭에서 중복 진행내용 행을 제거합니다.
 
         주니어 개발자 참고:
-        - 일자·내용·결과·공시문이 모두 같은 행은 첫 번째만 남기고 삭제합니다.
-        - API 호출이 있으므로 백그라운드 스레드에서 실행하고 UI는 ui_queue로 갱신합니다.
+        - 대법원 실제 기록과 대조하기 위해 먼저 사건 조회를 진행합니다.
+        - 조회 완료 시 is_dedup_mode 플래그에 따라 일반 저장이 아닌 대조/삭제 로직을 수행합니다.
         """
         selected = self.get_selected_cases()
         if not selected:
@@ -655,70 +655,16 @@ class AppController:
 
         if not self.ask_yesno(
             "중복 오류 제거",
-            f"선택한 {len(selected)}건의 시트에서\n"
-            "동일한 진행내용(일자·내용·결과·공시문) 중복 행을 제거합니다.\n\n"
+            f"선택한 {len(selected)}건의 시트에서 중복 오류를 제거합니다.\n"
+            "대법원 사이트의 실제 기록과 대조하기 위해 최신 사건 조회가 진행됩니다.\n\n"
             f"[대상]\n{case_labels}{extra}\n\n"
-            "계속하시겠습니까?",
+            "사건 조회를 시작하시겠습니까?",
         ):
             return
 
-        def _worker():
-            total_removed = 0
-            success_count = 0
-            fail_count = 0
-            no_dup_count = 0
-            n = len(selected)
-
-            for idx, (_, case) in enumerate(selected):
-                case_number = case.get("사건번호", "")
-                pct = int((idx / max(n, 1)) * 100)
-                self.ui_queue.put(
-                    (
-                        "function",
-                        (
-                            self.update_progress,
-                            pct,
-                            f"🧹 중복 제거 중... ({idx + 1}/{n}) {case_number}",
-                        ),
-                        {},
-                    )
-                )
-                try:
-                    result = self.google_sheets_service.remove_duplicate_rows_from_sheet(
-                        case
-                    )
-                    if result.get("success"):
-                        removed = int(result.get("removed", 0))
-                        total_removed += removed
-                        if removed > 0:
-                            success_count += 1
-                            self.log_message(result.get("message", ""))
-                        else:
-                            no_dup_count += 1
-                    else:
-                        fail_count += 1
-                        self.log_message(
-                            f"❌ {result.get('message', case_number + ': 실패')}"
-                        )
-                except Exception as e:
-                    fail_count += 1
-                    self.log_message(f"❌ 중복 제거 오류 ({case_number}): {e}")
-
-            summary = (
-                f"🧹 중복 오류 제거 완료\n\n"
-                f"• 중복 제거됨: {success_count}건 (총 {total_removed}행 삭제)\n"
-                f"• 중복 없음: {no_dup_count}건\n"
-                f"• 실패: {fail_count}건"
-            )
-
-            def _finish():
-                self.update_progress(100, "🧹 중복 오류 제거 완료")
-                self.show_info(summary)
-
-            self.ui_queue.put(("function", (_finish,), {}))
-
-        threading.Thread(target=_worker, daemon=True).start()
-        self.log_message(f"🧹 중복 오류 제거 시작: {len(selected)}건")
+        # 중복 제거 모드 플래그 활성화 후 동일한 배치 프로세스 시작
+        self.is_dedup_mode = True
+        self.start_batch_processing()
 
     def processing_completed(self):
         """Finish processing. Delegated to ui_queue_manager."""
