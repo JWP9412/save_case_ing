@@ -193,3 +193,26 @@ class HistoryManager:
         }
         with open(self.file_path, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
+
+    def clear_last_entry(self, case_number):
+        """
+        해당 사건의 증분 저장 기준점(last_entry)과 행 개수(row_count)를 초기화합니다.
+
+        주니어 개발자 참고:
+        - '기록 초기화 및 재수집' 시 호출하여, 다음 저장이 처음부터 전체 데이터로
+          인식되도록 합니다.
+        - update_history.json의 같은 사건 키에 last_entry·row_count가 함께 있을 수 있습니다.
+        """
+        history = self.load_history()
+        if case_number not in history:
+            return
+        case_data = history.get(case_number)
+        if not isinstance(case_data, dict):
+            history.pop(case_number, None)
+        else:
+            case_data.pop("last_entry", None)
+            case_data.pop("row_count", None)
+            if not case_data:
+                history.pop(case_number, None)
+        with open(self.file_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)

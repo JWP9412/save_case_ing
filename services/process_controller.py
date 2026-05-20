@@ -306,6 +306,8 @@ class ProcessController:
         self.app._set_control_btn_state(self.app.stop_btn, False)
         if hasattr(self.app, "is_dedup_mode"):
             self.app.is_dedup_mode = False
+        if hasattr(self.app, "is_reset_mode"):
+            self.app.is_reset_mode = False
         self.app.log_message("⏹️ 처리 중지됨")
 
     # -------------------------------------------------------------------------
@@ -479,115 +481,20 @@ class ProcessController:
                 return "captcha"
 
             if isinstance(result_data, list):
-                elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
-                
-                is_dedup_mode = getattr(self.app, "is_dedup_mode", False)
-                if is_dedup_mode:
-                    res = self.app.google_sheets_service.sync_and_remove_duplicates(case, result_data)
-                    removed = res.get("removed", 0)
-                    if res.get("success"):
-                        if removed > 0:
-                            self.app.update_case_status(case_index, f"중복 {removed}건 제거", "green", "🧹")
-                        else:
-                            self.app.update_case_status(case_index, "중복 없음", "#7F8C8D", "✅")
-                    else:
-                        self.app.update_case_status(case_index, "제거 실패", "red", "❌")
-                    hearing_info = self._extract_hearing_from_result(result_data) or ""
-                    self.app.update_case_timestamp(case, case_index, len(result_data), hearing_info=hearing_info)
-                    self._maybe_sync_hearing_calendar(case, result_data)
-                    if hasattr(self.app, "processed_cases"):
-                        self.app.processed_cases.add(case_index)
-                    self.app.log_message(f"✅ 자동 대조/중복 제거 완료: {case_number} (소요 시간: {elapsed_time}초)")
-                    return True
+                case_start_time = self.app.case_start_times.get(case_index, time.time())
+                return self._process_result_list(
+                    case,
+                    case_index,
+                    case_number,
+                    result_data,
+                    case_start_time,
+                    tuple_return=False,
+                )
 
-                try:
-                    last_entry_result = self.app.google_sheets_service.get_last_entry_from_sheet(case)
-                    if last_entry_result is not None:
-                        last_entry, sheet_last_row_index = last_entry_result
-                        self.app.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
-                    else:
-                        last_entry = None
-                        sheet_last_row_index = None
-                except Exception as e:
-                    self.app.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
-                    last_entry = self.app.history_manager.get_last_entry(case_number)
-                    sheet_last_row_index = None
-                new_data = self.filter_new_data(result_data, last_entry)
-
-                if not new_data and sheet_last_row_index is not None:
-                    sheet_data_count = sheet_last_row_index - 1
-                    current_len = len(result_data)
-                    if sheet_data_count < current_len:
-                        missing = current_len - sheet_data_count
-                        if self.app.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
-                            new_data = result_data[-(missing + 1) :]
-                            self.app.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
-                        else:
-                            new_data = result_data[-missing:]
-                            self.app.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
-                if not new_data:
-                    self.app.log_message(f"📭 변경없음: {case_number}")
-                    self.app.update_case_status(case_index, "완료 (변경없음)", "#7F8C8D", "✅")
-                    self.app.log_history_manager.add_to_search_log(case_number)
-                    self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
-                    history = self.app.load_update_history()
-                    prev_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
-                    current_count = len(result_data) if isinstance(result_data, list) else 0
-                    new_total = max(prev_total, current_count)
-                    hearing_info = self._extract_hearing_from_result(result_data) or ""
-                    self.app.update_case_timestamp(case, case_index, new_total, hearing_info=hearing_info)
-                    self._maybe_sync_hearing_calendar(case, result_data)
-                    if hasattr(self.app, "processed_cases"):
-                        self.app.processed_cases.add(case_index)
-                    self.app.log_message(f"✅ 자동 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
-                    return True
-                row_count = None
-                try:
-                    row_count = self.save_to_google_sheets(case, new_data)
-                except Exception as save_err:
-                    self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
-                    row_count = False
-                if row_count is False or row_count is None:
-                    self.app.update_case_status(case_index, "저장 실패", "red", "❌")
-                    self.app.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
-                    return "fail"
-                if row_count == 0:
-                    self.app.update_case_status(case_index, "데이터 없음", "#7F8C8D", "📭")
-                else:
-                    self.app.history_manager.update_last_entry(case_number, new_data[-1])
-                    self.app.google_sheets_service.update_main_remark(case_number, row_count)
-                    self.app.update_case_status(case_index, f"완료 (+{row_count}건)", "green", "✅")
-                history = self.app.load_update_history()
-                old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
-                total_rows = (old_total + row_count) if row_count else old_total
-                hearing_info = self._extract_hearing_from_result(result_data) or ""
-                self.app.update_case_timestamp(case, case_index, total_rows, hearing_info=hearing_info)
-                self._maybe_sync_hearing_calendar(case, result_data)
-                if row_count > 0:
-                    self.app.log_history_manager.add_to_search_log(case_number)
-                    self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
-                    try:
-                        sheet_name = self.app.google_sheets_service._get_case_worksheet_name(case)
-                        try:
-                            sheet_url = self.app.google_sheets_service.get_case_worksheet_url(case)
-                        except Exception:
-                            sheet_url = ""
-                        email_manager_module.add_new_update(
-                            case_number, new_data, sheet_name=sheet_name, sheet_url=sheet_url,
-                        )
-                    except Exception:
-                        pass
-                    if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
-                        self.app.ui_queue.put(("function", (self.app.update_email_btn_text,), {}))
-                if hasattr(self.app, "processed_cases"):
-                    self.app.processed_cases.add(case_index)
-                self.app.log_message(f"✅ 자동 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
-                return True
-            else:
-                elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
-                self.app.update_case_status(case_index, "실패", "red", "❌")
-                self.app.log_message(f"❌ 자동 처리 실패: {case_number}")
-                return "fail"
+            elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
+            self.app.update_case_status(case_index, "실패", "red", "❌")
+            self.app.log_message(f"❌ 자동 처리 실패: {case_number}")
+            return "fail"
 
         except Exception as e:
             elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
@@ -596,6 +503,8 @@ class ProcessController:
             return "fail"
         finally:
             self.cleanup_case_process(case_number)
+            if hasattr(self.app, "processed_cases"):
+                self.app.processed_cases.add(case_index)
             ev = getattr(self.app, "lane_events", {}).pop(case_number, None)
             if ev:
                 ev.set()
@@ -738,8 +647,21 @@ class ProcessController:
             self.app.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
         return new_data
 
-    def _finish_case_no_change(self, case, original_index, case_number, result_data, elapsed_time, hearing_info=None):
-        """변경없음 처리: 상태·타임스탬프·기일 캐시 갱신 후 (1, 0) 반환."""
+    def _as_process_result(self, completed_delta, failed_delta, *, tuple_return=True):
+        """
+        처리 결과를 호출 경로에 맞는 형식으로 변환합니다.
+
+        tuple_return=True  → (completed_delta, failed_delta)  (웨이브/캡차 완료 루프)
+        tuple_return=False → True | "fail"                    (자동 클릭 스킵 경로)
+        """
+        if tuple_return:
+            return (completed_delta, failed_delta)
+        return "fail" if failed_delta else True
+
+    def _finish_case_no_change(
+        self, case, original_index, case_number, result_data, elapsed_time, hearing_info=None, *, tuple_return=True
+    ):
+        """변경없음 처리: 상태·타임스탬프·기일 캐시 갱신."""
         self.app.log_message(f"📭 변경없음: {case_number}")
         self.app.update_case_status(original_index, "완료 (변경없음)", "#7F8C8D", "✅")
         self.app.log_history_manager.add_to_search_log(case_number)
@@ -751,23 +673,41 @@ class ProcessController:
         self.app.update_case_timestamp(case, original_index, new_total, hearing_info=hearing_info)
         self._maybe_sync_hearing_calendar(case, result_data)
         self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
-        return (1, 0)
+        return self._as_process_result(1, 0, tuple_return=tuple_return)
 
-    def _finish_case_with_save(self, case, original_index, case_number, result_data, new_data, row_count, elapsed_time, hearing_info=None):
-        """저장 결과 반영: 상태·타임스탬프·기일 캐시·이메일 준비 후 (1, 0) 또는 (0, 1) 반환."""
+    def _finish_case_with_save(
+        self,
+        case,
+        original_index,
+        case_number,
+        result_data,
+        new_data,
+        row_count,
+        elapsed_time,
+        hearing_info=None,
+        reset_mode=False,
+        *,
+        tuple_return=True,
+    ):
+        """저장 결과 반영: 상태·타임스탬프·기일 캐시·이메일 준비."""
         if row_count is False or row_count is None:
             self.app.update_case_status(original_index, "저장 실패", "red", "❌")
             self.app.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
-            return (0, 1)
+            return self._as_process_result(0, 1, tuple_return=tuple_return)
         if row_count == 0:
             self.app.update_case_status(original_index, "데이터 없음", "#7F8C8D", "📭")
         else:
             self.app.history_manager.update_last_entry(case_number, new_data[-1])
-            self.app.google_sheets_service.update_main_remark(case_number, row_count)
-            self.app.update_case_status(original_index, f"완료 (+{row_count}건)", "green", "✅")
+            remark_count = len(result_data) if reset_mode and isinstance(result_data, list) else row_count
+            self.app.google_sheets_service.update_main_remark(case_number, remark_count)
+            status_label = f"재수집 완료 (+{row_count}건)" if reset_mode else f"완료 (+{row_count}건)"
+            self.app.update_case_status(original_index, status_label, "green", "✅")
         history = self.app.load_update_history()
         old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
-        total_rows = (old_total + row_count) if row_count else old_total
+        if reset_mode and row_count:
+            total_rows = len(result_data) if isinstance(result_data, list) else row_count
+        else:
+            total_rows = (old_total + row_count) if row_count else old_total
         self.app.update_case_timestamp(case, original_index, total_rows, hearing_info=hearing_info)
         self._maybe_sync_hearing_calendar(case, result_data)
         if row_count > 0:
@@ -786,19 +726,65 @@ class ProcessController:
                 pass
             if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
                 self.app.ui_queue.put(("function", (self.app.update_email_btn_text,), {}))
-        self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
-        return (1, 0)
+        log_label = "재수집 완료" if reset_mode else "처리 완료"
+        self.app.log_message(f"✅ {log_label}: {case_number} (소요 시간: {elapsed_time}초)")
+        return self._as_process_result(1, 0, tuple_return=tuple_return)
 
     def _process_result_list(
-        self, case, original_index, case_number, result_data, case_start_time
+        self, case, original_index, case_number, result_data, case_start_time, *, tuple_return=True
     ):
-        """크롤링 결과 리스트 처리: last_entry 조회, new_data 계산, 저장/타임스탬프. (completed_delta, failed_delta)."""
+        """
+        크롤링 결과 리스트 처리 (일반 저장 / 중복 제거 / 초기화·재수집).
+
+        tuple_return=True  → (completed_delta, failed_delta)  웨이브(캡차 완료) 루프
+        tuple_return=False → True | "fail"                    자동 클릭 스킵 경로
+        """
+        elapsed_time = int(time.time() - case_start_time)
+        hearing_info = self._extract_hearing_from_result(result_data) or ""
+
+        is_reset_mode = getattr(self.app, "is_reset_mode", False)
+        if is_reset_mode:
+            self.app.log_message(f"🔄 기록 초기화 및 재수집: {case_number}")
+
+            if not self.app.google_sheets_service.overwrite_sheet_data(case, []):
+                self.app.log_message(f"❌ 시트 초기화 실패: {case_number}")
+                self.app.update_case_status(original_index, "초기화 실패", "red", "❌")
+                return self._as_process_result(0, 1, tuple_return=tuple_return)
+
+            self.app.history_manager.clear_last_entry(case_number)
+
+            if not isinstance(result_data, list) or len(result_data) == 0:
+                self.app.log_message(f"📭 수집 데이터 없음(초기화만 완료): {case_number}")
+                self.app.update_case_status(original_index, "초기화 완료(데이터 없음)", "#7F8C8D", "📭")
+                self.app.update_case_timestamp(case, original_index, 0, hearing_info=hearing_info)
+                self.app.log_message(f"✅ 초기화 완료: {case_number} (소요 시간: {elapsed_time}초)")
+                return self._as_process_result(1, 0, tuple_return=tuple_return)
+
+            new_data = list(result_data)
+            try:
+                row_count = self.save_to_google_sheets(case, new_data)
+            except Exception as save_err:
+                self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
+                row_count = False
+
+            return self._finish_case_with_save(
+                case,
+                original_index,
+                case_number,
+                result_data,
+                new_data,
+                row_count,
+                elapsed_time,
+                hearing_info=hearing_info,
+                reset_mode=True,
+                tuple_return=tuple_return,
+            )
+
         is_dedup_mode = getattr(self.app, "is_dedup_mode", False)
         if is_dedup_mode:
             res = self.app.google_sheets_service.sync_and_remove_duplicates(case, result_data)
             removed = res.get("removed", 0)
-            elapsed_time = int(time.time() - case_start_time)
-            
+
             if res.get("success"):
                 if removed > 0:
                     self.app.update_case_status(original_index, f"중복 {removed}건 제거", "green", "🧹")
@@ -806,23 +792,26 @@ class ProcessController:
                     self.app.update_case_status(original_index, "중복 없음", "#7F8C8D", "✅")
             else:
                 self.app.update_case_status(original_index, "제거 실패", "red", "❌")
-                
-            hearing_info = self._extract_hearing_from_result(result_data) or ""
+
             self.app.update_case_timestamp(case, original_index, len(result_data), hearing_info=hearing_info)
             self._maybe_sync_hearing_calendar(case, result_data)
             self.app.log_message(f"✅ 대조/중복 제거 완료: {case_number} (소요 시간: {elapsed_time}초)")
-            return (1, 0)
+            return self._as_process_result(1, 0, tuple_return=tuple_return)
 
         last_entry, sheet_last_row_index = self._resolve_last_entry(case, case_number)
         new_data = self.filter_new_data(result_data, last_entry)
         new_data = self._apply_sheet_correction(
             case, case_number, result_data, new_data, sheet_last_row_index
         )
-        elapsed_time = int(time.time() - case_start_time)
-        hearing_info = self._extract_hearing_from_result(result_data) or ""
         if not new_data:
             return self._finish_case_no_change(
-                case, original_index, case_number, result_data, elapsed_time, hearing_info=hearing_info
+                case,
+                original_index,
+                case_number,
+                result_data,
+                elapsed_time,
+                hearing_info=hearing_info,
+                tuple_return=tuple_return,
             )
         try:
             row_count = self.save_to_google_sheets(case, new_data)
@@ -830,7 +819,15 @@ class ProcessController:
             self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
             row_count = False
         return self._finish_case_with_save(
-            case, original_index, case_number, result_data, new_data, row_count, elapsed_time, hearing_info=hearing_info
+            case,
+            original_index,
+            case_number,
+            result_data,
+            new_data,
+            row_count,
+            elapsed_time,
+            hearing_info=hearing_info,
+            tuple_return=tuple_return,
         )
 
     def _process_one_case(
@@ -979,6 +976,8 @@ class ProcessController:
         self.app.processing = False
         if hasattr(self.app, "is_dedup_mode"):
             self.app.is_dedup_mode = False
+        if hasattr(self.app, "is_reset_mode"):
+            self.app.is_reset_mode = False
         self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
 
         def _restore_start():

@@ -166,6 +166,28 @@ class ControlPanel:
                 pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
             )
 
+        # 기록 초기화 후 대법원에서 처음부터 다시 수집
+        if hasattr(app, "reset_and_refetch_selected_cases"):
+            app.reset_btn = ctk.CTkButton(
+                row2,
+                text="🔄 기록 초기화 및 재수집",
+                font=btn_font,
+                width=ControlPanel.BTN_W,
+                height=ControlPanel.BTN_H,
+                corner_radius=ControlPanel.BTN_CORNER_RADIUS,
+                cursor="hand2",
+                fg_color="#C0392B",
+                hover_color="#A93226",
+                text_color="#FFFFFF",
+                command=app.reset_and_refetch_selected_cases,
+            )
+            app._control_btn_colors[app.reset_btn] = ("#C0392B", "#A93226", "#FFFFFF")
+            app.reset_btn.pack(
+                side=tk.LEFT,
+                padx=(0, 10),
+                pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
+            )
+
         # 알림메일 발송 버튼 (미발송 내역이 있을 때만 활성 색상 표시)
         if hasattr(app, "send_notification_email"):
             app.email_btn = ctk.CTkButton(

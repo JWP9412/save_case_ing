@@ -74,6 +74,7 @@ from gui.utils import email_ui as email_ui_module
 from gui.utils import case_list_builder as case_list_builder_module
 from gui.utils import history_ui as history_ui_module
 from gui.utils import column_resizer as column_resizer_module
+from gui.utils import batch_actions as batch_actions_module
 
 try:
     from tksheet import Sheet
@@ -634,37 +635,12 @@ class AppController:
         email_ui_module.send_notification_email(self)
 
     def remove_duplicates_for_selected_cases(self):
-        """
-        선택된 사건들의 구글 시트 탭에서 중복 진행내용 행을 제거합니다.
+        """선택 사건 중복 제거. Delegated to batch_actions."""
+        batch_actions_module.remove_duplicates_for_selected_cases(self)
 
-        주니어 개발자 참고:
-        - 대법원 실제 기록과 대조하기 위해 먼저 사건 조회를 진행합니다.
-        - 조회 완료 시 is_dedup_mode 플래그에 따라 일반 저장이 아닌 대조/삭제 로직을 수행합니다.
-        """
-        selected = self.get_selected_cases()
-        if not selected:
-            self.show_warning("중복을 제거할 사건을 선택해주세요.")
-            return
-
-        case_labels = "\n".join(
-            f"- {c.get('사건번호', '')}" for _, c in selected[:15]
-        )
-        extra = ""
-        if len(selected) > 15:
-            extra = f"\n... 외 {len(selected) - 15}건"
-
-        if not self.ask_yesno(
-            "중복 오류 제거",
-            f"선택한 {len(selected)}건의 시트에서 중복 오류를 제거합니다.\n"
-            "대법원 사이트의 실제 기록과 대조하기 위해 최신 사건 조회가 진행됩니다.\n\n"
-            f"[대상]\n{case_labels}{extra}\n\n"
-            "사건 조회를 시작하시겠습니까?",
-        ):
-            return
-
-        # 중복 제거 모드 플래그 활성화 후 동일한 배치 프로세스 시작
-        self.is_dedup_mode = True
-        self.start_batch_processing()
+    def reset_and_refetch_selected_cases(self):
+        """선택 사건 기록 초기화·재수집. Delegated to batch_actions."""
+        batch_actions_module.reset_and_refetch_selected_cases(self)
 
     def processing_completed(self):
         """Finish processing. Delegated to ui_queue_manager."""

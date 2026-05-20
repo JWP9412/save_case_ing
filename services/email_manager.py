@@ -42,15 +42,42 @@ def save_unsent_emails(data, file_path=None):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def add_new_update(case_number, updates, sheet_name=""):
+def _normalize_sheet_url(url):
+    """
+    메일 링크용 시트 URL을 사용자 브라우저용 형식으로 정규화합니다.
+
+    주니어 개발자 참고:
+    - 과거 데이터에는 `https://sheets.googleapis.com/v4/spreadsheets/...#gid=...`
+      형태(API 엔드포인트)가 저장되어 있을 수 있습니다.
+    - 이 주소를 메일에서 클릭하면 인증 없는 API 호출이 되어 403이 납니다.
+    - 따라서 `https://docs.google.com/spreadsheets/d/.../edit#gid=...` 형식으로 변환합니다.
+    """
+    s = (url or "").strip()
+    if not s:
+        return ""
+    bad_prefix = "https://sheets.googleapis.com/v4/spreadsheets/"
+    if s.startswith(bad_prefix):
+        rest = s[len(bad_prefix):]
+        spreadsheet_id, _, fragment = rest.partition("#")
+        if not spreadsheet_id:
+            return ""
+        base = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+        return f"{base}#{fragment}" if fragment else base
+    return s
+
+
+def add_new_update(case_number, updates, sheet_name="", sheet_url=""):
     """
     새로 업데이트된 진행내역을 미발송 목록에 추가.
     구글 시트에 적용되는 색상(dateColor, contentColor, resultColor)과 result를 함께 저장.
-    sheet_name: 구글 시트 탭 이름(피고_사건명_번호_법원 등). 메일 본문 그룹화에 사용.
 
-    case_number: 사건번호 문자열.
-    updates: 진행내역 리스트. 각 항목은 dict with 'date', 'content', 'result',
-             'dateColor', 'contentColor', 'resultColor' 등.
+    매개변수:
+        case_number: 사건번호 문자열.
+        updates: 진행내역 리스트. 각 항목은 dict with 'date', 'content', 'result',
+                 'dateColor', 'contentColor', 'resultColor' 등.
+        sheet_name: 구글 시트 탭 이름(피고_사건명_번호_법원 등). 메일 본문 그룹화에 사용.
+        sheet_url: 구글 시트 탭의 바로가기 URL(gid 포함). 메일 본문의 "바로가기" 링크로 사용.
+                   구버전 호환을 위해 기본값은 빈 문자열이며, 없으면 메일에서 링크를 생략합니다.
     """
     data = load_unsent_emails()
     if "updates" not in data:
@@ -67,6 +94,7 @@ def add_new_update(case_number, updates, sheet_name=""):
             "contentColor": u.get("contentColor") or "",
             "resultColor": u.get("resultColor") or "",
             "sheet_name": sheet_name or "",
+            "sheet_url": _normalize_sheet_url(sheet_url),
         })
     save_unsent_emails(data)
 
@@ -242,6 +270,23 @@ def get_summary_html(
         sections = []
         for s_name, sheet_updates in updates_by_sheet.items():
             sections.append(f"<h4>{_esc_html(s_name)}</h4>")
+            # 같은 사건(탭) 그룹 내 첫 번째로 유효한 sheet_url을 대표로 사용.
+            # 구버전 JSON에는 sheet_url 키가 없을 수 있으므로 get()으로 방어적으로 접근.
+            rep_url = next(
+                (
+                    _normalize_sheet_url(u.get("sheet_url"))
+                    for u in sheet_updates
+                    if u.get("sheet_url")
+                ),
+                "",
+            )
+            if rep_url:
+                sections.append(
+                    f'<div style="margin:-6px 0 8px 0;">'
+                    f'<a href="{_esc_html(rep_url)}" target="_blank" '
+                    f'style="color:#1a73e8; text-decoration:none; font-size:13px;">'
+                    f'바로가기 &rarr;</a></div>'
+                )
             rows = ["<tr><th>일자</th><th>내용</th><th>결과</th></tr>"]
             for u in sheet_updates:
                 date = u.get("date", "")
