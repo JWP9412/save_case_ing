@@ -180,31 +180,84 @@ class ProcessController:
         except Exception as e:
             self.app.log_message(f"⚠️ 캘린더 동기화 실패: {e}")
 
-    def filter_new_data(self, scraped_data, last_entry):
+    def _compute_new_progress_rows(self, case, result_data, existing_values=None):
         """
-        last_entry 이후 신규 데이터만 반환. 없으면 전체 반환.
+        기존 시트의 진행내용과 대법원 result_data를 멀티셋으로 비교해,
+        새로 늘어난(시트에 없는) 행만 순서대로 반환합니다.
 
         주니어 개발자 참고:
-        - 대법원 진행내용에 동일 일자·내용이 여러 행(파란/주황 등) 있을 수 있습니다.
-        - 정순 탐색 시 첫 번째 동일 행에서 끊기면, 아래쪽 중복 행이 매번 '신규'로 저장되어
-          구글 시트에 같은 기록이 무한히 쌓이는 버그가 발생합니다.
-        - 따라서 scraped_data를 역순으로 탐색해, 시트 마지막 저장 내역과 일치하는
-          '가장 아래쪽' 행을 기준으로 그 이후만 신규로 판단합니다.
+        - 대법원은 기일(변론/감정/선고)을 미래 날짜라 목록 맨 아래에 고정 배치하므로,
+          "마지막 행 다음부터 신규"라는 가정이 깨집니다(신규가 기일 위에 끼어듦).
+        - 그래서 마지막 행이 아니라 '전체 집합 차이'로 신규를 판단합니다.
+        - 동일 (일자·내용·결과·공시문) 행이 여러 개여도 개수만큼만 기존으로 처리해,
+          대법원에 실제로 늘어난 행만 신규로 잡습니다.
+        - 반환값은 메일·기일 캐시·상태 표시(+N건)에만 사용하며, 실제 저장은
+          overwrite_progress_area가 전체를 대법원과 1:1로 맞춥니다.
+
+        매개변수:
+        - existing_values: 이미 읽어둔 시트 전체 값. 넘기면 시트를 다시 읽지 않습니다.
+          (예전에는 여기서 조회에 실패하면 '전체를 신규로 처리'해 +건수를 크게 오판했는데,
+           이제는 호출부가 미리 안전하게 읽은 값을 넘겨주므로 그런 오판이 없습니다.)
         """
-        if not last_entry or not isinstance(scraped_data, list) or len(scraped_data) == 0:
-            return scraped_data if isinstance(scraped_data, list) else []
-        le_date = self._normalize_text(last_entry.get("date", ""))
-        le_content = self._normalize_text(last_entry.get("content", ""))
-        for i in range(len(scraped_data) - 1, -1, -1):
-            row = scraped_data[i]
-            if not isinstance(row, dict):
+        if not isinstance(result_data, list):
+            return []
+        gs = self.app.google_sheets_service
+        if existing_values is not None:
+            existing = existing_values
+        else:
+            try:
+                existing = gs.get_full_sheet_data(case)
+            except Exception as e:
+                # 시트를 못 읽었을 때 '전체를 신규'로 보면 +건수가 폭증(오판)하므로,
+                # 신규 없음(빈 리스트)으로 처리해 안전하게 둡니다. 실제 동기화는 호출부가 담당.
+                self.app.log_message(f"⚠️ 시트 조회 실패(신규 0건으로 처리): {e}")
+                return []
+
+        existing_counts = {}
+        for row in (existing[1:] if existing else []):
+            if not gs._is_progress_data_row(row):
                 continue
-            if (
-                self._normalize_text(row.get("date", "")) == le_date
-                and self._normalize_text(row.get("content", "")) == le_content
-            ):
-                return scraped_data[i + 1 :]
-        return scraped_data
+            key = gs._sheet_row_dedup_key(row)
+            existing_counts[key] = existing_counts.get(key, 0) + 1
+
+        new_rows = []
+        for progress_row in result_data:
+            if not isinstance(progress_row, dict):
+                continue
+            key = gs._dict_row_dedup_key(progress_row)
+            if existing_counts.get(key, 0) > 0:
+                existing_counts[key] -= 1
+            else:
+                new_rows.append(progress_row)
+        return new_rows
+
+    def _verify_sheet_matches_court(self, case, result_data, case_number, sheet_count=None):
+        """
+        저장 직후 시트 진행내용 행 수가 대법원 result_data와 일치하는지 검증합니다.
+
+        주니어 개발자 참고:
+        - overwrite_progress_area가 정상 동작하면 항상 일치해야 합니다.
+        - 불일치 시 로그에 경고만 남기고, 본 처리 흐름은 중단하지 않습니다.
+        - sheet_count를 넘기면 시트를 다시 읽지 않습니다(API 호출 절감).
+          overwrite_progress_area는 기록한 행 수를 반환하므로 그 값을 그대로 쓰면 됩니다.
+        """
+        gs = self.app.google_sheets_service
+        try:
+            if sheet_count is None:
+                sheet_count = gs.count_progress_rows(case)
+            court_count = len(result_data) if isinstance(result_data, list) else 0
+            if sheet_count != court_count:
+                self.app.log_message(
+                    f"⚠️ 검증: {case_number} 시트 {sheet_count}행 vs 대법원 {court_count}행 불일치"
+                )
+                return False
+            self.app.log_message(
+                f"✅ 검증: {case_number} 시트·대법원 진행내용 {court_count}행 일치"
+            )
+            return True
+        except Exception as e:
+            self.app.log_message(f"⚠️ 검증 실패(무시): {case_number} - {e}")
+            return False
 
     def save_to_google_sheets(self, case, result_data):
         """구글 시트에 진행내용 저장. 반환: 저장된 행 개수 또는 False."""
@@ -618,35 +671,6 @@ class ProcessController:
             return False
         return True
 
-    def _resolve_last_entry(self, case, case_number):
-        """시트/로컬에서 마지막 저장 항목 조회. (last_entry, sheet_last_row_index)."""
-        try:
-            last_entry_result = self.app.google_sheets_service.get_last_entry_from_sheet(case)
-            if last_entry_result is not None:
-                last_entry, sheet_last_row_index = last_entry_result
-                self.app.log_message(f"📋 [DEBUG] 구글 시트 기준 비교: {case_number}")
-                return last_entry, sheet_last_row_index
-        except Exception as e:
-            self.app.log_message(f"⚠️ 시트 조회 실패, 로컬 기록 사용: {e}")
-        return self.app.history_manager.get_last_entry(case_number), None
-
-    def _apply_sheet_correction(self, case, case_number, result_data, new_data, sheet_last_row_index):
-        """시트 보정 필요 시 new_data 갱신. 반환: 보정된 new_data."""
-        if new_data or sheet_last_row_index is None:
-            return new_data
-        sheet_data_count = sheet_last_row_index - 1
-        current_len = len(result_data)
-        if sheet_data_count >= current_len:
-            return new_data
-        missing = current_len - sheet_data_count
-        if self.app.google_sheets_service.delete_specific_row(case, sheet_last_row_index):
-            new_data = result_data[-(missing + 1) :]
-            self.app.log_message(f"⚠️ [보정] 기일 행 제거 후 +{missing + 1}건 추가 (기일 순서 유지)")
-        else:
-            new_data = result_data[-missing:]
-            self.app.log_message(f"⚠️ [보정] 시트 누락: +{missing}건 강제 추가 (행 삭제 실패)")
-        return new_data
-
     def _as_process_result(self, completed_delta, failed_delta, *, tuple_return=True):
         """
         처리 결과를 호출 경로에 맞는 형식으로 변환합니다.
@@ -688,8 +712,14 @@ class ProcessController:
         reset_mode=False,
         *,
         tuple_return=True,
+        verify_sheet_count=None,
     ):
-        """저장 결과 반영: 상태·타임스탬프·기일 캐시·이메일 준비."""
+        """
+        저장 결과 반영: 상태·타임스탬프·기일 캐시·이메일 준비.
+
+        verify_sheet_count: overwrite_progress_area가 기록한 행 수.
+        넘기면 검증 단계에서 시트를 다시 읽지 않아 API 호출을 아낍니다(None이면 재읽기).
+        """
         if row_count is False or row_count is None:
             self.app.update_case_status(original_index, "저장 실패", "red", "❌")
             self.app.log_message(f"❌ 구글 시트 저장 실패: {case_number}")
@@ -711,6 +741,10 @@ class ProcessController:
         self.app.update_case_timestamp(case, original_index, total_rows, hearing_info=hearing_info)
         self._maybe_sync_hearing_calendar(case, result_data)
         if row_count > 0:
+            update_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.app.log_message(
+                f"📊 이번 조회 신규 {row_count}건 추가, 업데이트 시각 {update_ts} ({case_number})"
+            )
             self.app.log_history_manager.add_to_search_log(case_number)
             self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
             try:
@@ -726,6 +760,10 @@ class ProcessController:
                 pass
             if hasattr(self.app, "update_email_btn_text") and callable(getattr(self.app, "update_email_btn_text", None)):
                 self.app.ui_queue.put(("function", (self.app.update_email_btn_text,), {}))
+        if row_count and row_count is not False:
+            self._verify_sheet_matches_court(
+                case, result_data, case_number, sheet_count=verify_sheet_count
+            )
         log_label = "재수집 완료" if reset_mode else "처리 완료"
         self.app.log_message(f"✅ {log_label}: {case_number} (소요 시간: {elapsed_time}초)")
         return self._as_process_result(1, 0, tuple_return=tuple_return)
@@ -798,37 +836,98 @@ class ProcessController:
             self.app.log_message(f"✅ 대조/중복 제거 완료: {case_number} (소요 시간: {elapsed_time}초)")
             return self._as_process_result(1, 0, tuple_return=tuple_return)
 
-        last_entry, sheet_last_row_index = self._resolve_last_entry(case, case_number)
-        new_data = self.filter_new_data(result_data, last_entry)
-        new_data = self._apply_sheet_correction(
-            case, case_number, result_data, new_data, sheet_last_row_index
-        )
-        if not new_data:
-            return self._finish_case_no_change(
+        # ── 저장 파이프라인 직렬화 ───────────────────────────────────────────
+        # 구글 시트 "읽기 + 덮어쓰기 + 검증"을 '한 번에 한 사건만' 수행하도록
+        # 락(_save_lock)으로 통째로 감쌉니다. 여러 사건이 동시에 시트를 두드리면
+        # 1분 60회 제한을 넘겨 429(할당량 초과)가 나기 때문입니다.
+        # _save_lock은 RLock(재진입 가능)이라, 이 안에서 overwrite_progress_area가
+        # 같은 락을 다시 잡아도 데드락(서로 기다리다 멈춤)이 나지 않습니다.
+        gs = self.app.google_sheets_service
+        court_count = len(result_data) if isinstance(result_data, list) else 0
+        with gs._save_lock:
+            # 1) 시트를 '딱 한 번만' 읽어 스냅샷(existing_values)을 확보합니다.
+            #    예전에는 신규 계산용·행수 계산용·덮어쓰기용으로 여러 번 읽어 호출이 몰렸지만,
+            #    이제 한 번 읽은 값을 아래 모든 단계에서 재사용합니다.
+            try:
+                existing_values = gs.get_full_sheet_data(case)
+            except Exception as read_err:
+                self.app.log_message(
+                    f"❌ 시트 조회 실패(저장 보류): {case_number} - {read_err}"
+                )
+                existing_values = None
+
+            # 읽기에 실패하면 신규 건수를 추정하지 않고(+건수 폭증 오판 방지) 저장 실패로 처리.
+            if existing_values is None:
+                return self._finish_case_with_save(
+                    case, original_index, case_number, result_data, [], False,
+                    elapsed_time, hearing_info=hearing_info, tuple_return=tuple_return,
+                )
+
+            # 2) 메모리에서 신규 행·시트 행수 계산 (추가 API 호출 0번)
+            new_data = self._compute_new_progress_rows(
+                case, result_data, existing_values=existing_values
+            )
+            sheet_count = gs.count_progress_rows_from_values(existing_values)
+
+            # 신규가 없어도 시트에 중복 등으로 행 수가 다르면 덮어쓰기로 맞춤
+            needs_sync = bool(new_data) or sheet_count != court_count
+            if not needs_sync:
+                return self._finish_case_no_change(
+                    case,
+                    original_index,
+                    case_number,
+                    result_data,
+                    elapsed_time,
+                    hearing_info=hearing_info,
+                    tuple_return=tuple_return,
+                )
+            if not new_data and sheet_count != court_count:
+                self.app.log_message(
+                    f"🔄 {case_number}: 신규 없음, 시트 {sheet_count}행→대법원 {court_count}행 맞춤(중복 정리)"
+                )
+
+            # 3) 대법원 진행내용 전체를 A:F 영역에 덮어써 "나의 사건검색"과 1:1로 맞춤.
+            #    위에서 읽어둔 existing_values를 넘겨 시트 재읽기를 생략합니다.
+            try:
+                overwrite_result = gs.overwrite_progress_area(
+                    case, result_data, existing_values=existing_values
+                )
+            except Exception as save_err:
+                self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
+                overwrite_result = False
+
+            if overwrite_result is False or overwrite_result is None:
+                row_count = False
+            elif not new_data:
+                # 신규는 없지만 중복·행 수 불일치만 정리된 경우 (메일·+N건 표시 없음)
+                # overwrite_result(기록된 행 수)로 검증해 시트 재읽기를 생략합니다.
+                self._verify_sheet_matches_court(
+                    case, result_data, case_number, sheet_count=overwrite_result
+                )
+                self.app.update_case_status(original_index, "중복 정리 완료", "green", "✅")
+                self.app.update_case_timestamp(
+                    case, original_index, court_count, hearing_info=hearing_info
+                )
+                self._maybe_sync_hearing_calendar(case, result_data)
+                self.app.log_message(
+                    f"✅ 중복 정리 완료: {case_number} (시트 {sheet_count}행→{court_count}행, "
+                    f"소요 시간: {elapsed_time}초)"
+                )
+                return self._as_process_result(1, 0, tuple_return=tuple_return)
+            else:
+                row_count = len(new_data)
+            return self._finish_case_with_save(
                 case,
                 original_index,
                 case_number,
                 result_data,
+                new_data,
+                row_count,
                 elapsed_time,
                 hearing_info=hearing_info,
                 tuple_return=tuple_return,
+                verify_sheet_count=overwrite_result,
             )
-        try:
-            row_count = self.save_to_google_sheets(case, new_data)
-        except Exception as save_err:
-            self.app.log_message(f"❌ 구글 시트 저장 예외: {save_err}")
-            row_count = False
-        return self._finish_case_with_save(
-            case,
-            original_index,
-            case_number,
-            result_data,
-            new_data,
-            row_count,
-            elapsed_time,
-            hearing_info=hearing_info,
-            tuple_return=tuple_return,
-        )
 
     def _process_one_case(
         self, original_index, case, total_cases, total_start_time, selected_cases

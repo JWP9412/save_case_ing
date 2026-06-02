@@ -24,6 +24,7 @@ from datetime import datetime
 import os
 import json
 import time
+import random
 import functools
 import threading
 import config
@@ -52,17 +53,28 @@ def _a1_end_column_letter(num_cols: int) -> str:
     return "".join(reversed(parts))
 
 
-def retry_on_quota_error(max_retries=5, base_delay=2.0):
+def retry_on_quota_error(max_retries=None, base_delay=None):
     """
-    429 (Quota Exceeded) 발생 시 지수 백오프로 재시도하는 데코레이터.
-    대기 시간: base_delay * (2 ** attempt) 초 (2, 4, 8, 16, 32초).
+    429 (Quota Exceeded) 발생 시 지수 백오프 + 무작위 흔들기(jitter)로 재시도하는 데코레이터.
+
+    주니어 개발자 참고:
+    - 대기 시간 = base_delay * (2 ** 시도횟수) 에 약간의 무작위 시간을 더합니다.
+      예) 3, 6, 12, 24초 ... + 0~30% 랜덤.
+    - jitter(무작위 흔들기)가 중요한 이유:
+      여러 스레드가 동시에 429를 만나면, jitter가 없으면 전부 "정확히 2초 뒤"에
+      다시 한꺼번에 몰려와서 또 429가 납니다(이를 thundering herd라고 부릅니다).
+      각자 조금씩 다른 시간에 재시도하도록 무작위를 더해 충돌을 분산시킵니다.
+    - max_retries/base_delay를 넘기지 않으면 config 값을 사용합니다.
     """
 
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            # 호출 시점에 config 값을 읽어 사용자 설정 변경을 반영합니다.
+            retries = max_retries or getattr(config, "GOOGLE_SHEET_RETRY_MAX", 6)
+            delay_base = base_delay or getattr(config, "GOOGLE_SHEET_RETRY_BASE_DELAY", 3.0)
             last_exc = None
-            for attempt in range(max_retries):
+            for attempt in range(retries):
                 try:
                     return func(*args, **kwargs)
                 except gspread.exceptions.APIError as e:
@@ -70,13 +82,14 @@ def retry_on_quota_error(max_retries=5, base_delay=2.0):
                     msg = str(e).lower()
                     if "429" not in msg and "quota" not in msg:
                         raise
-                    if attempt < max_retries - 1:
-                        delay = base_delay * (2**attempt)
+                    if attempt < retries - 1:
+                        base = delay_base * (2**attempt)
+                        delay = base + random.uniform(0, base * 0.3)
                         logger.warning(
-                            "⚠️ 구글 시트 할당량 초과(429). %s초 후 재시도 (%s/%s)",
+                            "⚠️ 구글 시트 할당량 초과(429). %.1f초 후 재시도 (%s/%s)",
                             delay,
                             attempt + 1,
-                            max_retries,
+                            retries,
                         )
                         time.sleep(delay)
                     else:
@@ -105,8 +118,34 @@ class GoogleSheetsService:
         """
         self._client = None
         self._spreadsheet = None
-        # 저장 직렬화용 락 (429 할당량 초과 방지: 동시 쓰기 제한)
-        self._save_lock = threading.Lock()
+        # 저장 직렬화용 락 (429 할당량 초과 방지: 시트 읽기+쓰기를 한 번에 한 스레드만 수행)
+        # RLock(재진입 가능 락)을 쓰는 이유:
+        #   저장 파이프라인이 락을 잡은 상태에서, 그 안의 overwrite_progress_area가
+        #   같은 락을 또 잡아도 데드락(서로 풀어주길 기다리며 멈춤)이 안 나도록 하기 위함.
+        self._save_lock = threading.RLock()
+        # 메인 '사건 목록' 워크시트 캐시 (매번 worksheets()로 전체 탭을 훑지 않기 위함)
+        self._case_list_worksheet = None
+        # API 호출 간 최소 간격을 지키기 위한 직전 호출 시각
+        self._last_api_time = 0.0
+
+    def _throttle_api(self):
+        """
+        구글 시트 API 호출이 너무 촘촘히 몰리지 않도록 직전 호출과 최소 간격을 둡니다.
+
+        주니어 개발자 참고:
+        - 구글 시트는 "1분에 60번"이라는 제한이 있어, 짧은 시간에 몰아서 호출하면
+          429(할당량 초과) 에러가 납니다.
+        - 이 함수는 마지막 호출로부터 GOOGLE_SHEET_MIN_INTERVAL 초가 지나지 않았으면
+          그 차이만큼 잠깐 멈췄다(sleep) 진행합니다.
+        - _save_lock 안에서 호출되므로 한 번에 한 스레드만 이 간격을 적용받습니다.
+        """
+        min_interval = getattr(config, "GOOGLE_SHEET_MIN_INTERVAL", 1.0)
+        if min_interval <= 0:
+            return
+        elapsed = time.time() - self._last_api_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        self._last_api_time = time.time()
 
     def _log(self, message):
         """로그 메시지 출력 (표준 로거 사용)"""
@@ -264,14 +303,28 @@ class GoogleSheetsService:
                 title=worksheet_name, rows=100, cols=10
             )
 
-    def _ensure_headers_and_remove_timestamp_rows(self, worksheet, num_cols=6):
-        """헤더가 있도록 보장하고, 맨 아래 '업데이트 일시'/'최근 과거 업데이트' 행 제거."""
-        all_values = worksheet.get_all_values()
+    def _ensure_headers_and_remove_timestamp_rows(
+        self, worksheet, num_cols=6, existing_values=None, remove_timestamps=True
+    ):
+        """
+        헤더가 있도록 보장하고, (옵션) 맨 아래 '업데이트 일시'/'최근 과거 업데이트' 행 제거.
+
+        주니어 개발자 참고:
+        - existing_values를 넘기면 시트를 다시 읽지(get_all_values) 않습니다.
+          → 같은 데이터를 두 번 읽지 않아 API 호출(429의 원인)을 아낍니다.
+        - remove_timestamps=False면 맨 아래 타임스탬프 행을 굳이 삭제하지 않습니다.
+          덮어쓰기(overwrite) 경로는 어차피 전체 영역을 다시 쓰므로 삭제가 불필요합니다.
+        - 반환값은 (헤더 보정/삭제가 반영된) 최종 2차원 리스트로, 호출부에서 재사용합니다.
+        """
+        all_values = (
+            existing_values if existing_values is not None else worksheet.get_all_values()
+        )
         if len(all_values) == 0:
             headers = [
                 "일자", "내용", "결과", "공시문", "비고", "이메일 송부 여부",
             ]
             worksheet.append_row(headers)
+            all_values = [headers]
         else:
             row1 = all_values[0]
             if len(row1) < num_cols:
@@ -279,16 +332,23 @@ class GoogleSheetsService:
                 extended[4] = extended[4] or "비고"
                 extended[5] = extended[5] or "이메일 송부 여부"
                 worksheet.update("A1:F1", [extended], value_input_option="USER_ENTERED")
-        all_values = worksheet.get_all_values()
-        rows_to_delete = []
-        for i in range(len(all_values) - 1, -1, -1):
-            if len(all_values[i]) > 0 and str(all_values[i][0]).strip() in (
-                "업데이트 일시",
-                "최근 과거 업데이트",
-            ):
-                rows_to_delete.append(i + 1)
-        for row_1based in sorted(rows_to_delete, reverse=True):
-            worksheet.delete_rows(row_1based)
+                all_values = [extended] + list(all_values[1:])
+
+        if remove_timestamps:
+            rows_to_delete = []
+            for i in range(len(all_values) - 1, -1, -1):
+                if len(all_values[i]) > 0 and str(all_values[i][0]).strip() in (
+                    "업데이트 일시",
+                    "최근 과거 업데이트",
+                ):
+                    rows_to_delete.append(i + 1)
+            for row_1based in sorted(rows_to_delete, reverse=True):
+                worksheet.delete_rows(row_1based)
+            if rows_to_delete:
+                del_set = set(r - 1 for r in rows_to_delete)
+                all_values = [r for idx, r in enumerate(all_values) if idx not in del_set]
+
+        return all_values
 
     def _build_result_rows_and_color_info(self, result_data, start_row_1based):
         """저장할 행 리스트와 색상 정보 리스트 생성. 반환: (processed_new_data, color_info)."""
@@ -332,11 +392,12 @@ class GoogleSheetsService:
         end_col = _a1_end_column_letter(num_cols)
         end_row = start_row_1based + len(rows_to_write) - 1
         range_a1 = f"A{start_row_1based}:{end_col}{end_row}"
+        self._throttle_api()
         worksheet.update(
             range_a1, rows_to_write, value_input_option="USER_ENTERED"
         )
 
-    @retry_on_quota_error(max_retries=5, base_delay=2.0)
+    @retry_on_quota_error()
     def save_progress_data(self, case, result_data, log_callback=None):
         """
         구글 시트에 진행내용 데이터를 저장합니다.
@@ -412,68 +473,218 @@ class GoogleSheetsService:
                 self._log(traceback.format_exc())
                 return False
 
-    def _apply_text_colors(self, worksheet, color_info):
+    @retry_on_quota_error()
+    def overwrite_progress_area(self, case, result_data, existing_values=None):
         """
-        텍스트 색상 적용 (내부 함수)
+        진행내용 영역(A:F)을 대법원 데이터로 매번 처음부터 다시 기록합니다.
+
+        주니어 개발자 참고:
+        - 대법원 "나의 사건검색"은 변론/감정/판결선고기일을 미래 날짜라서 목록 맨 아래에
+          고정 배치합니다. 그래서 새 진행내용은 항상 기일 행들 '위'에 끼어듭니다.
+        - "마지막 행 다음부터 신규"라는 증분 방식은 이 구조에서 신규 누락·기일 중복을
+          일으키므로, 매 조회마다 A:F 영역 전체를 대법원 데이터로 덮어써 1:1로 맞춥니다.
+        - 사용자 메모는 A:F 바깥(G열 이후)에 있으므로 건드리지 않고 보존합니다.
+        - 기존에 이미 있던 행은 5·6열(업데이트 표기/X)을 그대로 유지하고,
+          새로 생긴 행만 "오늘 업데이트 됨"으로 표시합니다.
 
         매개변수:
-            worksheet: gspread.Worksheet 객체
-            color_info: 색상 정보 리스트
-                예: [
-                    {'row': 2, 'dateColor': 'rgb(255,0,0)', ...},
-                    ...
-                ]
+        - existing_values: 이미 읽어둔 시트 전체 값(2차원 리스트). 넘기면 시트를 다시
+          읽지 않아 API 호출(429 원인)을 아낍니다. None이면 이 함수가 직접 1회 읽습니다.
+
+        반환: 기록한 진행내용 행 수(int) 또는 False(실패).
         """
-        try:
-            requests = []
+        if result_data is True:
+            result_data = []
+        if not isinstance(result_data, list):
+            return False
 
-            for info in color_info:
-                row_idx = info["row"]
+        with self._save_lock:
+            try:
+                case_number = case.get("사건번호", "")
+                self._log(f"💾 [DEBUG] overwrite_progress_area 시작: {case_number}")
 
-                # RGB 색상 변환 함수
-                def rgb_to_google_color(rgb_string):
-                    if not rgb_string or not rgb_string.startswith("rgb"):
-                        return None
-                    # "rgb(255, 0, 0)" -> [255, 0, 0]
-                    rgb = rgb_string.replace("rgb(", "").replace(")", "").split(",")
-                    r, g, b = [int(x.strip()) / 255.0 for x in rgb]
-                    return {"red": r, "green": g, "blue": b}
+                spreadsheet = self._get_spreadsheet()
+                worksheet = self._get_or_create_case_worksheet(spreadsheet, case)
+                worksheet_name = worksheet.title
 
-                # 각 셀에 색상 적용
-                for col_idx, color_key in enumerate(
-                    ["dateColor", "contentColor", "resultColor", "documentColor"]
-                ):
-                    color_rgb = info.get(color_key)
-                    if color_rgb:
-                        google_color = rgb_to_google_color(color_rgb)
-                        if google_color:
-                            requests.append(
-                                {
-                                    "repeatCell": {
-                                        "range": {
-                                            "sheetId": worksheet.id,
-                                            "startRowIndex": row_idx - 1,
-                                            "endRowIndex": row_idx,
-                                            "startColumnIndex": col_idx,
-                                            "endColumnIndex": col_idx + 1,
-                                        },
-                                        "cell": {
-                                            "userEnteredFormat": {
-                                                "textFormat": {
-                                                    "foregroundColor": google_color
-                                                }
-                                            }
-                                        },
-                                        "fields": "userEnteredFormat.textFormat.foregroundColor",
-                                    }
+                # 외부에서 이미 읽어둔 값이 없으면 여기서 1회만 읽습니다.
+                if existing_values is None:
+                    self._throttle_api()
+                    existing_values = worksheet.get_all_values()
+
+                # 헤더 보장 (타임스탬프 행은 어차피 아래에서 전체를 다시 쓰므로 삭제 생략).
+                # 반환값으로 (헤더 보정이 반영된) 최종 값을 받아 재사용합니다.
+                existing_values = self._ensure_headers_and_remove_timestamp_rows(
+                    worksheet, num_cols=6, existing_values=existing_values,
+                    remove_timestamps=False,
+                )
+                old_row_count = len(existing_values)  # 헤더 포함 행 수
+
+                # E·F 보존용 매핑 (덮어쓰기 전 기존 시트에서 읽음)
+                existing_map = {}          # 4열 키 → (E, F) — setdefault로 시트 위쪽(최초 등록) 우선
+                existing_ef_by_dc = {}     # (일자+내용) → (E, F) fallback
+                existing_f_sent_by_dc = {} # (일자+내용) → F (발송 완료 이력만)
+                for row in existing_values[1:]:
+                    if not self._is_progress_data_row(row):
+                        continue
+                    key = self._sheet_row_dedup_key(row)
+                    dc_key = self._sheet_row_dc_key(row)
+                    col5 = row[4] if len(row) > 4 else ""
+                    col6 = row[5] if len(row) > 5 else "X"
+                    existing_map.setdefault(key, (col5, col6))
+                    existing_ef_by_dc.setdefault(dc_key, (col5, col6))
+                    if col6 and "발송 완료" in str(col6):
+                        existing_f_sent_by_dc[dc_key] = col6
+
+                # 새 진행내용 행 구성 (A2부터). 신규 행만 오늘 날짜로 표기.
+                today_str = datetime.now().strftime("%Y.%m.%d")
+                data_start = 2
+                processed_rows = []
+                color_info = []
+                for idx, progress_row in enumerate(result_data):
+                    col5, col6 = self._resolve_ef_columns(
+                        progress_row,
+                        existing_map,
+                        existing_ef_by_dc,
+                        existing_f_sent_by_dc,
+                        today_str,
+                    )
+                    processed_rows.append([
+                        progress_row.get("date", ""),
+                        progress_row.get("content", ""),
+                        progress_row.get("result", ""),
+                        progress_row.get("document", ""),
+                        col5,
+                        col6,
+                    ])
+                    color_info.append({
+                        "row": data_start + idx,
+                        "dateColor": progress_row.get("dateColor"),
+                        "contentColor": progress_row.get("contentColor"),
+                        "resultColor": progress_row.get("resultColor"),
+                        "documentColor": progress_row.get("documentColor"),
+                    })
+
+                n_new = len(processed_rows)
+                timestamp_row_1based = data_start + n_new + config.EMPTY_ROWS_BEFORE_UPDATE
+                self._ensure_worksheet_rows(worksheet, max(timestamp_row_1based + 2, old_row_count))
+
+                end_col = _a1_end_column_letter(6)
+
+                # 1) 진행내용 데이터 기록
+                if n_new > 0:
+                    end_data_row = data_start + n_new - 1
+                    self._throttle_api()
+                    worksheet.update(
+                        f"A{data_start}:{end_col}{end_data_row}",
+                        processed_rows,
+                        value_input_option="USER_ENTERED",
+                    )
+
+                # 2) 빈 행 + '업데이트 일시' 행
+                after_data_row = data_start + n_new
+                self._append_empty_and_timestamp_rows(
+                    worksheet, after_data_row, num_cols=6
+                )
+
+                # 3) 새 블록(타임스탬프 행) 아래로 남은 옛 A:F 행을 빈 값으로 정리 (G열 메모는 보존)
+                if old_row_count > timestamp_row_1based:
+                    clear_count = old_row_count - timestamp_row_1based
+                    blank_rows = [[""] * 6 for _ in range(clear_count)]
+                    self._throttle_api()
+                    worksheet.update(
+                        f"A{timestamp_row_1based + 1}:{end_col}{old_row_count}",
+                        blank_rows,
+                        value_input_option="USER_ENTERED",
+                    )
+
+                # 4) 색상·서식·열 너비를 '한 번의' batch_update로 모아 전송 (API 호출 절감)
+                #    예전에는 색상/서식/열너비를 각각 따로 보내 3번 호출했지만,
+                #    이제는 요청 목록을 합쳐 1번만 보냅니다.
+                format_requests = []
+                format_requests += self._text_color_requests(worksheet, color_info)
+                format_requests += self._timestamp_format_requests(
+                    worksheet, timestamp_row_1based, num_cols=6
+                )
+                if getattr(config, "GOOGLE_SHEET_AUTO_RESIZE_ON_SAVE", True):
+                    format_requests += self._auto_resize_requests(worksheet, num_cols=6)
+                if format_requests:
+                    try:
+                        self._throttle_api()
+                        worksheet.spreadsheet.batch_update({"requests": format_requests})
+                    except Exception as fmt_err:
+                        self._log(f"⚠️ 서식 적용 실패(무시): {fmt_err}")
+
+                self._log(
+                    f"✅ 진행내용 덮어쓰기 완료: {worksheet_name} ({n_new}행 재기록)"
+                )
+                return n_new
+
+            except gspread.exceptions.APIError:
+                raise
+            except Exception as e:
+                self._log(f"❌ 진행내용 덮어쓰기 실패: {e}")
+                import traceback
+                self._log(traceback.format_exc())
+                return False
+
+    def _text_color_requests(self, worksheet, color_info):
+        """
+        텍스트 색상 적용을 위한 batch_update 요청 목록을 만듭니다(전송은 하지 않음).
+
+        주니어 개발자 참고:
+        - 실제 API 전송(batch_update)은 호출부에서 다른 서식 요청과 합쳐 '한 번에' 보냅니다.
+          이렇게 모아 보내면 API 호출 수가 줄어 429(할당량 초과)를 피하는 데 도움이 됩니다.
+        - 반환값은 요청(dict)들의 리스트입니다.
+        """
+        requests = []
+
+        def rgb_to_google_color(rgb_string):
+            if not rgb_string or not rgb_string.startswith("rgb"):
+                return None
+            rgb = rgb_string.replace("rgb(", "").replace(")", "").split(",")
+            r, g, b = [int(x.strip()) / 255.0 for x in rgb]
+            return {"red": r, "green": g, "blue": b}
+
+        for info in color_info:
+            row_idx = info["row"]
+            for col_idx, color_key in enumerate(
+                ["dateColor", "contentColor", "resultColor", "documentColor"]
+            ):
+                color_rgb = info.get(color_key)
+                if not color_rgb:
+                    continue
+                google_color = rgb_to_google_color(color_rgb)
+                if not google_color:
+                    continue
+                requests.append(
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": worksheet.id,
+                                "startRowIndex": row_idx - 1,
+                                "endRowIndex": row_idx,
+                                "startColumnIndex": col_idx,
+                                "endColumnIndex": col_idx + 1,
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "textFormat": {"foregroundColor": google_color}
                                 }
-                            )
+                            },
+                            "fields": "userEnteredFormat.textFormat.foregroundColor",
+                        }
+                    }
+                )
+        return requests
 
-            # 색상 일괄 적용
+    def _apply_text_colors(self, worksheet, color_info):
+        """텍스트 색상을 즉시 적용(단독 호출용). 내부적으로 요청 목록을 만들어 1회 전송."""
+        try:
+            requests = self._text_color_requests(worksheet, color_info)
             if requests:
-                body = {"requests": requests}
-                worksheet.spreadsheet.batch_update(body)
-
+                self._throttle_api()
+                worksheet.spreadsheet.batch_update({"requests": requests})
         except Exception as e:
             self._log(f"⚠️ 색상 적용 실패: {e}")
 
@@ -503,87 +714,116 @@ class GoogleSheetsService:
         except Exception as e:
             self._log(f"⚠️ 그리드 행 수 확장 실패(무시): {e}")
 
-    def _format_update_timestamp_rows(self, worksheet, start_row, num_cols=4):
-        """
-        업데이트 일시 행 포맷팅 (좌측 정렬) (내부 함수)
-
-        매개변수:
-            worksheet: gspread.Worksheet 객체
-            start_row: 시작 행 번호 (1부터 시작)
-            num_cols: 포맷 적용할 열 개수 (기본 4, 증분 저장 시 6)
-        """
-        try:
-            requests = []
-            for i in range(2):
-                requests.append(
-                    {
-                        "repeatCell": {
-                            "range": {
-                                "sheetId": worksheet.id,
-                                "startRowIndex": start_row + i - 1,
-                                "endRowIndex": start_row + i,
-                                "startColumnIndex": 0,
-                                "endColumnIndex": num_cols,
-                            },
-                            "cell": {
-                                "userEnteredFormat": {"horizontalAlignment": "LEFT"}
-                            },
-                            "fields": "userEnteredFormat.horizontalAlignment",
-                        }
+    def _timestamp_format_requests(self, worksheet, start_row, num_cols=4):
+        """'업데이트 일시' 행 좌측 정렬을 위한 batch_update 요청 목록을 만듭니다(전송 안 함)."""
+        requests = []
+        for i in range(2):
+            requests.append(
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": worksheet.id,
+                            "startRowIndex": start_row + i - 1,
+                            "endRowIndex": start_row + i,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": num_cols,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {"horizontalAlignment": "LEFT"}
+                        },
+                        "fields": "userEnteredFormat.horizontalAlignment",
                     }
-                )
-            body = {"requests": requests}
-            worksheet.spreadsheet.batch_update(body)
+                }
+            )
+        return requests
+
+    def _format_update_timestamp_rows(self, worksheet, start_row, num_cols=4):
+        """업데이트 일시 행 포맷팅을 즉시 적용(단독 호출용)."""
+        try:
+            requests = self._timestamp_format_requests(worksheet, start_row, num_cols)
+            self._throttle_api()
+            worksheet.spreadsheet.batch_update({"requests": requests})
         except Exception as e:
             self._log(f"⚠️ 업데이트 일시 포맷팅 실패: {e}")
 
-    def _auto_resize_columns(self, worksheet, num_cols=4):
+    def _auto_resize_requests(self, worksheet, num_cols=4):
         """
-        열 너비 자동 조정 (내부 함수)
+        열 너비 자동 조정 + 셀 줄바꿈(wrap) 적용을 위한 요청 목록을 만듭니다(전송 안 함).
 
-        매개변수:
-            worksheet: gspread.Worksheet 객체
-            num_cols: 컬럼 개수 (기본 4, 증분 저장 시 6)
+        주니어 개발자 참고:
+        - '내용'·'결과'·'공시문' 열은 텍스트가 길어 한 줄로는 다 안 보입니다.
+        - 이 열들에 wrapStrategy=WRAP을 줘서 셀 안에서 줄바꿈되어 데이터가 모두 보이게 합니다.
+        - '일자' 같은 짧은 열은 autoResize로 내용에 맞춰 자동 너비 조정합니다.
+        - '내용' 열은 자동 맞춤 시 과도하게 넓어지므로 고정 너비 + 줄바꿈 조합으로 처리합니다.
         """
+        requests = [
+            # 전체 열 내용에 맞춰 자동 너비 (이후 일자·내용 열은 고정 너비로 덮어씀)
+            {
+                "autoResizeDimensions": {
+                    "dimensions": {
+                        "sheetId": worksheet.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 0,
+                        "endIndex": num_cols,
+                    }
+                }
+            },
+            # 일자 열: 고정 너비
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": worksheet.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 0,
+                        "endIndex": 1,
+                    },
+                    "properties": {"pixelSize": config.COLUMN_WIDTH_DATE},
+                    "fields": "pixelSize",
+                }
+            },
+            # 내용 열: 고정 너비(줄바꿈으로 전체 표시)
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": worksheet.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 1,
+                        "endIndex": 2,
+                    },
+                    "properties": {"pixelSize": config.COLUMN_WIDTH_CONTENT},
+                    "fields": "pixelSize",
+                }
+            },
+        ]
+
+        # 내용(B)·결과(C)·공시문(D) 열 줄바꿈 적용 → 긴 텍스트가 잘리지 않고 다 보이게
+        if num_cols >= 4:
+            requests.append(
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": worksheet.id,
+                            "startColumnIndex": 1,
+                            "endColumnIndex": 4,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "wrapStrategy": "WRAP",
+                                "verticalAlignment": "TOP",
+                            }
+                        },
+                        "fields": "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment",
+                    }
+                }
+            )
+        return requests
+
+    def _auto_resize_columns(self, worksheet, num_cols=4):
+        """열 너비 자동 조정을 즉시 적용(단독 호출용)."""
         try:
-            requests = [
-                {
-                    "autoResizeDimensions": {
-                        "dimensions": {
-                            "sheetId": worksheet.id,
-                            "dimension": "COLUMNS",
-                            "startIndex": 0,
-                            "endIndex": num_cols,
-                        }
-                    }
-                },
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": worksheet.id,
-                            "dimension": "COLUMNS",
-                            "startIndex": 0,
-                            "endIndex": 1,
-                        },
-                        "properties": {"pixelSize": config.COLUMN_WIDTH_DATE},
-                        "fields": "pixelSize",
-                    }
-                },
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": worksheet.id,
-                            "dimension": "COLUMNS",
-                            "startIndex": 1,
-                            "endIndex": 2,
-                        },
-                        "properties": {"pixelSize": config.COLUMN_WIDTH_CONTENT},
-                        "fields": "pixelSize",
-                    }
-                },
-            ]
-            body = {"requests": requests}
-            worksheet.spreadsheet.batch_update(body)
+            requests = self._auto_resize_requests(worksheet, num_cols)
+            self._throttle_api()
+            worksheet.spreadsheet.batch_update({"requests": requests})
         except Exception as e:
             self._log(f"⚠️ 열 자동 조정 실패: {e}")
 
@@ -671,6 +911,15 @@ class GoogleSheetsService:
         if not summary_text or not summary_text.strip():
             return False
         try:
+            # 구글 시트 한 셀은 최대 50000자까지만 허용합니다.
+            # 메일 본문이 그보다 길면 잘라서 넣어 저장 실패(400 에러)를 막습니다.
+            max_chars = getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000)
+            body_text = summary_text.strip()
+            if len(body_text) > max_chars:
+                omitted = len(body_text) - max_chars
+                body_text = body_text[:max_chars] + f"\n...(이하 {omitted}자 생략)"
+                self._log(f"⚠️ 알림메일 본문이 너무 길어 일부를 생략했습니다(생략 {omitted}자).")
+
             spreadsheet = self._get_spreadsheet()
             try:
                 worksheet = spreadsheet.worksheet(config.NOTIFICATION_WORKSHEET_NAME)
@@ -678,14 +927,18 @@ class GoogleSheetsService:
                 worksheet = spreadsheet.add_worksheet(
                     title=config.NOTIFICATION_WORKSHEET_NAME, rows=100, cols=10
                 )
+            self._throttle_api()
             all_values = worksheet.get_all_values()
             header = ["일시", "수신주소", "메일내용", "발송상태"]
             if len(all_values) == 0:
+                self._throttle_api()
                 worksheet.append_row(header)
             elif len(all_values) == 1 and len(all_values[0]) < 4:
+                self._throttle_api()
                 worksheet.update("A1:D1", [header], value_input_option="USER_ENTERED")
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            worksheet.append_row([current_time, (recipient_email or "").strip(), summary_text.strip(), "대기"])
+            self._throttle_api()
+            worksheet.append_row([current_time, (recipient_email or "").strip(), body_text, "대기"])
             self._log(f"✅ 알림메일 시트에 행 추가 완료 (발송상태: 대기)")
             return True
         except Exception as e:
@@ -735,10 +988,12 @@ class GoogleSheetsService:
             return f"{defendant}_{case_name}_{case_number}_{court}"
         return f"{defendant}_{case_number}_{court}"
 
+    @retry_on_quota_error()
     def get_full_sheet_data(self, case):
         """
         해당 사건의 개별 시트에서 모든 셀 데이터를 2차원 리스트로 반환.
-        시트가 없거나 비어있으면 빈 리스트. API 오류는 예외 전파.
+        시트가 없거나 비어있으면 빈 리스트.
+        429(할당량 초과)는 데코레이터가 자동 재시도하며, 그 외 오류는 예외 전파.
         """
         worksheet_name = self._get_case_worksheet_name(case)
         spreadsheet = self._get_spreadsheet()
@@ -746,6 +1001,7 @@ class GoogleSheetsService:
             worksheet = spreadsheet.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
             return []
+        self._throttle_api()
         return worksheet.get_all_values()
 
     @staticmethod
@@ -766,6 +1022,71 @@ class GoogleSheetsService:
             val = row[col_idx] if col_idx < len(row) else ""
             parts.append(cls._normalize_sheet_cell(val))
         return tuple(parts)
+
+    @classmethod
+    def _sheet_row_dc_key(cls, row):
+        """
+        E·F열 보존용 fallback 키 (일자 + 내용만).
+        결과(속행/기일변경 등)가 바뀌어도 같은 진행내용으로 F열 발송 이력을 승계합니다.
+        """
+        date_val = row[0] if len(row) > 0 else ""
+        content_val = row[1] if len(row) > 1 else ""
+        return (
+            cls._normalize_sheet_cell(date_val),
+            cls._normalize_sheet_cell(content_val),
+        )
+
+    @classmethod
+    def _dict_row_dc_key(cls, row_dict):
+        """scraped_data dict용 (일자+내용) fallback 키."""
+        if not row_dict:
+            return ("", "")
+        return (
+            cls._normalize_sheet_cell(row_dict.get("date", "")),
+            cls._normalize_sheet_cell(row_dict.get("content", "")),
+        )
+
+    def count_progress_rows_from_values(self, all_values):
+        """
+        이미 읽어둔 시트 값(2차원 리스트)에서 진행내용 데이터 행 개수만 셉니다.
+
+        주니어 개발자 참고:
+        - 시트를 다시 읽지 않고(메모리에서) 계산하므로 API 호출이 0번입니다.
+        - 헤더(첫 줄)와 '업데이트 일시' 같은 줄은 제외합니다.
+        """
+        return sum(
+            1
+            for row in (all_values[1:] if all_values else [])
+            if self._is_progress_data_row(row)
+        )
+
+    def count_progress_rows(self, case):
+        """개별 시트의 실제 진행내용 데이터 행 개수(헤더·업데이트 일시 제외)."""
+        all_values = self.get_full_sheet_data(case)
+        return self.count_progress_rows_from_values(all_values)
+
+    @classmethod
+    def _resolve_ef_columns(cls, progress_row, existing_map, existing_ef_by_dc, existing_f_sent_by_dc, today_str):
+        """
+        덮어쓰기 시 E·F열 값을 결정합니다.
+
+        우선순위:
+        1) (일자·내용·결과·공시문) 4열 키가 기존과 같으면 E·F 그대로
+        2) 없으면 (일자·내용)으로 E·F fallback (결과 변경 시에도 발송 이력 유지)
+        3) 둘 다 없으면 신규 행 → 오늘 날짜 + X
+        """
+        key = cls._dict_row_dedup_key(progress_row)
+        if key in existing_map:
+            return existing_map[key]
+
+        dc_key = cls._dict_row_dc_key(progress_row)
+        if dc_key in existing_ef_by_dc:
+            col5, col6 = existing_ef_by_dc[dc_key]
+            if dc_key in existing_f_sent_by_dc:
+                col6 = existing_f_sent_by_dc[dc_key]
+            return col5, col6
+
+        return f"{today_str}. 업데이트 됨", "X"
 
     @classmethod
     def _is_progress_data_row(cls, row):
@@ -896,43 +1217,54 @@ class GoogleSheetsService:
         new_count: 이번에 추가된 건수
         """
         try:
-            spreadsheet = self._get_spreadsheet()
-            for ws in spreadsheet.worksheets():
-                if config.CASE_LIST_WORKSHEET_NAME not in ws.title:
-                    continue
-                all_values = ws.get_all_values()
-                if len(all_values) < 2:
+            ws = self._get_case_list_worksheet()
+            if ws is None:
+                return
+            self._throttle_api()
+            all_values = ws.get_all_values()
+            if len(all_values) < 2:
+                return
+            headers = all_values[0]
+            try:
+                col_case = headers.index("사건번호")
+            except ValueError:
+                return
+            try:
+                col_remark = headers.index("비고")
+            except ValueError:
+                col_remark = len(headers)
+            for r in range(1, len(all_values)):
+                row = all_values[r]
+                if (
+                    col_case < len(row)
+                    and str(row[col_case]).strip() == str(case_number).strip()
+                ):
+                    today_str = datetime.now().strftime("%Y.%m.%d")
+                    remark_text = f"{today_str} 업데이트 (+{new_count}건)"
+                    self._throttle_api()
+                    ws.update_cell(r + 1, col_remark + 1, remark_text)
+                    self._log(
+                        f"📝 메인 시트 비고 갱신: {case_number} -> {remark_text}"
+                    )
                     return
-                headers = all_values[0]
-                try:
-                    col_case = headers.index("사건번호")
-                except ValueError:
-                    return
-                try:
-                    col_remark = headers.index("비고")
-                except ValueError:
-                    col_remark = len(headers)
-                for r in range(1, len(all_values)):
-                    row = all_values[r]
-                    if (
-                        col_case < len(row)
-                        and str(row[col_case]).strip() == str(case_number).strip()
-                    ):
-                        today_str = datetime.now().strftime("%Y.%m.%d")
-                        remark_text = f"{today_str} 업데이트 (+{new_count}건)"
-                        ws.update_cell(r + 1, col_remark + 1, remark_text)
-                        self._log(
-                            f"📝 메인 시트 비고 갱신: {case_number} -> {remark_text}"
-                        )
-                        return
         except Exception as e:
             self._log(f"⚠️ 메인 시트 비고 갱신 실패: {e}")
 
     def _get_case_list_worksheet(self):
-        """사건 목록 워크시트 반환. 없으면 None."""
+        """
+        사건 목록 워크시트 반환. 없으면 None.
+
+        주니어 개발자 참고:
+        - 한 번 찾은 워크시트를 self._case_list_worksheet에 캐시(저장)해 둡니다.
+        - 그래서 매번 worksheets()(모든 탭 목록 조회 = API 호출)를 반복하지 않습니다.
+          여러 사건을 연속 저장할 때 API 호출을 크게 줄여 429를 피합니다.
+        """
+        if self._case_list_worksheet is not None:
+            return self._case_list_worksheet
         spreadsheet = self._get_spreadsheet()
         for ws in spreadsheet.worksheets():
             if config.CASE_LIST_WORKSHEET_NAME in ws.title:
+                self._case_list_worksheet = ws
                 return ws
         return None
 

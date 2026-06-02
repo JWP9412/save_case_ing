@@ -602,10 +602,6 @@ class AppController:
         """Save current column widths. Delegated to case_list_columns."""
         case_list_columns_module.save_column_widths(self)
 
-    def filter_new_data(self, scraped_data, last_entry):
-        """Filter new data. Delegated to ProcessController."""
-        return self.process_controller.filter_new_data(scraped_data, last_entry)
-
     def save_to_google_sheets(self, case, result_data):
         """Save results to Google Sheets. Delegated to ProcessController."""
         return self.process_controller.save_to_google_sheets(case, result_data)
