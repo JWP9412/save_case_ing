@@ -1,0 +1,2 @@
+# PyInstaller 등 빌드 전용 (배포 zip에는 불필요)
+pyinstaller>=6.0

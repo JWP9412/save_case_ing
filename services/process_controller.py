@@ -8,6 +8,7 @@ GUI는 app 참조를 통해 콜백 형태로 UI 갱신만 수행합니다.
 """
 
 import hashlib
+import os
 import re
 import subprocess as sp
 import threading
@@ -17,6 +18,8 @@ from datetime import datetime
 import psutil
 
 import config
+from gui.utils import captcha_ui as captcha_ui_module
+from services import captcha_ocr_service
 from services import email_manager as email_manager_module
 from services import google_calendar as google_calendar_module
 
@@ -33,6 +36,153 @@ class ProcessController:
             app: AppController 또는 MockApp. log_message, update_case_status, ui_queue, show_warning 등에 접근.
         """
         self.app = app
+        # OCR 자동 제출(웨이브) 중복 호출 방지
+        self._auto_submit_lock = threading.Lock()
+
+    # -------------------------------------------------------------------------
+    # 캡차 OCR (EasyOCR + Tesseract, ocr_export)
+    # -------------------------------------------------------------------------
+
+    def _init_ocr_wave_state(self):
+        """사건 조회 로드(웨이브) 시작 시 OCR 관련 상태 초기화."""
+        self.app.ocr_manual_required = {}
+        self.app.ocr_retry_counts = {}
+        self.app._ocr_wave_auto_submit_started = False
+
+    def _set_manual_captcha_fallback(self, case_index, case_number):
+        """
+        OCR 실패·재시도 한도 초과 시: 입력칸 잠금 해제, 수동 입력 유도.
+
+        주니어 개발자 참고:
+        - ocr_manual_required[사건번호]=True 이면 웨이브 자동 제출에서 제외됩니다.
+        """
+        self.app.ocr_manual_required[case_number] = True
+        captcha_ui_module.clear_captcha_input_for_manual(self.app, case_index)
+        self.app.update_case_status(case_index, "수동입력 필요", "red", "⚠️")
+        self.app.ui_queue.put(
+            ("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {})
+        )
+
+    def _run_ocr_fill_case(self, case, case_index, image_path, *, sync_apply=False):
+        """
+        캡cha 이미지 경로에서 OCR 후 입력칸 채움.
+
+        sync_apply=True: ui_queue 적용 후 Event로 대기 (WRONG_CAPTCHA 즉시 재제출용).
+        반환: OCR 성공 여부(bool).
+        """
+        case_number = case.get("사건번호", "")
+        if not getattr(config, "OCR_ENABLED", False):
+            return False
+        if not image_path or image_path == "__CLICK__":
+            return False
+
+        self.app.update_case_status(case_index, "OCR 인식 중", "orange", "🔍")
+        self.app.log_message(f"🔍 OCR 인식 중: {case_number}")
+
+        if getattr(config, "OCR_AUTO_SUBMIT", False):
+            captcha_ui_module.set_captcha_entry_locked(self.app, case_index, True)
+
+        if not captcha_ocr_service.ocr_import_available() and captcha_ocr_service.ocr_import_error_message():
+            self.app.log_message(
+                f"⚠️ OCR 모듈 사용 불가(수동 입력): {captcha_ocr_service.ocr_import_error_message()}"
+            )
+            return False
+
+        result = captcha_ocr_service.recognize_from_path(image_path)
+        if not result:
+            return False
+
+        self.app.log_message(
+            f"✅ OCR 자동입력중: {result.text} ({result.engine}, {result.confidence:.2f}) — 입력칸 잠금"
+        )
+        self.app.ocr_manual_required[case_number] = False
+
+        lock_after = getattr(config, "OCR_AUTO_SUBMIT", False)
+        if sync_apply:
+            applied = threading.Event()
+
+            def _apply():
+                captcha_ui_module._apply_set_captcha_input(
+                    self.app, case_index, result.text, lock_after=lock_after
+                )
+                applied.set()
+
+            self.app.ui_queue.put(("function", (_apply,), {}))
+            applied.wait(timeout=10.0)
+        else:
+            captcha_ui_module.set_captcha_input(
+                self.app, case_index, result.text, lock_after=lock_after
+            )
+
+        self.app.update_case_status(case_index, "OCR 자동입력중", "blue", "🔍")
+        return True
+
+    def _case_index_for_number(self, case_number):
+        """사건번호 → 목록 인덱스."""
+        idx = self.app.find_case_index(case_number)
+        return idx if idx != -1 else None
+
+    def _lane_waiting_has_valid_captcha(self, case_number):
+        """lane_events 대기 중인 사건의 입력이 6자리 숫자인지."""
+        idx = self._case_index_for_number(case_number)
+        if idx is None:
+            return False
+        val = self.app.get_captcha_input(idx)
+        return bool(val and len(val) == 6 and val.isdigit())
+
+    def _try_auto_submit_captcha_wave(self, cases):
+        """
+        선택 사건 전원이 OCR로 6자리 입력됐을 때 「캡cha 입력 완료」와 동일하게 자동 제출.
+
+        반환: True면 start_processing_thread를 호출함.
+        """
+        if not getattr(config, "OCR_ENABLED", False):
+            return False
+        if not getattr(config, "OCR_AUTO_SUBMIT", False):
+            return False
+
+        with self._auto_submit_lock:
+            if getattr(self.app, "_ocr_wave_auto_submit_started", False):
+                return False
+
+            lane_events = getattr(self.app, "lane_events", {})
+            manual = getattr(self.app, "ocr_manual_required", {})
+
+            for case in cases:
+                case_number = case.get("사건번호", "")
+                idx = self._case_index_for_number(case_number)
+                if idx is None:
+                    continue
+                captcha_val = self.app.get_captcha_input(idx)
+                if captcha_val == "CLICK":
+                    continue
+                if case_number not in lane_events:
+                    self.app.log_message(
+                        f"ℹ️ OCR 자동 제출 대기: {case_number} 아직 lane 미등록"
+                    )
+                    return False
+                if manual.get(case_number, False):
+                    self.app.log_message(
+                        "⚠️ 수동입력 필요 사건 포함 — OCR 자동 제출 생략"
+                    )
+                    self.app.ui_queue.put(
+                        (
+                            "function",
+                            (self.app._set_control_btn_state, self.app.complete_btn, True),
+                            {},
+                        )
+                    )
+                    return False
+                if not self._lane_waiting_has_valid_captcha(case_number):
+                    return False
+
+            n_wait = len(lane_events)
+            self.app._ocr_wave_auto_submit_started = True
+            self.app.log_message(
+                f"⚡ OCR 자동 제출 시작 (대기 사건 {n_wait}건 모두 입력됨)"
+            )
+            self.app.start_processing_thread()
+            return True
 
     # -------------------------------------------------------------------------
     # 순수 로직 (GUI 의존 없음) — 구현해 둠
@@ -335,6 +485,7 @@ class ProcessController:
 
         self.app.processed_cases = set()
         self.app.processing = True
+        self._init_ocr_wave_state()
         self.app.start_btn.configure(text="🔄 로딩 중...")
         self.app._set_control_btn_state(self.app.start_btn, False)
         self.app._set_control_btn_state(self.app.stop_btn, True)
@@ -399,6 +550,7 @@ class ProcessController:
             return
 
         self.app.lane_events = {}
+        self._init_ocr_wave_state()
         self.app.log_message("🔄 병렬 처리 시작 (전용 차로제)")
 
         max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
@@ -434,11 +586,14 @@ class ProcessController:
             t.join()
 
         self.app.log_message("🎉 모든 캡차 이미지 로드 완료!")
+        time.sleep(0.5)
+        auto_started = self._try_auto_submit_captcha_wave(cases)
         # 선택한 사건들에 대한 캡차 이미지 로드가 모두 끝났을 때 안내 다이얼로그 표시
         self.app.ui_queue.put(
             ("function", (self.app.show_info, "선택한 모든 작업 조회 완료!"), {})
         )
-        self.app.processing = False
+        if not auto_started:
+            self.app.processing = False
 
         def _restore_start_btn():
             self.app.start_btn.configure(text="🖼️ 사건 조회 로드")
@@ -620,9 +775,29 @@ class ProcessController:
                     self._process_auto_case(case, case_index)
                     return True
 
-                self.app.update_case_status(case_index, "입력대기", "blue", "⏳")
+                # OCR: 숫자 인식 → 입력칸 채움 (실패 시 수동 폴백 표시)
+                if isinstance(result_data, str) and os.path.isfile(result_data):
+                    if getattr(config, "OCR_ENABLED", False):
+                        ocr_ok = self._run_ocr_fill_case(case, case_index, result_data)
+                        if not ocr_ok:
+                            self._set_manual_captcha_fallback(case_index, case_number)
+                        else:
+                            self.app.log_message(
+                                f"✅ 캡차 OCR 완료: {case_number} (소요 시간: {elapsed_time}초)"
+                            )
+                    else:
+                        self.app.update_case_status(case_index, "입력대기", "blue", "⏳")
+
                 self.app.log_message(f"✅ 캡차 이미지 로드 완료: {case_number} (소요 시간: {elapsed_time}초)")
-                self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
+                need_manual_complete = (
+                    not getattr(config, "OCR_ENABLED", False)
+                    or not getattr(config, "OCR_AUTO_SUBMIT", False)
+                    or self.app.ocr_manual_required.get(case_number, False)
+                )
+                if need_manual_complete:
+                    self.app.ui_queue.put(
+                        ("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {})
+                    )
                 ev = threading.Event()
                 self.app.lane_events[case_number] = ev
                 ev.wait()
@@ -954,52 +1129,88 @@ class ProcessController:
             if not self._validate_captcha_input(original_index, case_number, captcha_input):
                 return (0, 1)
 
-            self.app.log_message(
-                f"📋 [DEBUG] GUI에서 가져온 캡차 입력: '{captcha_input}' (타입: {type(captcha_input).__name__}, 길이: {len(captcha_input)})"
+            max_ocr_retry = (
+                getattr(config, "OCR_MAX_AUTO_RETRY", 3)
+                if getattr(config, "OCR_ENABLED", False)
+                else 0
             )
-            self.app.log_message(f"✅ [DEBUG] 캡차 형식 검증 통과: {captcha_input}")
-            self.app.log_message(f"🔄 처리 시작: {case_number} (캡차: {captcha_input})")
-            self.app.update_case_status(original_index, "처리중(크롤링)", "orange", "🔄")
+            if not hasattr(self.app, "ocr_retry_counts"):
+                self.app.ocr_retry_counts = {}
 
-            result_data = self.execute_case_processing(case, captcha_input.strip())
-            self.app.log_message(
-                f"🔄 [DEBUG] execute_case_processing 호출 후 - result_data 타입: {type(result_data)}"
-            )
-            elapsed_time = int(time.time() - case_start_time)
+            while True:
+                captcha_input = self.app.get_captcha_input(original_index)
+                if not self._validate_captcha_input(original_index, case_number, captcha_input):
+                    return (0, 1)
 
-            try:
-                if (
-                    isinstance(result_data, dict)
-                    and result_data.get("status") == "WRONG_CAPTCHA"
-                ):
-                    self.app.log_message("⚠️ 캡차 불일치 - 재시도 필요")
-                    new_path = result_data.get("image_path")
-                    if new_path:
-                        self.app.ui_queue.put(
-                            ("function", (self.app.update_captcha_image, original_index, new_path), {})
+                self.app.log_message(
+                    f"📋 [DEBUG] GUI에서 가져온 캡차 입력: '{captcha_input}' (타입: {type(captcha_input).__name__}, 길이: {len(captcha_input)})"
+                )
+                self.app.log_message(f"✅ [DEBUG] 캡차 형식 검증 통과: {captcha_input}")
+                self.app.log_message(f"🔄 처리 시작: {case_number} (캡차: {captcha_input})")
+                self.app.update_case_status(original_index, "처리중(크롤링)", "orange", "🔄")
+
+                result_data = self.execute_case_processing(case, captcha_input.strip())
+                self.app.log_message(
+                    f"🔄 [DEBUG] execute_case_processing 호출 후 - result_data 타입: {type(result_data)}"
+                )
+                elapsed_time = int(time.time() - case_start_time)
+
+                try:
+                    if (
+                        isinstance(result_data, dict)
+                        and result_data.get("status") == "WRONG_CAPTCHA"
+                    ):
+                        new_path = result_data.get("image_path")
+                        retry_n = self.app.ocr_retry_counts.get(case_number, 0) + 1
+                        self.app.ocr_retry_counts[case_number] = retry_n
+
+                        if new_path:
+                            self.app.ui_queue.put(
+                                (
+                                    "function",
+                                    (self.app.update_captcha_image, original_index, new_path),
+                                    {},
+                                )
+                            )
+
+                        if max_ocr_retry > 0 and retry_n <= max_ocr_retry and new_path:
+                            self.app.update_case_status(
+                                original_index,
+                                f"OCR 재시도 ({retry_n}/{max_ocr_retry})",
+                                "orange",
+                                "🔄",
+                            )
+                            self.app.log_message(
+                                f"⚠️ 캡차 불일치, OCR 재시도 {retry_n}/{max_ocr_retry}: {case_number}"
+                            )
+                            if self._run_ocr_fill_case(
+                                case, original_index, new_path, sync_apply=True
+                            ):
+                                continue
+
+                        self.app.log_message("⚠️ 캡차 불일치 - 수동 입력 필요")
+                        self._set_manual_captcha_fallback(original_index, case_number)
+                        should_cleanup_and_release = False
+                        return (0, 0)
+
+                    if isinstance(result_data, list):
+                        return self._process_result_list(
+                            case, original_index, case_number, result_data, case_start_time
                         )
-                    self.app.update_case_status(original_index, "재입력대기", "red", "⚠️")
-                    should_cleanup_and_release = False
-                    return (0, 0)
 
-                if isinstance(result_data, list):
-                    return self._process_result_list(
-                        case, original_index, case_number, result_data, case_start_time
+                    self.app.update_case_status(
+                        original_index, f"실패 ({elapsed_time}초)", "red", "❌"
                     )
-
-                self.app.update_case_status(
-                    original_index, f"실패 ({elapsed_time}초)", "red", "❌"
-                )
-                self.app.log_message(f"❌ 처리 실패: {case_number}")
-                return (0, 1)
-            except Exception as e:
-                self.app.log_message(f"❌ [DEBUG] 사건 처리 중 예외 발생: {e}")
-                import traceback
-                self.app.log_message(f"❌ [DEBUG] 예외 스택: {traceback.format_exc()}")
-                self.app.update_case_status(
-                    original_index, f"오류 ({elapsed_time}초)", "red", "⚠️"
-                )
-                return (0, 1)
+                    self.app.log_message(f"❌ 처리 실패: {case_number}")
+                    return (0, 1)
+                except Exception as e:
+                    self.app.log_message(f"❌ [DEBUG] 사건 처리 중 예외 발생: {e}")
+                    import traceback
+                    self.app.log_message(f"❌ [DEBUG] 예외 스택: {traceback.format_exc()}")
+                    self.app.update_case_status(
+                        original_index, f"오류 ({elapsed_time}초)", "red", "⚠️"
+                    )
+                    return (0, 1)
         finally:
             if should_cleanup_and_release:
                 self.cleanup_case_process(case_number)

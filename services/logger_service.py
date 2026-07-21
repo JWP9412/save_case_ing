@@ -11,9 +11,15 @@ import logging
 import os
 from datetime import datetime
 
+try:
+    import config
+    _LOG_ROOT = config.get_base_dir()
+except Exception:
+    _LOG_ROOT = os.getcwd()
+
 # 앱 전역 로거 이름. 다른 모듈은 getLogger(APP_LOGGER_NAME) 사용 권장
 APP_LOGGER_NAME = "case_ing"
-LOG_DIR = "logs"
+LOG_DIR = os.path.join(_LOG_ROOT, "logs")
 LOG_FORMAT = "[%(asctime)s] [%(levelname)s] %(message)s"
 LOG_DATE_FORMAT = "%H:%M:%S"
 MAX_LOG_FILES = 10

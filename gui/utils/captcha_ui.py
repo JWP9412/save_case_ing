@@ -17,6 +17,86 @@ def get_captcha_input(app, case_index):
     return None
 
 
+def _apply_captcha_entry_locked(app, case_index, locked):
+    """
+    캡cha 입력 CTkEntry 잠금/해제 (메인 스레드에서만 호출).
+
+    locked=True: disabled — OCR 자동 입력 중 사용자가 덮어쓰지 못하게 함.
+    locked=False: normal — 수동 입력 필요 시.
+    """
+    if case_index not in app.case_entries:
+        return
+    entry = app.case_entries[case_index]
+    try:
+        if not entry.winfo_exists():
+            return
+        entry.configure(state="disabled" if locked else "normal")
+    except Exception:
+        pass
+
+
+def set_captcha_entry_locked(app, case_index, locked):
+    """워커 스레드에서 호출 가능 — ui_queue로 메인 스레드에 위임."""
+    app.ui_queue.put(
+        ("function", (_apply_captcha_entry_locked, app, case_index, locked), {})
+    )
+
+
+def _apply_set_captcha_input(app, case_index, text, lock_after=True):
+    """
+    캡차 StringVar에 6자리 숫자를 넣고, 필요 시 입력칸을 잠급니다.
+
+    CTkEntry는 disabled 상태에서 set이 안 될 수 있어 normal → set → disabled 순서.
+    """
+    if case_index not in app.case_inputs:
+        return
+    cleaned = "".join(c for c in str(text or "") if c.isdigit())[:6]
+    if len(cleaned) != 6:
+        return
+    if case_index in app.case_entries:
+        entry = app.case_entries[case_index]
+        try:
+            if entry.winfo_exists():
+                entry.configure(state="normal")
+        except Exception:
+            pass
+    app.case_inputs[case_index].set(cleaned)
+    if lock_after:
+        _apply_captcha_entry_locked(app, case_index, True)
+    else:
+        _apply_captcha_entry_locked(app, case_index, False)
+
+
+def set_captcha_input(app, case_index, text, lock_after=True):
+    """워커 스레드에서 호출 가능 — ui_queue로 메인 스레드에 위임."""
+    app.ui_queue.put(
+        (
+            "function",
+            (_apply_set_captcha_input, app, case_index, text, lock_after),
+            {},
+        )
+    )
+
+
+def clear_captcha_input_for_manual(app, case_index):
+    """수동 입력 폴백: 칸 비우고 잠금 해제."""
+    app.ui_queue.put(
+        ("function", (_apply_clear_captcha_for_manual, app, case_index), {})
+    )
+
+
+def _apply_clear_captcha_for_manual(app, case_index):
+    if case_index not in app.case_inputs:
+        return
+    _apply_captcha_entry_locked(app, case_index, False)
+    if case_index in app.case_entries:
+        try:
+            app.case_entries[case_index].configure(state="normal")
+        except Exception:
+            pass
+    app.case_inputs[case_index].set("")
+
+
 def validate_captcha_entry(app, index):
     """캡차 입력 6자리 숫자만 허용 (CTkEntry용)."""
     if index not in app.case_inputs:

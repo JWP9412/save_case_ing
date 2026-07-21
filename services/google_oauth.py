@@ -22,12 +22,12 @@ DEFAULT_SCOPES = [
 
 
 def _abs_path(path_value):
+    """상대경로는 배포/프로젝트 루트(BASE_DIR) 기준으로 해석합니다."""
     if not path_value:
         return ""
     if os.path.isabs(path_value):
         return path_value
-    root = os.path.dirname(os.path.abspath(config.__file__))
-    return os.path.join(root, path_value)
+    return config.path_from_base(path_value)
 
 
 def _log(log_callback, message):

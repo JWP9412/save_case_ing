@@ -19,7 +19,8 @@ from services.google_sheets import load_google_sheet_data
 
 def load_hidden_cases():
     """data/hidden_cases.json에서 숨긴 사건 리스트 로드. 항목은 표시 문자열 또는 사건번호. 없거나 오류 시 []."""
-    path = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
+    rel = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
+    path = rel if os.path.isabs(rel) else config.path_from_base(rel)
     try:
         if os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -39,7 +40,8 @@ def _hidden_item_to_case_number(s):
 
 def save_hidden_cases(hidden_list):
     """숨긴 사건번호 리스트를 data/hidden_cases.json에 저장."""
-    path = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
+    rel = getattr(config, "HIDDEN_CASES_FILE", "data/hidden_cases.json")
+    path = rel if os.path.isabs(rel) else config.path_from_base(rel)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -49,12 +51,11 @@ def save_hidden_cases(hidden_list):
 
 
 def _case_list_cache_path():
-    """캐시 파일 경로를 프로젝트 루트 기준으로 반환 (실행 위치와 무관)."""
+    """캐시 파일 경로를 프로젝트/배포 루트 기준으로 반환 (실행 위치와 무관)."""
     rel = getattr(config, "CASE_LIST_CACHE_FILE", "data/case_list_cache.json")
     if os.path.isabs(rel):
         return rel
-    root = os.path.dirname(os.path.abspath(config.__file__))
-    return os.path.join(root, rel)
+    return config.path_from_base(rel)
 
 
 def load_case_list_cache():

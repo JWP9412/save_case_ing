@@ -1,0 +1,8 @@
+easyocr>=1.7
+opencv-python-headless>=4.9
+pillow>=10.0
+numpy>=1.26
+pytesseract>=0.3.10
+
+# 아래는 커스텀 CNN 모델(captcha_model.py, train_captcha_model.py)을 쓸 때만 필요
+torch>=2.2

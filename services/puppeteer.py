@@ -16,6 +16,26 @@ from services.logger_service import get_logger
 logger = get_logger("puppeteer")
 
 
+def _resolve_node_executable():
+    """
+    Node 실행 파일 경로.
+
+    주니어 개발자 참고:
+    - 포터블 배포: CaseIng.exe 옆 runtime/node/node.exe 를 우선 사용
+      (다른 PC에 Node를 따로 설치하지 않아도 됨)
+    - 개발 환경: PATH의 `node` 명령 사용
+    """
+    bundled = config.path_from_base("runtime", "node", "node.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    return "node"
+
+
+def _node_script_path():
+    """interactive_runner.js 절대경로 (BASE_DIR/src/...)."""
+    return config.path_from_base("src", "interactive_runner.js")
+
+
 class PuppeteerService:
     """
     Puppeteer 서비스 클래스 (Interactive)
@@ -40,7 +60,22 @@ class PuppeteerService:
             # 기존 프로세스 정리
             self.cleanup_process(case_number)
 
-            cmd = ["node", "src/interactive_runner.js", case_number, defendant, court, str(instance_index)]
+            node_exe = _resolve_node_executable()
+            script = _node_script_path()
+            if not os.path.isfile(script):
+                self._log(f"❌ Node 스크립트 없음: {script}")
+                return None, None, None
+
+            # cwd=BASE_DIR: cookie_data_for_save, screenshots 등 상대경로가 exe 옆에서 동작
+            cmd = [
+                node_exe,
+                script,
+                case_number,
+                defendant,
+                court,
+                str(instance_index),
+            ]
+            base_dir = config.get_base_dir()
 
             # 프로세스 실행 (stdin 파이프 연결 필수)
             process = subprocess.Popen(
@@ -52,6 +87,7 @@ class PuppeteerService:
                 encoding="utf-8",
                 errors="ignore",
                 bufsize=1,  # 라인 버퍼링
+                cwd=base_dir,
             )
 
             # 프로세스 관리 목록에 등록

@@ -478,6 +478,14 @@ class AppController:
         """Get captcha input. Delegated to captcha_ui."""
         return captcha_ui_module.get_captcha_input(self, case_index)
 
+    def set_captcha_input(self, case_index, text, lock_after=True):
+        """Set captcha input (thread-safe). Delegated to captcha_ui."""
+        captcha_ui_module.set_captcha_input(self, case_index, text, lock_after=lock_after)
+
+    def set_captcha_entry_locked(self, case_index, locked):
+        """Lock/unlock captcha entry. Delegated to captcha_ui."""
+        captcha_ui_module.set_captcha_entry_locked(self, case_index, locked)
+
     def on_captcha_enter(self, case_index):
         """Handle captcha enter. Delegated to captcha_ui."""
         captcha_ui_module.on_captcha_enter(self, case_index)

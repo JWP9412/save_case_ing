@@ -12,10 +12,19 @@ node_modules/
 
 # Sensitive / runtime
 api/certification/service-account.json
+api/certification/client_secret.json
 cookie_data_for_save/
 screenshots/
 results/
 data/
+
+# Portable / PyInstaller build output
+build/
+dist/
+case-ing-portable/
+.portable_cache/
+*.spec.bak
+runtime/puppeteer/
 
 # IDE / tooling
 .cursor/

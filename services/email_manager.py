@@ -13,8 +13,7 @@ import config
 
 
 def _get_path():
-    this_dir = os.path.dirname(os.path.abspath(config.__file__))
-    return os.path.join(this_dir, config.UNSENT_EMAILS_FILE)
+    return config.path_from_base(config.UNSENT_EMAILS_FILE)
 
 
 def load_unsent_emails(file_path=None):

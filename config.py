@@ -10,12 +10,38 @@
 
     spreadsheet = client.open(SPREADSHEET_NAME)
 """
+import os
+import sys
+
+
+def get_base_dir():
+    """
+    프로젝트(또는 포터블 배포) 루트 폴더 절대경로.
+
+    주니어 개발자 참고:
+    - 개발 중: config.py가 있는 폴더 = 프로젝트 루트
+    - PyInstaller로 만든 CaseIng.exe 실행 시: exe가 있는 폴더
+      (옆에 runtime/node, src/, node_modules/ 가 있음)
+    - sys._MEIPASS(_internal)가 아니라 exe 옆을 써야 Node/리소스를 찾을 수 있습니다.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def path_from_base(*parts):
+    """BASE_DIR 기준 상대경로를 절대경로로 합칩니다."""
+    return os.path.normpath(os.path.join(get_base_dir(), *parts))
+
+
+# 프로젝트/배포 루트 (실행 시점에 한 번 계산)
+BASE_DIR = get_base_dir()
 
 # ============================================================================
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.8.0"
+APP_VERSION = "4.9.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -117,6 +143,18 @@ GOOGLE_SHEET_AUTO_RESIZE_ON_SAVE = True
 # 구글 시트 한 셀에 들어갈 수 있는 최대 글자 수는 50000자입니다.
 # 알림메일 본문이 이보다 길면 잘라서 넣습니다(저장 실패 방지).
 GOOGLE_SHEET_CELL_MAX_CHARS = 49000
+
+# ============================================================================
+# 캡차 OCR (EasyOCR + Tesseract, ocr_export 연동)
+# ============================================================================
+# OCR_ENABLED: False면 예전처럼 수동 입력만.
+OCR_ENABLED = True
+# OCR_AUTO_SUBMIT: True면 신뢰도 통과 시 입력칸 채운 뒤 「캡차 입력 완료」까지 자동.
+OCR_AUTO_SUBMIT = True
+OCR_DIGIT_COUNT = 6
+OCR_CONFIDENCE_THRESHOLD = 0.7
+# WRONG_CAPTCHA(캡차 불일치) 시 같은 사건 자동 재인식·재제출 최대 횟수.
+OCR_MAX_AUTO_RETRY = 3
 
 # ============================================================================
 # 파일 경로 설정
@@ -277,9 +315,7 @@ def load_user_settings():
     앱 시작 시 진입점(main.py 등)에서 가장 먼저 호출하세요.
     """
     import json
-    import os
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(this_dir, USER_SETTINGS_FILE)
+    path = path_from_base(USER_SETTINGS_FILE)
     if not os.path.isfile(path):
         return
     try:
@@ -313,9 +349,8 @@ def save_user_settings(data):
     data는 USER_SETTINGS_OVERRIDABLE에 있는 키만 포함하면 됩니다.
     """
     import json
-    import os
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(this_dir, USER_SETTINGS_FILE)
+    path = path_from_base(USER_SETTINGS_FILE)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     out = {}
     for key in USER_SETTINGS_OVERRIDABLE:
         if key in data:
