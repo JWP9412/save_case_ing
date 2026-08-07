@@ -81,6 +81,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Windows exe / 바로가기 아이콘 (미어캣+저울)
+    icon="assets/app_icon.ico",
 )
 
 coll = COLLECT(

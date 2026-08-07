@@ -129,6 +129,17 @@ class AppController:
         self._last_search_query = ""
         self._current_search_index = 0
 
+        # 배치 특수 모드 플래그 (중복제거 / 재수집 / 기간조회 / 시트대조)
+        self.is_dedup_mode = False
+        self.is_reset_mode = False
+        self.is_period_mode = False
+        self.is_compare_mode = False
+        self.period_range = None
+        self.period_results = {}
+        self.compare_results = {}
+        # 자동 실행(--auto)이 갱신한 이력 파일 감지용
+        self._history_mtime_snapshot = None
+
     def get_theme_color(self, key):
         """Return theme color or font. Delegated to theme_manager."""
         return theme_manager_module.get_theme_color(key, self._theme_index)
@@ -164,7 +175,51 @@ class AppController:
         """Create control panel. Delegated to ControlPanel."""
         frame = ControlPanel.create(parent, self)
         self.root.after(100, self.update_email_btn_text)
+        self.root.after(2000, self._poll_external_history_updates)
         return frame
+
+    def _history_files_mtime(self):
+        """update_history / status_history / unsent_emails 의 최신 mtime."""
+        paths = [
+            config.path_from_base(config.UPDATE_HISTORY_FILE),
+            config.path_from_base(getattr(config, "STATUS_HISTORY_FILE", "data/status_history.json")),
+            config.path_from_base(config.UNSENT_EMAILS_FILE),
+        ]
+        mt = 0.0
+        for p in paths:
+            try:
+                if os.path.isfile(p):
+                    mt = max(mt, os.path.getmtime(p))
+            except Exception:
+                pass
+        return mt
+
+    def _poll_external_history_updates(self):
+        """
+        자동 실행(--auto)이 같은 데이터 파일을 갱신했는지 주기적으로 확인합니다.
+        발견 시 상태바에 안내만 남기고, 강제 새로고침은 하지 않습니다.
+        """
+        try:
+            mt = self._history_files_mtime()
+            if self._history_mtime_snapshot is None:
+                self._history_mtime_snapshot = mt
+            elif mt > (self._history_mtime_snapshot or 0) + 0.5:
+                self._history_mtime_snapshot = mt
+                if not self.processing:
+                    self.log_message(
+                        "자동 실행 기록이 갱신된 것 같습니다. 반영하려면 새로고침(F5)을 누르세요."
+                    )
+                    try:
+                        if hasattr(self, "status_text") and self.status_text:
+                            self.status_text.configure(
+                                text="자동 실행 기록 갱신됨 - 새로고침(F5)"
+                            )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if self.root and self.root.winfo_exists():
+            self.root.after(5000, self._poll_external_history_updates)
 
     def _set_control_btn_state(self, btn, enabled):
         """Set control button state. Delegated to ControlPanel."""
@@ -180,33 +235,40 @@ class AppController:
         dlg.focus_set()
 
     def ensure_google_linked_on_startup(self):
-        """OAuth 모드에서 미연동이면 최초 1회 연동을 안내합니다."""
+        """
+        (레거시 이름 유지) 시작 시 강제 연동 팝업은 더 이상 띄우지 않습니다.
+        미연동이면 로그만 남기고, 실제 안내는 maybe_show_first_run_guide()가 담당합니다.
+        """
         mode = str(getattr(config, "GOOGLE_AUTH_MODE", "oauth")).strip().lower()
         if mode != "oauth":
             return
         if google_oauth.has_valid_token():
             return
-        should_link = messagebox.askyesno(
-            "Google 계정 연동",
-            "처음 사용을 위해 Google 계정 연동이 필요합니다.\n\n"
-            "지금 연동하시겠습니까?\n"
-            "- 시트 읽기/쓰기\n"
-            "- 기일 캘린더 등록",
-            parent=self.root,
+        self.log_message(
+            "ℹ️ Google 미연동 상태입니다. 필요하면 「첫 실행 설정 가이드」 또는 설정에서 연동하세요."
         )
-        if not should_link:
-            self.log_message("⚠️ Google OAuth 연동을 건너뛰었습니다. 서비스 계정으로만 시도합니다.")
-            return
+
+    def maybe_show_first_run_guide(self):
+        """
+        세팅이 미완료이고 SHOW_FIRST_RUN_GUIDE=1 일 때만 첫 실행 가이드 창을 띄웁니다.
+        이미 세팅된 사용자(토큰+시트)에게는 아무 창도 뜨지 않습니다.
+        """
         try:
-            google_oauth.get_credentials(interactive=True, log_callback=self.log_message)
-            self.log_message("✅ Google 계정 연동 완료")
+            if not google_oauth.should_show_first_run_guide():
+                return
+            from gui.dialogs.first_run_dialog import FirstRunDialog
+
+            dlg = FirstRunDialog(self.root, app=self)
+            dlg.focus_set()
         except Exception as e:
-            messagebox.showwarning(
-                "Google 연동 실패",
-                f"Google 연동에 실패했습니다.\n{e}\n\n"
-                "서비스 계정으로 계속 시도합니다.",
-                parent=self.root,
-            )
+            self.log_message(f"⚠️ 첫 실행 가이드 표시 실패: {e}")
+
+    def open_first_run_guide(self):
+        """설정 창 등에서 수동으로 첫 실행 가이드를 엽니다."""
+        from gui.dialogs.first_run_dialog import FirstRunDialog
+
+        dlg = FirstRunDialog(self.root, app=self)
+        dlg.focus_set()
 
     def create_settings_panel(self, parent):
         """Create settings panel. Delegated to SettingsPanel."""
@@ -646,13 +708,22 @@ class AppController:
         """선택 사건 기록 초기화·재수집. Delegated to batch_actions."""
         batch_actions_module.reset_and_refetch_selected_cases(self)
 
+    def run_period_query_for_selected_cases(self):
+        """선택 사건 특정 기간 조회. Delegated to batch_actions."""
+        batch_actions_module.run_period_query_for_selected_cases(self)
+
+    def run_sheet_compare_for_selected_cases(self):
+        """선택 사건 시트-대법원 대조. Delegated to batch_actions."""
+        batch_actions_module.run_sheet_compare_for_selected_cases(self)
+
     def processing_completed(self):
         """Finish processing. Delegated to ui_queue_manager."""
         ui_queue_manager_module.processing_completed(self)
 
     def log_message(self, message):
-        """Log message. Delegated to standard logger."""
-        get_logger().info("%s", message)
+        """Log message. Delegated to standard logger. 깨지는 이모지는 sanitize."""
+        from gui.utils.glyphs import sanitize
+        get_logger().info("%s", sanitize(message))
 
     def update_progress(self, percentage, status_text=""):
         """Update progress bar. Delegated to ui_queue_manager."""
@@ -701,7 +772,9 @@ class AppController:
     def run(self):
         """Start GUI event loop. 캐시가 있으면 창을 띄우기 전에 목록을 그려 두어, 열리자마자 사건 항목이 보이도록 함."""
         self.root.after(100, self._process_ui_queue)
+        # 강제 연동 팝업 대신: 미연동 로그 + (필요 시) 첫 실행 가이드
         self.ensure_google_linked_on_startup()
+        self.root.after(200, self.maybe_show_first_run_guide)
 
         cached = sheet_loader_module.load_case_list_cache()
         if cached is not None:

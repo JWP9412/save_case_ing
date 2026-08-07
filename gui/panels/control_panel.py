@@ -2,11 +2,18 @@
 """
 제어 패널 (Control Panel)
 =========================
-새로고침, 사건 조회 로드 실행, 캡차 입력 완료, 처리 중지 버튼을 배치합니다.
-Why: 사용자가 구글 시트 로드·캡차 로드·실제 처리·중지를 한 곳에서 제어할 수 있게 합니다.
+새로고침, 사건 기록 수집, 캡차 입력 완료, 처리 중지, 기간 조회, 시트 대조 버튼을 배치합니다.
+Why: 사용자가 구글 시트 로드·수집·처리·중지를 한 곳에서 제어할 수 있게 합니다.
+
+주니어 개발자 참고:
+- 버튼 문구는 config.BTN_TEXT_* 상수를 사용합니다(깨지는 이모지 제거).
+- glyphs.sanitize()로 한 번 더 감싸 혹시 남은 이모지도 정리합니다.
 """
 import tkinter as tk
 import customtkinter as ctk
+
+import config
+from gui.utils.glyphs import sanitize
 
 
 class ControlPanel:
@@ -62,7 +69,7 @@ class ControlPanel:
 
         ctk.CTkLabel(
             control_frame,
-            text="🎛️ 제어 패널",
+            text=sanitize(getattr(config, "BTN_TEXT_CONTROL_TITLE", "제어 패널")),
             font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
             text_color=app.get_theme_color("text_main"),
         ).pack(anchor=tk.W, pady=(0, 8))
@@ -76,7 +83,7 @@ class ControlPanel:
 
         app.refresh_btn = ctk.CTkButton(
             row1,
-            text="🔄 새로고침 (F5)",
+            text=sanitize(config.BTN_TEXT_REFRESH),
             font=btn_font,
             fg_color="#27AE60",
             hover_color="#229954",
@@ -92,7 +99,7 @@ class ControlPanel:
 
         app.start_btn = ctk.CTkButton(
             row1,
-            text="🖼️ 사건 조회 로드",
+            text=sanitize(config.BTN_TEXT_START_COLLECT),
             font=btn_font,
             fg_color="#E67E22",
             hover_color="#D35400",
@@ -108,7 +115,7 @@ class ControlPanel:
 
         app.complete_btn = ctk.CTkButton(
             row1,
-            text="✔️ 캡차 입력 완료",
+            text=sanitize(config.BTN_TEXT_COMPLETE),
             font=btn_font,
             fg_color=ControlPanel.DISABLED_FG,
             hover_color=ControlPanel.DISABLED_FG,
@@ -125,7 +132,7 @@ class ControlPanel:
 
         app.stop_btn = ctk.CTkButton(
             row1,
-            text="⛔ 처리 중지",
+            text=sanitize(config.BTN_TEXT_STOP),
             font=btn_font,
             fg_color=ControlPanel.DISABLED_FG,
             hover_color=ControlPanel.DISABLED_FG,
@@ -141,14 +148,14 @@ class ControlPanel:
         app.stop_btn.pack(side=tk.LEFT, pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
 
         row2 = ctk.CTkFrame(control_frame, fg_color="transparent", height=ControlPanel.ROW_H)
-        row2.pack(fill=tk.X, padx=0, pady=(0, 10))
+        row2.pack(fill=tk.X, padx=0, pady=(0, 6))
         row2.pack_propagate(False)
 
         # 중복 오류 제거: 선택 사건 시트에서 동일 진행내용 행 정리
         if hasattr(app, "remove_duplicates_for_selected_cases"):
             app.dedup_btn = ctk.CTkButton(
                 row2,
-                text="🧹 중복 오류 제거",
+                text=sanitize(config.BTN_TEXT_DEDUP),
                 font=btn_font,
                 width=ControlPanel.BTN_W,
                 height=ControlPanel.BTN_H,
@@ -170,7 +177,7 @@ class ControlPanel:
         if hasattr(app, "reset_and_refetch_selected_cases"):
             app.reset_btn = ctk.CTkButton(
                 row2,
-                text="🔄 기록 초기화 및 재수집",
+                text=sanitize(config.BTN_TEXT_RESET),
                 font=btn_font,
                 width=ControlPanel.BTN_W,
                 height=ControlPanel.BTN_H,
@@ -192,7 +199,7 @@ class ControlPanel:
         if hasattr(app, "send_notification_email"):
             app.email_btn = ctk.CTkButton(
                 row2,
-                text="📧 모든 사건 메일 발송",
+                text=sanitize(config.BTN_TEXT_EMAIL),
                 font=btn_font,
                 width=ControlPanel.BTN_W,
                 height=ControlPanel.BTN_H,
@@ -210,7 +217,7 @@ class ControlPanel:
         if hasattr(app, "_open_settings_dialog"):
             settings_btn = ctk.CTkButton(
                 row2,
-                text="⚙ 설정",
+                text=sanitize(config.BTN_TEXT_SETTINGS),
                 font=btn_font,
                 width=80,
                 height=ControlPanel.BTN_H,
@@ -222,6 +229,53 @@ class ControlPanel:
                 command=app._open_settings_dialog,
             )
             settings_btn.pack(side=tk.LEFT, padx=(0, 0), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
+
+        # --- 3행: 특정 기간 조회 / 시트-대법원 대조 ---
+        row3 = ctk.CTkFrame(control_frame, fg_color="transparent", height=ControlPanel.ROW_H)
+        row3.pack(fill=tk.X, padx=0, pady=(0, 10))
+        row3.pack_propagate(False)
+
+        if hasattr(app, "run_period_query_for_selected_cases"):
+            app.period_btn = ctk.CTkButton(
+                row3,
+                text=sanitize(config.BTN_TEXT_PERIOD),
+                font=btn_font,
+                width=ControlPanel.BTN_W,
+                height=ControlPanel.BTN_H,
+                corner_radius=ControlPanel.BTN_CORNER_RADIUS,
+                cursor="hand2",
+                fg_color="#1ABC9C",
+                hover_color="#16A085",
+                text_color="#FFFFFF",
+                command=app.run_period_query_for_selected_cases,
+            )
+            app._control_btn_colors[app.period_btn] = ("#1ABC9C", "#16A085", "#FFFFFF")
+            app.period_btn.pack(
+                side=tk.LEFT,
+                padx=(0, 10),
+                pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
+            )
+
+        if hasattr(app, "run_sheet_compare_for_selected_cases"):
+            app.compare_btn = ctk.CTkButton(
+                row3,
+                text=sanitize(config.BTN_TEXT_COMPARE),
+                font=btn_font,
+                width=ControlPanel.BTN_W,
+                height=ControlPanel.BTN_H,
+                corner_radius=ControlPanel.BTN_CORNER_RADIUS,
+                cursor="hand2",
+                fg_color="#2980B9",
+                hover_color="#1F618D",
+                text_color="#FFFFFF",
+                command=app.run_sheet_compare_for_selected_cases,
+            )
+            app._control_btn_colors[app.compare_btn] = ("#2980B9", "#1F618D", "#FFFFFF")
+            app.compare_btn.pack(
+                side=tk.LEFT,
+                padx=(0, 10),
+                pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
+            )
 
         return control_frame
 

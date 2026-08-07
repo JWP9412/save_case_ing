@@ -31,14 +31,25 @@ def update_email_btn_text(app):
     if not last_sent:
         last_sent = "없음"
     btn.configure(
-        text=f"📧 모든 사건 메일 발송 (최근: {last_sent})",
+        text=f"{sanitize_email_label(config.BTN_TEXT_EMAIL)} (최근: {last_sent})",
         height=ControlPanel.BTN_H,
     )
 
 
+def sanitize_email_label(text):
+    """버튼 문구 sanitize 헬퍼(순환 import 방지용 지연 import)."""
+    try:
+        from gui.utils.glyphs import sanitize
+        return sanitize(text)
+    except Exception:
+        return text
+
+
 def send_notification_email(app):
     """미발송 누적 내역 또는 마지막 조회 결과를 구글 시트 '알림메일' 시트에 기록하고, 로컬 누적을 비웁니다. (비동기 처리)"""
-    summary_html, last_sent = email_manager_module.get_summary_html()
+    # 사건 목록 전체를 넘겨 미조회 건까지 요약에 포함
+    all_cases = getattr(app, "case_list", None) or []
+    summary_html, last_sent = email_manager_module.get_summary_html(all_cases=all_cases)
     if not summary_html or not summary_html.strip():
         messagebox.showinfo(
             "알림메일",
@@ -56,7 +67,7 @@ def send_notification_email(app):
     btn = getattr(app, "email_btn", None)
     if btn and btn.winfo_exists():
         app._set_control_btn_state(btn, False)
-        btn.configure(text="⏳ 기록 및 발송 중...")
+        btn.configure(text="기록 및 발송 중...")
 
     def worker():
         try:
@@ -88,7 +99,7 @@ def send_notification_email(app):
                     with urllib.request.urlopen(req, timeout=15) as _:
                         msg_suffix = "\n\n(웹 앱을 통해 즉시 발송을 요청했습니다.)"
                 except Exception as e:
-                    app.log_message(f"⚠️ GAS 웹 앱 즉시 발송 호출 실패: {e}")
+                    app.log_message(f"GAS 웹 앱 즉시 발송 호출 실패: {e}")
                     msg_suffix = "\n\n(웹 앱 호출에 실패했습니다. 트리거가 설정되어 있다면 1분 내로 발송됩니다.)"
 
             def final_update():
@@ -101,7 +112,7 @@ def send_notification_email(app):
             app.root.after(0, final_update)
 
         except Exception as e:
-            app.log_message(f"❌ 알림메일 기록 실패: {e}")
+            app.log_message(f"알림메일 기록 실패: {e}")
             app.root.after(
                 0,
                 lambda: messagebox.showerror(

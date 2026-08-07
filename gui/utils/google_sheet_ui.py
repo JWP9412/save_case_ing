@@ -124,9 +124,17 @@ def _apply_loaded_data_to_app(app, google_data):
 def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
     """비동기 로드 완료 시 메인 스레드에서 호출. UI 갱신 및 버튼 복원."""
     if hasattr(app, "refresh_btn") and app.refresh_btn.winfo_exists():
-        app.refresh_btn.configure(text="🔄 새로고침 (F5)")
+        app.refresh_btn.configure(
+            text=getattr(config, "BTN_TEXT_REFRESH", "새로고침 (F5)")
+        )
         app._set_control_btn_state(app.refresh_btn, True)
-    app.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
+    app.start_btn.configure(
+        text=getattr(
+            config,
+            "BTN_TEXT_START_COLLECT_TWO_LINE",
+            "▶ 사건 기록 수집 실행\n(캡차 로드 실행)",
+        )
+    )
     app._set_control_btn_state(app.start_btn, True)
 
     if error:
@@ -159,7 +167,13 @@ def load_google_sheet(app, force_network=False):
             app.log_message(f"캐시에서 {len(cached)}개 사건 로드")
             return
 
-    app.start_btn.configure(text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)")
+    app.start_btn.configure(
+        text=getattr(
+            config,
+            "BTN_TEXT_START_COLLECT_TWO_LINE",
+            "▶ 사건 기록 수집 실행\n(캡차 로드 실행)",
+        )
+    )
     app._set_control_btn_state(app.start_btn, True)
     app.reset_internal_data()
 

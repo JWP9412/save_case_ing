@@ -486,7 +486,7 @@ class ProcessController:
         self.app.processed_cases = set()
         self.app.processing = True
         self._init_ocr_wave_state()
-        self.app.start_btn.configure(text="🔄 로딩 중...")
+        self.app.start_btn.configure(text=getattr(config, "BTN_TEXT_START_LOADING", "로딩 중..."))
         self.app._set_control_btn_state(self.app.start_btn, False)
         self.app._set_control_btn_state(self.app.stop_btn, True)
 
@@ -505,14 +505,20 @@ class ProcessController:
             for case_number in list(self.app.puppeteer_service.running_processes.keys()):
                 self.app.puppeteer_service.cleanup_process(case_number)
                 self.app.log_message(f"🔄 프로세스 종료: {case_number}")
-        self.app.start_btn.configure(text="🖼️ 사건 조회 로드")
+        self.app.start_btn.configure(
+            text=getattr(config, "BTN_TEXT_START_COLLECT", "▶ 사건 기록 수집 실행")
+        )
         self.app._set_control_btn_state(self.app.start_btn, True)
         self.app._set_control_btn_state(self.app.stop_btn, False)
         if hasattr(self.app, "is_dedup_mode"):
             self.app.is_dedup_mode = False
         if hasattr(self.app, "is_reset_mode"):
             self.app.is_reset_mode = False
-        self.app.log_message("⏹️ 처리 중지됨")
+        if hasattr(self.app, "is_period_mode"):
+            self.app.is_period_mode = False
+        if hasattr(self.app, "is_compare_mode"):
+            self.app.is_compare_mode = False
+        self.app.log_message("처리 중지됨")
 
     # -------------------------------------------------------------------------
     # 프로세스 정리
@@ -585,60 +591,91 @@ class ProcessController:
         for t in threads:
             t.join()
 
-        self.app.log_message("🎉 모든 캡차 이미지 로드 완료!")
+        self.app.log_message("모든 캡차 이미지 로드 완료!")
         time.sleep(0.5)
         auto_started = self._try_auto_submit_captcha_wave(cases)
-        # 선택한 사건들에 대한 캡차 이미지 로드가 모두 끝났을 때 안내 다이얼로그 표시
-        self.app.ui_queue.put(
-            ("function", (self.app.show_info, "선택한 모든 작업 조회 완료!"), {})
-        )
+
+        is_period = getattr(self.app, "is_period_mode", False)
+        is_compare = getattr(self.app, "is_compare_mode", False)
+
+        # CLICK 스마트 스킵으로 이미 처리가 끝난 경우(기간/대조) 미리보기
+        if (is_period or is_compare) and not auto_started:
+            # 선택 사건 대부분이 CLICK으로 이미 _process_auto_case 를 탄 상태
+            self._show_special_mode_report()
+            self.app.is_period_mode = False
+            self.app.is_compare_mode = False
+        elif not is_period and not is_compare:
+            self.app.ui_queue.put(
+                ("function", (self.app.show_info, "선택한 모든 작업 조회 완료!"), {})
+            )
+
         if not auto_started:
             self.app.processing = False
 
         def _restore_start_btn():
-            self.app.start_btn.configure(text="🖼️ 사건 조회 로드")
+            self.app.start_btn.configure(
+                text=getattr(config, "BTN_TEXT_START_COLLECT", "▶ 사건 기록 수집 실행")
+            )
             self.app._set_control_btn_state(self.app.start_btn, True)
 
         self.app.ui_queue.put(("function", (_restore_start_btn,), {}))
         self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.stop_btn, False), {}))
-        self._save_run_result_for_email(cases)
-        self._check_and_prompt_failed_cases(cases)
+        if not is_period and not is_compare:
+            self._save_run_result_for_email(cases)
+            self._check_and_prompt_failed_cases(cases)
 
     def _save_run_result_for_email(self, processed_cases):
         """
         처리된 사건 목록을 case_status 기준으로 성공/실패/변경없음으로 나누어
-        email_manager에 저장합니다. 메일 하단 "이번 조회 결과"에 사용됩니다.
+        email_manager에 **누적** 저장합니다. 메일 하단 "이번 조회 결과"에 사용됩니다.
+
+        주니어 개발자 참고:
+        - 예전에는 set_last_run_result로 매번 덮어써서 마지막 배치만 남았습니다.
+        - 지금은 record_run_results로 사건번호 단위로 병합합니다.
         """
-        success_cases = []
-        failed_cases = []
-        no_update_cases = []
+        results = {}
         for case in processed_cases:
             case_number = case.get("사건번호", "")
             if not case_number:
                 continue
-                
+
             case_info = {
                 "사건번호": case_number,
                 "피고": case.get("피고", ""),
-                "사건명": case.get("사건명", "")
+                "사건명": case.get("사건명", ""),
             }
-            
+
             case_index = self.app.find_case_index(case_number)
-            if case_index == -1 or case_index not in getattr(self.app, "case_status", {}):
-                continue
-            status_text = self.app.get_case_status_text(case_index) or ""
-            if any(k in status_text for k in ["실패", "오류", "취소", "재입력대기"]):
-                failed_cases.append(case_info)
-            elif "변경없음" in status_text:
-                no_update_cases.append(case_info)
+            if case_index == -1:
+                # CLI(MockApp)는 find_case_index가 사건번호 문자열을 돌려줄 수 있음
+                status_text = ""
+                if hasattr(self.app, "get_case_status_text"):
+                    try:
+                        status_text = self.app.get_case_status_text(case_number) or ""
+                    except Exception:
+                        status_text = ""
+            elif case_index not in getattr(self.app, "case_status", {}):
+                # CLI: case_status 메모리를 안 쓰는 경우 status_history/텍스트로 판별
+                status_text = ""
+                if hasattr(self.app, "get_case_status_text"):
+                    try:
+                        status_text = self.app.get_case_status_text(case_index) or ""
+                    except Exception:
+                        status_text = ""
             else:
-                success_cases.append(case_info)
-        email_manager_module.set_last_run_result(
-            success_cases=success_cases,
-            failed_cases=failed_cases,
-            no_update_cases=no_update_cases if no_update_cases else None,
-            captcha_cases=None,
-        )
+                status_text = self.app.get_case_status_text(case_index) or ""
+
+            if any(k in status_text for k in ["실패", "오류", "취소", "재입력대기"]):
+                case_info["상태"] = email_manager_module.STATUS_FAIL
+            elif "변경없음" in status_text:
+                case_info["상태"] = email_manager_module.STATUS_NO_UPDATE
+            elif "캡차" in status_text and "재시도" in status_text:
+                case_info["상태"] = email_manager_module.STATUS_CAPTCHA
+            else:
+                case_info["상태"] = email_manager_module.STATUS_SUCCESS
+            results[case_number] = case_info
+
+        email_manager_module.record_run_results(results)
 
     def _check_and_prompt_failed_cases(self, processed_cases):
         """처리된 사건 중 실패/오류/재입력대기 상태인 사건들을 찾아 재실행 여부를 묻습니다."""
@@ -940,20 +977,185 @@ class ProcessController:
                 case, result_data, case_number, sheet_count=verify_sheet_count
             )
         log_label = "재수집 완료" if reset_mode else "처리 완료"
-        self.app.log_message(f"✅ {log_label}: {case_number} (소요 시간: {elapsed_time}초)")
+        self.app.log_message(f"{log_label}: {case_number} (소요 시간: {elapsed_time}초)")
         return self._as_process_result(1, 0, tuple_return=tuple_return)
+
+    def _finish_period_query_case(
+        self, case, original_index, case_number, result_data, elapsed_time, *, tuple_return=True
+    ):
+        """기간 조회: 시트/이력 미기록, 기간 내 행만 app.period_results 에 저장."""
+        from services.date_utils import in_period
+
+        period = getattr(self.app, "period_range", None)
+        if not period:
+            self.app.log_message(f"기간 미설정: {case_number}")
+            self.app.update_case_status(original_index, "기간 미설정", "red", "")
+            return self._as_process_result(0, 1, tuple_return=tuple_return)
+        start, end = period
+        rows = []
+        if isinstance(result_data, list):
+            for r in result_data:
+                if isinstance(r, dict) and in_period(r.get("date", ""), start, end):
+                    rows.append(r)
+
+        # 시트 존재 여부 주석(메일/미리보기용)
+        try:
+            from services import sheet_compare as sheet_compare_mod
+
+            all_values = sheet_compare_mod.fetch_sheet_values(
+                self.app.google_sheets_service, case
+            )
+            rows, _counts = sheet_compare_mod.annotate_rows_with_sheet_presence(
+                rows, all_values
+            )
+        except Exception as e:
+            self.app.log_message(f"시트 존재 대조 생략({case_number}): {e}")
+
+        sheet_url = ""
+        try:
+            sheet_url = self.app.google_sheets_service.get_case_worksheet_url(case)
+        except Exception:
+            pass
+
+        if not hasattr(self.app, "period_results") or self.app.period_results is None:
+            self.app.period_results = {}
+        self.app.period_results[case_number] = {
+            "case": case,
+            "rows": rows,
+            "sheet_url": sheet_url,
+        }
+        self.app.update_case_status(
+            original_index, f"기간조회 완료 ({len(rows)}건)", "green", ""
+        )
+        self.app.log_message(
+            f"기간조회 완료: {case_number} {len(rows)}건 (소요 {elapsed_time}초)"
+        )
+        return self._as_process_result(1, 0, tuple_return=tuple_return)
+
+    def _finish_compare_case(
+        self, case, original_index, case_number, result_data, elapsed_time, *, tuple_return=True
+    ):
+        """시트-대법원 대조: 시트에 쓰지 않고 diff 만 보관."""
+        from services import sheet_compare as sheet_compare_mod
+
+        court_rows = list(result_data) if isinstance(result_data, list) else []
+        all_values = sheet_compare_mod.fetch_sheet_values(
+            self.app.google_sheets_service, case
+        )
+        diff = sheet_compare_mod.compare_court_and_sheet(court_rows, all_values)
+        sheet_url = ""
+        try:
+            sheet_url = self.app.google_sheets_service.get_case_worksheet_url(case)
+        except Exception:
+            pass
+
+        if not hasattr(self.app, "compare_results") or self.app.compare_results is None:
+            self.app.compare_results = {}
+        self.app.compare_results[case_number] = {
+            "case": case,
+            "diff": diff,
+            "sheet_url": sheet_url,
+        }
+        verdict = diff.get("verdict", "")
+        self.app.update_case_status(original_index, f"대조 {verdict}", "green", "")
+        self.app.log_message(
+            f"시트 대조: {case_number} {verdict} (소요 {elapsed_time}초)"
+        )
+        return self._as_process_result(1, 0, tuple_return=tuple_return)
+
+    def _show_special_mode_report(self):
+        """기간 조회 / 시트 대조 완료 후 미리보기 창을 메인 스레드에서 연다."""
+        is_period = getattr(self.app, "is_period_mode", False)
+        is_compare = getattr(self.app, "is_compare_mode", False)
+        period_results = getattr(self.app, "period_results", None)
+        compare_results = getattr(self.app, "compare_results", None)
+        period_range = getattr(self.app, "period_range", None)
+
+        def _open():
+            try:
+                from gui.dialogs.report_preview_dialog import ReportPreviewDialog
+                from services import period_report as period_report_mod
+                from services.date_utils import format_date
+
+                if is_period and period_range is not None:
+                    results = period_results or {}
+                    start, end = period_range
+                    presence = {"있음": 0, "유사": 0, "없음": 0}
+                    for payload in results.values():
+                        for r in payload.get("rows") or []:
+                            p = r.get("sheet_presence")
+                            if p in presence:
+                                presence[p] += 1
+                    html = period_report_mod.render_period_html(
+                        results, start, end, presence_summary=presence
+                    )
+                    md = period_report_mod.render_period_markdown(
+                        results, start, end, presence_summary=presence
+                    )
+                    ReportPreviewDialog(
+                        self.app.root,
+                        title=f"기간 조회 {format_date(start)} ~ {format_date(end)}",
+                        html_text=html,
+                        markdown_text=md,
+                        mail_subject_hint=f"[기간 조회] {format_date(start)} ~ {format_date(end)}",
+                        app=self.app,
+                    )
+                    return
+
+                if is_compare:
+                    results = compare_results or {}
+                    html = period_report_mod.render_compare_html(results)
+                    md = period_report_mod.render_compare_markdown(results)
+                    ReportPreviewDialog(
+                        self.app.root,
+                        title="시트-대법원 대조 결과",
+                        html_text=html,
+                        markdown_text=md,
+                        mail_subject_hint="[시트 대조]",
+                        app=self.app,
+                    )
+            except Exception as e:
+                self.app.log_message(f"리포트 미리보기 오류: {e}")
+                try:
+                    self.app.show_warning(f"리포트 미리보기 오류: {e}")
+                except Exception:
+                    pass
+
+        self.app.ui_queue.put(("function", (_open,), {}))
 
     def _process_result_list(
         self, case, original_index, case_number, result_data, case_start_time, *, tuple_return=True
     ):
         """
-        크롤링 결과 리스트 처리 (일반 저장 / 중복 제거 / 초기화·재수집).
+        크롤링 결과 리스트 처리 (일반 저장 / 중복 제거 / 초기화·재수집 / 기간조회 / 시트대조).
 
         tuple_return=True  → (completed_delta, failed_delta)  웨이브(캡차 완료) 루프
         tuple_return=False → True | "fail"                    자동 클릭 스킵 경로
         """
         elapsed_time = int(time.time() - case_start_time)
         hearing_info = self._extract_hearing_from_result(result_data) or ""
+
+        # --- 특정 기간 조회: 시트/이력에 쓰지 않고 기간 행만 메모리에 보관 ---
+        if getattr(self.app, "is_period_mode", False):
+            return self._finish_period_query_case(
+                case,
+                original_index,
+                case_number,
+                result_data,
+                elapsed_time,
+                tuple_return=tuple_return,
+            )
+
+        # --- 시트-대법원 대조: 시트 읽기만 하고 쓰지 않음 ---
+        if getattr(self.app, "is_compare_mode", False):
+            return self._finish_compare_case(
+                case,
+                original_index,
+                case_number,
+                result_data,
+                elapsed_time,
+                tuple_return=tuple_return,
+            )
 
         is_reset_mode = getattr(self.app, "is_reset_mode", False)
         if is_reset_mode:
@@ -1269,30 +1471,49 @@ class ProcessController:
         """캡차 배치 완료 후 진행률·완료 메시지·버튼 복구를 UI 큐에 넣음."""
         self.app.update_progress(
             100,
-            f"✅ 처리 완료! (성공: {completed}, 실패: {failed}) | 총 소요 시간: {total_elapsed}초",
+            f"처리 완료! (성공: {completed}, 실패: {failed}) | 총 소요 시간: {total_elapsed}초",
         )
         self.app.log_message(
-            f"🎉 모든 캡차 입력 처리 완료! (총 소요 시간: {total_elapsed}초)"
+            f"모든 캡차 입력 처리 완료! (총 소요 시간: {total_elapsed}초)"
         )
-        self._save_run_result_for_email([c for _, c in selected_cases])
+
+        is_period = getattr(self.app, "is_period_mode", False)
+        is_compare = getattr(self.app, "is_compare_mode", False)
+
+        # 기간/대조 모드는 일반 메일 누적에 넣지 않음
+        if not is_period and not is_compare:
+            self._save_run_result_for_email([c for _, c in selected_cases])
+        else:
+            self._show_special_mode_report()
+
         completion_msg = (
-            f"🎉 처리가 완료되었습니다!\n\n"
-            f"✅ 성공: {completed}개\n"
-            f"❌ 실패: {failed}개\n"
-            f"📊 총 사건: {total_cases}개\n"
-            f"⏱️ 총 소요 시간: {total_elapsed}초"
+            f"처리가 완료되었습니다!\n\n"
+            f"성공: {completed}개\n"
+            f"실패: {failed}개\n"
+            f"총 사건: {total_cases}개\n"
+            f"총 소요 시간: {total_elapsed}초"
         )
-        self.app.ui_queue.put(("function", (self.app.show_info, completion_msg), {}))
+        if not is_period and not is_compare:
+            self.app.ui_queue.put(("function", (self.app.show_info, completion_msg), {}))
         self.app.processing = False
         if hasattr(self.app, "is_dedup_mode"):
             self.app.is_dedup_mode = False
         if hasattr(self.app, "is_reset_mode"):
             self.app.is_reset_mode = False
+        # 기간/대조 플래그는 리포트 연 뒤에 해제 (이미 스냅샷을 떠 둠)
+        if hasattr(self.app, "is_period_mode"):
+            self.app.is_period_mode = False
+        if hasattr(self.app, "is_compare_mode"):
+            self.app.is_compare_mode = False
         self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
 
         def _restore_start():
             self.app.start_btn.configure(
-                text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
+                text=getattr(
+                    config,
+                    "BTN_TEXT_START_COLLECT_TWO_LINE",
+                    "▶ 사건 기록 수집 실행\n(캡차 로드 실행)",
+                )
             )
             self.app._set_control_btn_state(self.app.start_btn, True)
 
@@ -1303,7 +1524,11 @@ class ProcessController:
         """캡차 배치 오류/중지 후 시작·중지 버튼 복구를 UI 큐에 넣음."""
         def _restore_start():
             self.app.start_btn.configure(
-                text="🖼️ 사건 조회 로드 실행\n(캡차 로드 실행)"
+                text=getattr(
+                    config,
+                    "BTN_TEXT_START_COLLECT_TWO_LINE",
+                    "▶ 사건 기록 수집 실행\n(캡차 로드 실행)",
+                )
             )
             self.app._set_control_btn_state(self.app.start_btn, True)
 

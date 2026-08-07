@@ -82,12 +82,16 @@ class MockApp:
             print(safe)
         
     def update_case_status(self, case_number, status_text, color, icon=""):
-        """CLI 처리 중 상태 변경 시 로그 출력 및 파일(status_history.json) 저장"""
-        self.log_message(f"[상태] {case_number}: {icon} {status_text}")
+        """CLI 처리 중 상태 변경 시 로그 출력, 메모리 저장, 파일(status_history.json) 저장."""
+        from gui.utils.glyphs import sanitize
+        display = sanitize(f"{icon} {status_text}" if icon else status_text)
+        # get_case_status_text / 메일 요약에서 쓰도록 메모리에도 저장
+        self.case_status[case_number] = display
+        self.log_message(f"[상태] {case_number}: {display}")
         try:
             self.log_history_manager.save_status_history(case_number, status_text, color, icon)
         except Exception as e:
-            self.log_message(f"⚠️ 상태 기록 저장 실패: {e}")
+            self.log_message(f"상태 기록 저장 실패: {e}")
         
     def update_progress(self, percent, msg):
         self.log_message(f"[진행률 {percent:.1f}%] {msg}")
@@ -187,54 +191,63 @@ def run_auto_batch():
     controller = ProcessController(app)
     max_workers = getattr(config, "MAX_PARALLEL_INSTANCES", 3)
     
-    # 처리 완료 여부: 건수 + 메일 하단용 사건번호 리스트 (스레드 안전)
-    results = {"success": 0, "captcha": 0, "fail": 0}
-    success_list = []
-    captcha_list = []
-    fail_list = []
+    # 처리 완료 여부: 건수 + 메일 하단용 결과 맵 (스레드 안전)
+    results = {"success": 0, "no_update": 0, "captcha": 0, "fail": 0}
+    run_results_map = {}
     results_lock = threading.Lock()
-    
+
     def process_worker(case):
         case_number = case.get("사건번호", "")
         if not case_number:
             return
-            
+
         case_info = {
             "사건번호": case_number,
             "피고": case.get("피고", ""),
-            "사건명": case.get("사건명", "")
+            "사건명": case.get("사건명", ""),
         }
-        
+
         max_attempts = 3  # 1차 + 재시도 2회
+        result = None
         for attempt in range(1, max_attempts + 1):
             app.case_start_times[case_number] = time.time()
             try:
                 result = controller.process_cli_auto_case(case, case_number)
                 if result is True:
+                    # 변경없음인지 상태 텍스트로 판별
+                    status_text = app.get_case_status_text(case_number) or ""
                     with results_lock:
-                        results["success"] += 1
-                        success_list.append(case_info)
+                        if "변경없음" in status_text:
+                            results["no_update"] += 1
+                            case_info["상태"] = email_manager_module.STATUS_NO_UPDATE
+                        else:
+                            results["success"] += 1
+                            case_info["상태"] = email_manager_module.STATUS_SUCCESS
+                        run_results_map[case_number] = dict(case_info)
                     return
                 if result == "captcha":
                     with results_lock:
                         results["captcha"] += 1
-                        captcha_list.append(case_info)
+                        case_info["상태"] = email_manager_module.STATUS_CAPTCHA
+                        run_results_map[case_number] = dict(case_info)
                     return
                 # result == "fail" (재시도 가능)
                 if attempt < max_attempts:
-                    app.log_message(f"🔄 {case_number} 재시도 ({attempt}/{max_attempts - 1})")
+                    app.log_message(f"{case_number} 재시도 ({attempt}/{max_attempts - 1})")
                 else:
                     with results_lock:
                         results["fail"] += 1
-                        fail_list.append(case_info)
+                        case_info["상태"] = email_manager_module.STATUS_FAIL
+                        run_results_map[case_number] = dict(case_info)
             except Exception as e:
-                app.log_message(f"❌ 사건 {case_number} 처리 중 예외 발생: {e}")
+                app.log_message(f"사건 {case_number} 처리 중 예외 발생: {e}")
                 if attempt < max_attempts:
-                    app.log_message(f"🔄 {case_number} 재시도 ({attempt}/{max_attempts - 1})")
+                    app.log_message(f"{case_number} 재시도 ({attempt}/{max_attempts - 1})")
                 else:
                     with results_lock:
                         results["fail"] += 1
-                        fail_list.append(case_info)
+                        case_info["상태"] = email_manager_module.STATUS_FAIL
+                        run_results_map[case_number] = dict(case_info)
                     return
             finally:
                 # 다음 재시도를 위해 또는 완전히 실패 시 프로세스 정리
@@ -242,32 +255,31 @@ def run_auto_batch():
                     controller.cleanup_case_process(case_number)
                 elif result == "fail" or attempt == max_attempts:
                     controller.cleanup_case_process(case_number)
-            
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process_worker, case) for case in cases]
         for future in as_completed(futures):
             future.result()  # 예외 확인
-            
+
     app.log_message(
-        f"🏁 조회 완료: 성공 {results['success']}건, 캡차(재시도 안 함) {results['captcha']}건, "
-        f"3회 시도 후 실패 {results['fail']}건"
+        f"조회 완료: 성공 {results['success']}건, 변경없음 {results['no_update']}건, "
+        f"캡차(재시도 안 함) {results['captcha']}건, 3회 시도 후 실패 {results['fail']}건"
     )
-    
+
+    # 누적 파일에 기록 → GUI와 공유
+    email_manager_module.record_run_results(run_results_map)
+
     # 3. 브라우저 프로세스 정리
     try:
         for case_num in list(app.browser_processes.keys()):
             app.puppeteer_service.cleanup_process(case_num)
         app.puppeteer_service.terminate_node_server()
     except Exception as e:
-        app.log_message(f"⚠️ 프로세스 정리 중 오류: {e}")
-    
-    # 4. 결과 메일 발송 (성공/캡차/실패 목록을 메일 하단에 포함, 업데이트 없어도 발송)
-    app.log_message("📧 이메일 발송을 준비합니다.")
-    summary_html, _ = email_manager_module.get_summary_html(
-        success_cases=success_list,
-        failed_cases=fail_list,
-        captcha_cases=captcha_list,
-    )
+        app.log_message(f"프로세스 정리 중 오류: {e}")
+
+    # 4. 결과 메일 발송 (전체 사건 기준 요약)
+    app.log_message("이메일 발송을 준비합니다.")
+    summary_html, _ = email_manager_module.get_summary_html(all_cases=cases)
     
     recipient = (getattr(config, "NOTIFICATION_EMAIL_ADDRESS", "") or "").strip()
     if not recipient:

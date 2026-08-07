@@ -139,6 +139,22 @@ class SettingsDialog(ctk.CTkToplevel):
             command=self._on_check_link_status,
         ).pack(side=tk.LEFT)
 
+        guide_row = ctk.CTkFrame(tab_gs, fg_color="transparent")
+        guide_row.pack(fill=tk.X, pady=(8, 2))
+        ctk.CTkButton(
+            guide_row,
+            text="첫 실행 가이드 열기",
+            width=160,
+            fg_color="#1ABC9C",
+            command=self._on_open_first_run_guide,
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            guide_row,
+            text="인증 파일·연동·시트 연결을 단계별로 안내합니다.",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         # ---------- 자동화 탭 ----------
         tab_auto = tabview.add("자동화")
         self._add_row(tab_auto, "PUPPETEER_CAPTCHA_TIMEOUT", "캡차 캡처 타임아웃(초)", 1)
@@ -292,9 +308,31 @@ class SettingsDialog(ctk.CTkToplevel):
         message = "연동됨 (유효한 사용자 토큰 있음)" if linked else "미연동 (유효한 사용자 토큰 없음)"
         messagebox.showinfo("Google 연동 상태", message)
 
+    def _on_open_first_run_guide(self):
+        """첫 실행 설정 가이드를 다시 엽니다 (다시 보지 않기 후에도 가능)."""
+        if self.app and hasattr(self.app, "open_first_run_guide"):
+            # 설정 창을 잠시 내려두고 가이드를 앞에 띄움
+            try:
+                self.withdraw()
+            except Exception:
+                pass
+            self.app.open_first_run_guide()
+            try:
+                self.deiconify()
+            except Exception:
+                pass
+        else:
+            from gui.dialogs.first_run_dialog import FirstRunDialog
+
+            FirstRunDialog(self, app=self.app)
+
     def _on_save(self):
         try:
             data = self._collect_data()
+            # 폼에 없는 키(예: SHOW_FIRST_RUN_GUIDE)는 현재 메모리 값을 유지
+            for key in config.USER_SETTINGS_OVERRIDABLE:
+                if key not in data:
+                    data[key] = getattr(config, key, None)
             config.save_user_settings(data)
             config.load_user_settings()
             if self.on_save_callback:

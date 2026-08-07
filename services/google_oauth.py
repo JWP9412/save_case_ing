@@ -134,3 +134,54 @@ def clear_token():
 
 def has_valid_token(scopes=None):
     return get_credentials(scopes=scopes, interactive=False) is not None
+
+
+def has_client_secret_file():
+    """OAuth 클라이언트 JSON(client_secret.json)이 디스크에 있는지."""
+    path = resolved_oauth_client_secret_path()
+    return bool(path) and os.path.isfile(path)
+
+
+def has_sheet_id_configured():
+    """구글 시트 ID가 비어 있지 않은지."""
+    return bool(str(getattr(config, "GOOGLE_SHEET_ID", "") or "").strip())
+
+
+def get_setup_status():
+    """
+    첫 실행 가이드용 세팅 상태 딕셔너리.
+
+    반환 예:
+      {
+        "client_secret": True/False,
+        "token": True/False,
+        "sheet_id": True/False,
+        "complete": True/False,  # 셋 다 True면 완료
+      }
+    """
+    secret_ok = has_client_secret_file()
+    token_ok = has_valid_token()
+    sheet_ok = has_sheet_id_configured()
+    return {
+        "client_secret": secret_ok,
+        "token": token_ok,
+        "sheet_id": sheet_ok,
+        "complete": secret_ok and token_ok and sheet_ok,
+    }
+
+
+def is_setup_complete():
+    """인증 파일 + 토큰 + 시트 ID가 모두 준비됐으면 True."""
+    return get_setup_status()["complete"]
+
+
+def should_show_first_run_guide():
+    """
+    시작 시 첫 실행 가이드를 띄울지 여부.
+
+    - 세팅이 이미 완료면 False
+    - SHOW_FIRST_RUN_GUIDE 가 0이면 False ("다시 보지 않기")
+    """
+    if is_setup_complete():
+        return False
+    return int(getattr(config, "SHOW_FIRST_RUN_GUIDE", 1) or 0) == 1

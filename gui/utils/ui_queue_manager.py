@@ -80,6 +80,8 @@ def process_ui_queue(app):
 
 def update_case_status(app, case_index, status, color, emoji=""):
     """사건 상태 업데이트 (Thread-Safe). 파일 저장은 별도 스레드, UI 갱신은 큐로 메인 스레드에서 처리."""
+    from gui.utils.glyphs import sanitize
+
     if 0 <= case_index < len(app.case_list):
         case_number = app.case_list[case_index].get("사건번호", "")
         if case_number:
@@ -89,7 +91,9 @@ def update_case_status(app, case_index, status, color, emoji=""):
                 daemon=True,
             ).start()
 
-    display_text = f"{emoji} {status}" if emoji else status
+    # 맑은 고딕에서 이모지가 깨지므로 sanitize 후 표시
+    raw = f"{emoji} {status}" if emoji else status
+    display_text = sanitize(raw)
     bg_color = None
     if status.startswith("처리중"):
         bg_color = "#FFF3CD"

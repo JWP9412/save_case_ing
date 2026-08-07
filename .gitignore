@@ -30,3 +30,4 @@ runtime/puppeteer/
 .cursor/
 *.log
 .DS_Store
+.dev_backup/

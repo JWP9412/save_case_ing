@@ -6,6 +6,7 @@
 CTk 루트 생성, geometry·중앙 배치, WM_DELETE 바인딩, Tk 변수·로거·서비스 객체 생성.
 호출 전에 app에서 테마(_load_theme_setting / _apply_theme)는 이미 적용된 상태를 가정.
 """
+import os
 import threading
 
 import config
@@ -20,6 +21,38 @@ from services.logger_service import setup_logger
 from services import update_history as update_history_service
 
 
+def _apply_window_icon(root, app):
+    """
+    창/작업표시줄 아이콘 적용.
+    - Windows: .ico → iconbitmap
+    - 공통: PNG → iconphoto (참조를 app에 보관해 GC 방지)
+    """
+    ico_rel = getattr(config, "APP_ICON_ICO", "assets/app_icon.ico")
+    png_rel = getattr(config, "APP_ICON_PNG", "assets/app_icon.png")
+    ico_path = config.path_from_base(ico_rel)
+    png_path = config.path_from_base(png_rel)
+
+    try:
+        if os.path.isfile(ico_path):
+            root.iconbitmap(ico_path)
+    except Exception:
+        pass
+
+    try:
+        if os.path.isfile(png_path):
+            from PIL import Image, ImageTk
+
+            img = Image.open(png_path).convert("RGBA")
+            # 작업표시줄용으로 적당한 크기
+            img = img.resize((64, 64), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            root.iconphoto(True, photo)
+            # PhotoImage는 참조가 사라지면 아이콘이 깨지므로 app에 보관
+            app._window_icon_photo = photo
+    except Exception:
+        pass
+
+
 def create_root_and_services(app):
     """
     app.root 생성, 설정, Tk 변수·로거·서비스 초기화 후 app.root 반환.
@@ -30,6 +63,7 @@ def create_root_and_services(app):
     w, h = config.WINDOW_WIDTH, config.WINDOW_HEIGHT
     app.root.geometry(f"{w}x{h}")
     app.root.resizable(True, True)
+    _apply_window_icon(app.root, app)
 
     app.root.protocol("WM_DELETE_WINDOW", app.on_closing)
 

@@ -41,13 +41,36 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.9.0"
+APP_VERSION = "4.11.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
 APP_SUBTITLE = "사건 조회 자동화 시스템"
+
+# ---------------------------------------------------------------------------
+# UI 버튼 문구 / 이모지 표시
+# ---------------------------------------------------------------------------
+# True면 이모지를 그대로 표시(맑은 고딕에서는 깨질 수 있음). False면 안전 문자로 치환.
+UI_USE_EMOJI = False
+# 제어 패널 시작 버튼 기본/복원 문구 (한 곳에서만 수정)
+BTN_TEXT_START_COLLECT = "▶ 사건 기록 수집 실행"
+BTN_TEXT_START_COLLECT_TWO_LINE = "▶ 사건 기록 수집 실행\n(캡차 로드 실행)"
+BTN_TEXT_START_LOADING = "로딩 중..."
+BTN_TEXT_REFRESH = "새로고침 (F5)"
+BTN_TEXT_COMPLETE = "캡차 입력 완료"
+BTN_TEXT_STOP = "■ 처리 중지"
+BTN_TEXT_DEDUP = "중복 오류 제거"
+BTN_TEXT_RESET = "기록 초기화 및 재수집"
+BTN_TEXT_EMAIL = "모든 사건 메일 발송"
+BTN_TEXT_SETTINGS = "설정"
+BTN_TEXT_PERIOD = "특정 기간 조회"
+BTN_TEXT_COMPARE = "시트-대법원 대조"
+BTN_TEXT_CONTROL_TITLE = "제어 패널"
 # 제목 배너 이미지 경로 (없으면 텍스트 헤더 사용)
 HEADER_IMAGE_PATH = "./assets/title_banner.png"
+# 앱 아이콘 (창·작업표시줄·exe). BASE_DIR 기준 상대경로.
+APP_ICON_PNG = "assets/app_icon.png"
+APP_ICON_ICO = "assets/app_icon.ico"
 # 헤더 배경색 (창 리사이즈 시 이미지 양옆 여백 채우는 색, 이미지 배경과 맞추면 됨)
 HEADER_BG_COLOR = "#001A33"
 
@@ -90,6 +113,10 @@ GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/calendar.events",
 )
+
+# 첫 실행 설정 가이드 창 자동 표시 (1=표시, 0=다시 보지 않기)
+# 사용자가 가이드에서 "다시 보지 않기"를 체크하면 user_settings.json에 0으로 저장됨.
+SHOW_FIRST_RUN_GUIDE = 1
 
 # ============================================================================
 # Puppeteer 설정
@@ -306,6 +333,7 @@ USER_SETTINGS_OVERRIDABLE = (
     "HEADER_IMAGE_PATH",
     "HEADER_BG_COLOR",
     "MAX_PARALLEL_LIMIT",
+    "SHOW_FIRST_RUN_GUIDE",
 )
 
 
@@ -332,7 +360,8 @@ def load_user_settings():
         val = data[key]
         if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
                    "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT",
-                   "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES"):
+                   "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES",
+                   "SHOW_FIRST_RUN_GUIDE"):
             try:
                 val = int(val)
             except (TypeError, ValueError):
@@ -360,3 +389,34 @@ def save_user_settings(data):
             json.dump(out, f, ensure_ascii=False, indent=2)
     except Exception:
         raise
+
+
+def update_user_settings(partial):
+    """
+    기존 user_settings.json을 읽은 뒤 partial 키만 덮어쓰고 저장합니다.
+
+    주니어 개발자 참고:
+    - save_user_settings()는 넘긴 키만 파일에 쓰기 때문에, 시트 ID만 저장하면
+      다른 설정이 날아갈 수 있습니다.
+    - 이 함수는 기존 파일을 병합하므로 일부만 안전하게 갱신할 때 사용합니다.
+    """
+    import json
+    path = path_from_base(USER_SETTINGS_FILE)
+    existing = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    # 현재 메모리 값으로 빠진 키를 채워, 파일이 비어 있어도 기본값이 유지되게 함
+    for key in USER_SETTINGS_OVERRIDABLE:
+        if key not in existing and key in globals():
+            existing[key] = globals()[key]
+    for key, val in (partial or {}).items():
+        if key in USER_SETTINGS_OVERRIDABLE:
+            existing[key] = val
+    save_user_settings(existing)
+    load_user_settings()

@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-배치 특수 작업 UI (중복 제거, 기록 초기화·재수집)
-==================================================
+배치 특수 작업 UI (중복 제거, 기록 초기화·재수집, 기간 조회, 시트 대조)
+====================================================================
 
-control_panel의 dedup_btn, reset_btn이 호출하는 확인 대화상자·플래그 설정 로직.
-실제 크롤링·시트 처리는 ProcessController가 is_dedup_mode / is_reset_mode 플래그로 수행합니다.
-
-주니어 개발자 참고:
-- app_controller는 이 모듈로 위임만 하고, 비즈니스 로직은 여기에 둡니다.
-- 두 기능 모두 start_batch_processing()으로 기존 '사건 조회 로드' 흐름을 재사용합니다.
+control_panel 버튼이 호출하는 확인 대화상자·플래그 설정 로직.
+실제 크롤링·시트 처리는 ProcessController가 플래그로 수행합니다.
 """
+from gui.dialogs.period_query_dialog import ask_period_range
 
 
 def _format_case_labels(selected, max_show=15):
@@ -23,12 +20,17 @@ def _format_case_labels(selected, max_show=15):
     return case_labels, extra
 
 
+def _clear_special_modes(app):
+    app.is_dedup_mode = False
+    app.is_reset_mode = False
+    app.is_period_mode = False
+    app.is_compare_mode = False
+    app.period_range = None
+
+
 def remove_duplicates_for_selected_cases(app):
     """
     선택된 사건들의 구글 시트 탭에서 중복 진행내용 행을 제거합니다.
-
-    - 대법원 실제 기록과 대조하기 위해 먼저 사건 조회(캡차)를 진행합니다.
-    - 조회 완료 시 is_dedup_mode 플래그에 따라 일반 저장이 아닌 대조/삭제 로직을 수행합니다.
     """
     selected = app.get_selected_cases()
     if not selected:
@@ -46,17 +48,14 @@ def remove_duplicates_for_selected_cases(app):
     ):
         return
 
+    _clear_special_modes(app)
     app.is_dedup_mode = True
-    app.is_reset_mode = False
     app.start_batch_processing()
 
 
 def reset_and_refetch_selected_cases(app):
     """
     선택된 사건의 구글 시트 기록·로컬 캐시를 비운 뒤, 대법원에서 처음부터 다시 수집합니다.
-
-    - is_reset_mode 플래그를 켠 뒤 기존 '사건 조회 로드' 배치와 동일하게 진행합니다.
-    - 조회 완료 시 process_controller가 시트를 비우고 전체 데이터를 새로 저장합니다.
     """
     selected = app.get_selected_cases()
     if not selected:
@@ -75,6 +74,69 @@ def reset_and_refetch_selected_cases(app):
     ):
         return
 
+    _clear_special_modes(app)
     app.is_reset_mode = True
-    app.is_dedup_mode = False
+    app.start_batch_processing()
+
+
+def run_period_query_for_selected_cases(app):
+    """
+    특정 기간의 대법원 기록만 재크롤링해 리포트로 보여줍니다.
+    시트·update_history·unsent_emails 에는 쓰지 않습니다.
+    """
+    selected = app.get_selected_cases()
+    if not selected:
+        app.show_warning("기간 조회할 사건을 선택해주세요.")
+        return
+
+    period = ask_period_range(app.root)
+    if not period:
+        return
+    start, end = period
+
+    case_labels, extra = _format_case_labels(selected)
+    from services.date_utils import format_date
+
+    if not app.ask_yesno(
+        "특정 기간 조회",
+        f"기간: {format_date(start)} ~ {format_date(end)}\n"
+        f"선택 {len(selected)}건을 대법원에서 조회한 뒤\n"
+        "해당 기간 기록만 모아 미리보기를 엽니다.\n"
+        "(구글 시트·기존 조회 이력에는 저장하지 않습니다.)\n\n"
+        f"[대상]\n{case_labels}{extra}\n\n"
+        "시작하시겠습니까?",
+    ):
+        return
+
+    _clear_special_modes(app)
+    app.is_period_mode = True
+    app.period_range = (start, end)
+    app.period_results = {}
+    app.start_batch_processing()
+
+
+def run_sheet_compare_for_selected_cases(app):
+    """
+    시트에 저장된 진행내용과 대법원 현재 기록을 내용 단위로 대조합니다.
+    시트에는 쓰지 않습니다.
+    """
+    selected = app.get_selected_cases()
+    if not selected:
+        app.show_warning("대조할 사건을 선택해주세요.")
+        return
+
+    case_labels, extra = _format_case_labels(selected)
+    if not app.ask_yesno(
+        "시트-대법원 대조",
+        f"선택 {len(selected)}건을 대법원에서 조회한 뒤\n"
+        "구글 시트 기록과 내용이 일치하는지 비교합니다.\n"
+        "(시트에는 아무것도 쓰지 않습니다.)\n\n"
+        f"[대상]\n{case_labels}{extra}\n\n"
+        "시작하시겠습니까?",
+    ):
+        return
+
+    _clear_special_modes(app)
+    app.is_compare_mode = True
+    app.compare_results = {}
     app.start_batch_processing()
