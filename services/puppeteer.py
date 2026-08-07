@@ -44,6 +44,8 @@ class PuppeteerService:
     def __init__(self, log_callback=None, processing_flag=None):
         self.processing_flag = processing_flag
         self.running_processes = {}  # {case_number: process}
+        # Node JSON의 generalInfo를 사건번호별로 임시 보관 (반환값을 바꾸지 않기 위함)
+        self.last_general_info = {}
 
     def _log(self, message):
         """로그 메시지 출력 (표준 로거 사용)"""
@@ -233,6 +235,15 @@ class PuppeteerService:
                     result = json.loads(json_str)
                     if result.get("success"):
                         progress_data = result.get("progressData", [])
+                        # 일반내용은 반환값에 넣지 않고 별도 보관함으로
+                        # (호출부가 list를 기대하므로 반환 타입을 깨뜨리지 않음)
+                        general_info = result.get("generalInfo")
+                        if general_info is not None:
+                            self.last_general_info[case_number] = general_info
+                            self._log(
+                                f"📋 일반내용 수신: {case_number} "
+                                f"(basic={len((general_info or {}).get('basic') or {})}키)"
+                            )
                         self._log(f"✅ 처리 완료: {len(progress_data)}건 데이터 추출")
                         # 빈 리스트일 경우 그대로 빈 리스트 반환 (True로 변환하지 않음)
                         return progress_data

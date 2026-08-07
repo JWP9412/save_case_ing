@@ -41,7 +41,7 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.11.0"
+APP_VERSION = "4.12.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -194,6 +194,9 @@ SCREENSHOTS_DIR = "screenshots"
 
 # 업데이트 기록 파일
 UPDATE_HISTORY_FILE = "data/update_history.json"
+
+# 일반내용(기본내용·기일·제출서류·당사자·대리인) 로컬 캐시
+GENERAL_INFO_FILE = "data/general_info.json"
 
 # 검색 성공 이력 파일 (캡차 입력 성공한 사건번호 목록, '자동 조회' 열 표시용)
 SEARCH_LOG_FILE = "data/search_log.json"

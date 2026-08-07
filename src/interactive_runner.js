@@ -186,11 +186,13 @@ async function main() {
         }
 
         // 8. 결과 출력 (JSON)
+        // generalInfo: 진행내용 탭 클릭 전에 읽은 일반내용 (없으면 null)
         const result = {
             caseNumber,
             defendant,
             court,
             progressData,
+            generalInfo: (controller && controller.lastGeneralInfo) || null,
             success: true,
             timestamp: new Date().toISOString()
         };

@@ -461,11 +461,58 @@ class ProcessController:
             result = self.app.puppeteer_service.execute_case_processing(
                 case, captcha_input, browser_ws_url
             )
+            # 진행내용 리스트를 받은 직후, 별도 보관함의 일반내용도 저장 시도
+            # (실패해도 본 흐름에 영향 없음)
+            if isinstance(result, list):
+                self._persist_general_info(case_number)
             return result
         except Exception as e:
             case_number = case.get("사건번호", "")
             self.app.log_message(f"❌ Puppeteer 실행 오류: {case_number} - {e}")
             return False
+
+    def _persist_general_info(self, case_number):
+        """
+        PuppeteerService.last_general_info 에 담아둔 일반내용을
+        data/general_info.json 에 저장합니다.
+
+        주니어 참고:
+        - 당사자·대리인도 같은 화면에 이미 있어 비용이 0이므로
+          평소 조회 때 include_parties=True 로 함께 저장합니다.
+        - 돋보기 창의 새로고침 버튼도 같은 경로를 타므로 자동으로 갱신됩니다.
+        """
+        try:
+            svc = getattr(self.app, "puppeteer_service", None)
+            if not svc:
+                return
+            info = None
+            if hasattr(svc, "last_general_info"):
+                info = svc.last_general_info.pop(case_number, None)
+            if not info:
+                return
+            from services.general_info_store import save_case_general_info
+
+            # 1단계 실측: 당사자·대리인도 같은 화면에 이미 있음 → 평소 조회 때 함께 저장
+            saved = save_case_general_info(case_number, info, include_parties=True)
+            if saved:
+                self.app.log_message(f"📋 일반내용 저장: {case_number}")
+                # 돋보기 창이 새로고침을 기다리는 중이면 UI 스레드에서 다시 그리기
+                refresh = getattr(self.app, "_general_info_dialog_refresh", None)
+                if refresh and refresh.get("case_number") == case_number:
+                    dlg = refresh.get("dialog")
+                    try:
+                        if dlg is not None and dlg.winfo_exists():
+                            dlg.after(0, dlg.reload_from_store)
+                    except Exception:
+                        pass
+                    self.app._general_info_dialog_refresh = None
+            else:
+                self.app.log_message(f"⚠️ 일반내용 저장 실패: {case_number}")
+        except Exception as e:
+            try:
+                self.app.log_message(f"⚠️ 일반내용 저장 예외(무시): {e}")
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # 배치 시작/중지

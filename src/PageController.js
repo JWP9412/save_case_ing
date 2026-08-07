@@ -15,6 +15,8 @@ class PageController {
     this.page = page;
     this.browserId = browserId;
     this.screenshotsDir = path.join(__dirname, '..', 'screenshots');
+    // 진행내용 탭 클릭 전에 읽은 일반내용 (없으면 null)
+    this.lastGeneralInfo = null;
   }
 
   /**
@@ -619,6 +621,219 @@ class PageController {
   }
 
   /**
+   * 일반내용(기본내용·최근기일·최근제출서류·당사자·대리인) 추출
+   * ----------------------------------------------------------
+   * 진행내용 탭을 누르기 전 상세 페이지 DOM에서 읽습니다.
+   * 실패해도 null만 반환하고, 진행내용 크롤링을 절대 막지 않습니다.
+   *
+   * 파싱 전략 (주니어 참고):
+   * - WebSquare ID(ssgoTab1_body)가 있으면 그 안을 우선 스코프로 씁니다.
+   * - 표는 ID보다 제목 텍스트("기본내용", "최근기일" 등)로 찾습니다.
+   *   사이트 개편으로 ID가 바뀌어도 제목은 잘 안 바뀌기 때문입니다.
+   */
+  async extractGeneralInfo(caseNumber) {
+    try {
+      // 일반내용 영역이 보일 때까지 짧게 대기 (없어도 계속)
+      try {
+        await this.page.waitForFunction(() => {
+          const bodyText = document.body ? document.body.innerText : '';
+          return bodyText.includes('기본내용') || bodyText.includes('사건번호') ||
+            !!document.querySelector('[id*="ssgoTab1_body"]');
+        }, { timeout: 5000 });
+      } catch (e) {
+        console.log(`⚠️ [일반내용] 로딩 대기 타임아웃 (계속 시도)`);
+      }
+
+      const data = await this.page.evaluate(() => {
+        function clean(t) {
+          return (t || '').replace(/\s+/g, ' ').trim();
+        }
+
+        // 스코프: 일반내용 탭 body 우선, 없으면 상세 영역 전체
+        const scope =
+          document.querySelector(
+            '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab1_body'
+          ) ||
+          document.querySelector('[id*="ssgoTab1_body"]') ||
+          document.querySelector('[id*="wfSsgoDetail"]') ||
+          document.body;
+
+        /**
+         * 라벨-값 표 파싱 (기본내용용)
+         * 한 행이 [라벨, 값, 라벨, 값] 형태로 이어지는 경우가 많음
+         */
+        function parseLabelValueTable(table) {
+          const result = {};
+          if (!table) return result;
+          const rows = table.querySelectorAll('tr');
+          for (const tr of rows) {
+            const cells = Array.from(tr.querySelectorAll('th, td'));
+            // th/td 짝: 라벨 칸은 보통 짧고, 값 칸이 옆에 붙음
+            let i = 0;
+            while (i < cells.length) {
+              const label = clean(cells[i].textContent);
+              // 라벨처럼 보이는 칸만 (너무 긴 문장은 값으로 취급)
+              if (label && label.length > 0 && label.length < 40 && i + 1 < cells.length) {
+                const value = clean(cells[i + 1].textContent);
+                // 이미 같은 키가 있으면 덮지 않음 (첫 값 우선)
+                if (!(label in result)) {
+                  result[label] = value;
+                }
+                i += 2;
+              } else {
+                i += 1;
+              }
+            }
+          }
+          return result;
+        }
+
+        /**
+         * 헤더+데이터 행 표 파싱
+         */
+        function parseDataTable(table) {
+          if (!table) return [];
+          const rows = Array.from(table.querySelectorAll('tr'));
+          if (rows.length === 0) return [];
+
+          // 첫 행이 th를 포함하면 헤더, 아니면 첫 행을 헤더로 간주
+          let headerRowIdx = 0;
+          for (let r = 0; r < Math.min(rows.length, 3); r++) {
+            if (rows[r].querySelector('th')) {
+              headerRowIdx = r;
+              break;
+            }
+          }
+          const headers = Array.from(rows[headerRowIdx].querySelectorAll('th, td')).map((c) =>
+            clean(c.textContent)
+          );
+          const data = [];
+          for (let r = headerRowIdx + 1; r < rows.length; r++) {
+            const cells = Array.from(rows[r].querySelectorAll('td, th')).map((c) =>
+              clean(c.textContent)
+            );
+            if (cells.length === 0) continue;
+            const joined = cells.join('');
+            // "지정된 기일내용이 없습니다" 같은 안내 행은 스킵
+            if (joined.includes('없습니다') || joined.includes('조회된 내용이 없')) {
+              continue;
+            }
+            // 전부 빈 칸이면 스킵
+            if (!joined.trim()) continue;
+            const obj = {};
+            headers.forEach((h, i) => {
+              obj[h || `col${i}`] = cells[i] || '';
+            });
+            data.push(obj);
+          }
+          return data;
+        }
+
+        /**
+         * 제목 텍스트 근처의 table을 찾음
+         * titleSubstr: "최근기일", "제출서류", "당사자내용", "대리인내용" 등
+         */
+        function findTableNearTitle(titleSubstr) {
+          const candidates = scope.querySelectorAll(
+            'td, th, div, span, strong, b, legend, p, a, li, label'
+          );
+          for (const el of candidates) {
+            // 자식이 많은 컨테이너의 전체 텍스트는 제목이 아님 → 짧은 텍스트만
+            const ownText = clean(el.childNodes.length
+              ? Array.from(el.childNodes)
+                  .filter((n) => n.nodeType === 3)
+                  .map((n) => n.textContent)
+                  .join('')
+              : el.textContent);
+            const t = ownText || clean(el.textContent);
+            if (!t || t.length > titleSubstr.length + 20) continue;
+            if (!t.includes(titleSubstr)) continue;
+
+            // 1) 같은 조상 안에서 뒤따르는 table
+            let search = el;
+            for (let up = 0; up < 6 && search; up++) {
+              let sib = search.nextElementSibling;
+              while (sib) {
+                if (sib.tagName === 'TABLE') return sib;
+                const nested = sib.querySelector && sib.querySelector('table');
+                if (nested) return nested;
+                sib = sib.nextElementSibling;
+              }
+              // 부모 안에서 el 다음에 오는 table
+              if (search.parentElement) {
+                const tables = search.parentElement.querySelectorAll('table');
+                for (const tb of tables) {
+                  // 제목 요소보다 뒤에 있는 표만
+                  if (
+                    el.compareDocumentPosition(tb) & Node.DOCUMENT_POSITION_FOLLOWING
+                  ) {
+                    return tb;
+                  }
+                }
+              }
+              search = search.parentElement;
+            }
+          }
+
+          // 2) fallback: 표 앞쪽 텍스트에 제목이 포함된 경우
+          for (const table of scope.querySelectorAll('table')) {
+            let prev = table.previousElementSibling;
+            for (let i = 0; i < 3 && prev; i++) {
+              if (clean(prev.textContent).includes(titleSubstr)) return table;
+              prev = prev.previousElementSibling;
+            }
+          }
+          return null;
+        }
+
+        // --- 기본내용: '사건번호'와 '사건명'이 같이 있는 표 ---
+        let basic = {};
+        for (const table of scope.querySelectorAll('table')) {
+          const text = table.textContent || '';
+          if (text.includes('사건번호') && (text.includes('사건명') || text.includes('원고'))) {
+            basic = parseLabelValueTable(table);
+            if (Object.keys(basic).length >= 2) break;
+          }
+        }
+
+        return {
+          basic,
+          recent_hearings: parseDataTable(findTableNearTitle('최근기일')),
+          recent_documents: parseDataTable(findTableNearTitle('제출서류')),
+          parties: parseDataTable(findTableNearTitle('당사자내용')),
+          attorneys: parseDataTable(findTableNearTitle('대리인내용')),
+        };
+      });
+
+      // 최소한 basic에 뭔가 있거나 표가 하나라도 있으면 성공으로 간주
+      const hasAny =
+        data &&
+        ((data.basic && Object.keys(data.basic).length > 0) ||
+          (data.recent_hearings && data.recent_hearings.length > 0) ||
+          (data.recent_documents && data.recent_documents.length > 0) ||
+          (data.parties && data.parties.length > 0) ||
+          (data.attorneys && data.attorneys.length > 0));
+
+      if (!hasAny) {
+        console.log(`⚠️ [일반내용] 파싱 결과 비어 있음 (${caseNumber})`);
+        return null;
+      }
+
+      console.log(
+        `📊 [일반내용] basic=${Object.keys(data.basic || {}).length}키, ` +
+          `기일=${(data.recent_hearings || []).length}, ` +
+          `서류=${(data.recent_documents || []).length}, ` +
+          `당사자=${(data.parties || []).length}, ` +
+          `대리인=${(data.attorneys || []).length}`
+      );
+      return data;
+    } catch (error) {
+      console.error(`❌ [일반내용] 추출 실패: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * 진행내용 데이터 추출
    */
   async extractProgressData(caseNumber) {
@@ -656,6 +871,21 @@ class PageController {
         } else {
             console.log(`⚠️ [DEBUG] 목록에서 사건을 찾을 수 없거나 이미 상세 페이지일 수 있음`);
         }
+      }
+
+      // ★ 일반내용 추출: 진행내용 탭을 누르기 전 화면에 이미 떠 있는 표들을 읽습니다.
+      // 실패해도 진행내용 크롤링은 계속되어야 하므로 내부에서 예외를 삼킵니다.
+      try {
+        console.log(`📋 [일반내용] 추출 시작 (${this.browserId})`);
+        this.lastGeneralInfo = await this.extractGeneralInfo(caseNumber);
+        if (this.lastGeneralInfo) {
+          console.log(`✅ [일반내용] 추출 완료 (${this.browserId})`);
+        } else {
+          console.log(`⚠️ [일반내용] 추출 결과 없음 (${this.browserId})`);
+        }
+      } catch (genErr) {
+        console.log(`⚠️ [일반내용] 추출 예외(무시하고 진행): ${genErr.message}`);
+        this.lastGeneralInfo = null;
       }
 
       // 1. "진행내용" 탭 클릭 (듀얼 전략)

@@ -161,6 +161,27 @@ class CaseRow:
                 pass
             tb.configure(state="disabled")
             components[f"label_info_{internal_idx}"] = tb
+
+            # 피고/사건명(내부 인덱스 2) 칸 아래쪽에 일반내용 돋보기 버튼
+            # place()로 기존 grid 배치 위에 겹쳐 올려 레이아웃을 깨지 않음
+            if internal_idx == 2:
+                from gui.utils.glyphs import sanitize as _sanitize_glyph
+
+                # 🔍 이모지는 glyphs에서 제거될 수 있으므로 안전한 대체문자 사용
+                mag_text = _sanitize_glyph("🔍") or "보기"
+                if not mag_text.strip():
+                    mag_text = "보기"
+                ctk.CTkButton(
+                    fi,
+                    text=mag_text,
+                    font=ctk.CTkFont(family="맑은 고딕", size=11),
+                    fg_color=app.get_theme_color("accent"),
+                    hover_color=app.get_theme_color("accent"),
+                    width=40,
+                    height=20,
+                    cursor="hand2",
+                    command=lambda idx=index: app._open_general_info(idx),
+                ).place(relx=0.5, rely=0.90, anchor=tk.CENTER)
             
         # 3. 기일 (update_history.json 캐시에서 읽음)
         # 기일 정보가 없을 경우 '기일 미정'으로 표기. 드래그 선택 후 복사 가능.

@@ -54,6 +54,7 @@ from gui.dialogs.settings_dialog import SettingsDialog
 from gui.dialogs.find_dialog import FindDialog
 from gui.dialogs.sheet_viewer_dialog import SheetViewerDialog
 from gui.dialogs.case_list_manage_dialog import CaseListManageDialog
+from gui.dialogs.general_info_dialog import GeneralInfoDialog
 from gui.panels import (
     HeaderPanel,
     ControlPanel,
@@ -480,6 +481,20 @@ class AppController:
             self.case_list[case_index],
             self.google_sheets_service,
             self.get_theme_color
+        )
+
+    def _open_general_info(self, case_index):
+        """
+        피고/사건명 칸의 돋보기 버튼 → 일반내용 창 열기.
+        sheet_viewer와 동일하게 행 인덱스만 받아 case_list에서 조회합니다.
+        """
+        if case_index < 0 or case_index >= len(self.case_list):
+            return
+        GeneralInfoDialog(
+            self.root,
+            self.case_list[case_index],
+            self.get_theme_color,
+            app=self,
         )
 
     def select_all_cases(self):
