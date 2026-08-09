@@ -80,8 +80,11 @@ class PuppeteerService:
             base_dir = config.get_base_dir()
 
             # 프로세스 실행 (stdin 파이프 연결 필수)
-            process = subprocess.Popen(
-                cmd,
+            # 주니어 참고:
+            # Windows에서 node.exe를 띄우면 기본적으로 검은 콘솔 창이 열립니다.
+            # CREATE_NO_WINDOW 를 주면 창 없이 백그라운드로만 실행됩니다.
+            # stdin/stdout 파이프는 그대로라서 CaseIng과의 통신은 변하지 않습니다.
+            popen_kwargs = dict(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -91,6 +94,10 @@ class PuppeteerService:
                 bufsize=1,  # 라인 버퍼링
                 cwd=base_dir,
             )
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+            process = subprocess.Popen(cmd, **popen_kwargs)
 
             # 프로세스 관리 목록에 등록
             self.running_processes[case_number] = process
