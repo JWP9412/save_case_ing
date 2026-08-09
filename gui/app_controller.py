@@ -731,6 +731,94 @@ class AppController:
         """선택 사건 시트-대법원 대조. Delegated to batch_actions."""
         batch_actions_module.run_sheet_compare_for_selected_cases(self)
 
+    def check_app_update(self):
+        """
+        GitHub 최신 릴리스와 로컬 APP_VERSION을 비교합니다.
+        네트워크 요청은 백그라운드 스레드에서 수행해 UI가 멈추지 않게 합니다.
+        """
+        import threading
+        import webbrowser
+        from services.update_checker import check_for_update
+        from gui.utils.glyphs import sanitize as _sanitize
+
+        btn = getattr(self, "update_check_btn", None)
+        if btn is not None:
+            try:
+                self._set_control_btn_state(btn, False)
+                btn.configure(text="확인 중...")
+            except Exception:
+                pass
+
+        def _worker():
+            result = check_for_update()
+
+            def _show():
+                if btn is not None:
+                    try:
+                        btn.configure(
+                            text=_sanitize(
+                                getattr(config, "BTN_TEXT_CHECK_UPDATE", "버전 업데이트 확인")
+                            )
+                        )
+                        self._set_control_btn_state(btn, True)
+                    except Exception:
+                        pass
+
+                if not result.get("ok"):
+                    messagebox.showerror(
+                        "버전 업데이트 확인",
+                        f"확인에 실패했습니다.\n\n{result.get('error', '알 수 없는 오류')}",
+                        parent=self.root,
+                    )
+                    return
+
+                status = result.get("status")
+                local = result.get("local", "")
+                remote = result.get("remote", "")
+                url = result.get("html_url") or getattr(
+                    config, "GITHUB_RELEASES_PAGE_URL", ""
+                )
+
+                if status == "update_available":
+                    open_page = messagebox.askyesno(
+                        "버전 업데이트 확인",
+                        f"새 버전이 있습니다.\n\n"
+                        f"현재 버전: {local}\n"
+                        f"최신 버전: {remote}\n\n"
+                        f"릴리스 페이지를 열까요?",
+                        parent=self.root,
+                    )
+                    if open_page and url:
+                        try:
+                            webbrowser.open(url)
+                        except Exception as e:
+                            messagebox.showwarning(
+                                "버전 업데이트 확인",
+                                f"브라우저를 열지 못했습니다.\n{e}\n\n{url}",
+                                parent=self.root,
+                            )
+                elif status == "ahead":
+                    messagebox.showinfo(
+                        "버전 업데이트 확인",
+                        f"로컬 버전이 GitHub 최신보다 높습니다.\n\n"
+                        f"현재 버전: {local}\n"
+                        f"GitHub 최신: {remote}",
+                        parent=self.root,
+                    )
+                else:
+                    messagebox.showinfo(
+                        "버전 업데이트 확인",
+                        f"최신 버전을 사용 중입니다.\n\n현재 버전: {local}",
+                        parent=self.root,
+                    )
+
+            try:
+                self.root.after(0, _show)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def processing_completed(self):
         """Finish processing. Delegated to ui_queue_manager."""
         ui_queue_manager_module.processing_completed(self)

@@ -2,12 +2,16 @@
 """
 제어 패널 (Control Panel)
 =========================
-새로고침, 사건 기록 수집, 캡차 입력 완료, 처리 중지, 기간 조회, 시트 대조 버튼을 배치합니다.
+새로고침, 사건 기록 수집, 캡차 입력 완료, 처리 중지,
+사건 시트 관리(드롭다운), 기간 조회, 버전 업데이트 확인 버튼을 배치합니다.
+
 Why: 사용자가 구글 시트 로드·수집·처리·중지를 한 곳에서 제어할 수 있게 합니다.
 
 주니어 개발자 참고:
 - 버튼 문구는 config.BTN_TEXT_* 상수를 사용합니다(깨지는 이모지 제거).
 - glyphs.sanitize()로 한 번 더 감싸 혹시 남은 이모지도 정리합니다.
+- '사건 시트 관리'는 CTkOptionMenu가 아니라 tk.Menu 팝업입니다.
+  (값을 고르는 UI가 아니라 액션을 실행하는 UI이기 때문입니다.)
 """
 import tkinter as tk
 import customtkinter as ctk
@@ -151,45 +155,64 @@ class ControlPanel:
         row2.pack(fill=tk.X, padx=0, pady=(0, 6))
         row2.pack_propagate(False)
 
-        # 중복 오류 제거: 선택 사건 시트에서 동일 진행내용 행 정리
-        if hasattr(app, "remove_duplicates_for_selected_cases"):
-            app.dedup_btn = ctk.CTkButton(
-                row2,
-                text=sanitize(config.BTN_TEXT_DEDUP),
-                font=btn_font,
-                width=ControlPanel.BTN_W,
-                height=ControlPanel.BTN_H,
-                corner_radius=ControlPanel.BTN_CORNER_RADIUS,
-                cursor="hand2",
-                fg_color="#8E44AD",
-                hover_color="#7D3C98",
-                text_color="#FFFFFF",
-                command=app.remove_duplicates_for_selected_cases,
+        # --- 사건 시트 관리: 클릭 시 드롭다운(팝업 메뉴) ---
+        has_sheet_actions = any(
+            hasattr(app, name)
+            for name in (
+                "remove_duplicates_for_selected_cases",
+                "reset_and_refetch_selected_cases",
+                "run_sheet_compare_for_selected_cases",
             )
-            app._control_btn_colors[app.dedup_btn] = ("#8E44AD", "#7D3C98", "#FFFFFF")
-            app.dedup_btn.pack(
-                side=tk.LEFT,
-                padx=(0, 10),
-                pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
-            )
+        )
+        if has_sheet_actions:
+            def _open_sheet_mgmt_menu():
+                # tearoff=0: 메뉴 위쪽 점선(분리) 제거
+                menu = tk.Menu(control_frame, tearoff=0)
+                if hasattr(app, "remove_duplicates_for_selected_cases"):
+                    menu.add_command(
+                        label=sanitize(config.BTN_TEXT_DEDUP),
+                        command=app.remove_duplicates_for_selected_cases,
+                    )
+                if hasattr(app, "reset_and_refetch_selected_cases"):
+                    menu.add_command(
+                        label=sanitize(config.BTN_TEXT_RESET),
+                        command=app.reset_and_refetch_selected_cases,
+                    )
+                if hasattr(app, "run_sheet_compare_for_selected_cases"):
+                    menu.add_command(
+                        label=sanitize(config.BTN_TEXT_COMPARE),
+                        command=app.run_sheet_compare_for_selected_cases,
+                    )
+                try:
+                    # 버튼 바로 아래에 메뉴 표시
+                    app.sheet_mgmt_btn.update_idletasks()
+                    x = app.sheet_mgmt_btn.winfo_rootx()
+                    y = (
+                        app.sheet_mgmt_btn.winfo_rooty()
+                        + app.sheet_mgmt_btn.winfo_height()
+                    )
+                    menu.tk_popup(x, y)
+                finally:
+                    try:
+                        menu.grab_release()
+                    except Exception:
+                        pass
 
-        # 기록 초기화 후 대법원에서 처음부터 다시 수집
-        if hasattr(app, "reset_and_refetch_selected_cases"):
-            app.reset_btn = ctk.CTkButton(
+            app.sheet_mgmt_btn = ctk.CTkButton(
                 row2,
-                text=sanitize(config.BTN_TEXT_RESET),
+                text=sanitize(getattr(config, "BTN_TEXT_SHEET_MGMT", "사건 시트 관리")),
                 font=btn_font,
                 width=ControlPanel.BTN_W,
                 height=ControlPanel.BTN_H,
                 corner_radius=ControlPanel.BTN_CORNER_RADIUS,
                 cursor="hand2",
-                fg_color="#C0392B",
-                hover_color="#A93226",
+                fg_color="#2980B9",
+                hover_color="#1F618D",
                 text_color="#FFFFFF",
-                command=app.reset_and_refetch_selected_cases,
+                command=_open_sheet_mgmt_menu,
             )
-            app._control_btn_colors[app.reset_btn] = ("#C0392B", "#A93226", "#FFFFFF")
-            app.reset_btn.pack(
+            app._control_btn_colors[app.sheet_mgmt_btn] = ("#2980B9", "#1F618D", "#FFFFFF")
+            app.sheet_mgmt_btn.pack(
                 side=tk.LEFT,
                 padx=(0, 10),
                 pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
@@ -230,7 +253,7 @@ class ControlPanel:
             )
             settings_btn.pack(side=tk.LEFT, padx=(0, 0), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
 
-        # --- 3행: 특정 기간 조회 / 시트-대법원 대조 ---
+        # --- 3행: 특정 기간 조회 / 버전 업데이트 확인 ---
         row3 = ctk.CTkFrame(control_frame, fg_color="transparent", height=ControlPanel.ROW_H)
         row3.pack(fill=tk.X, padx=0, pady=(0, 10))
         row3.pack_propagate(False)
@@ -256,22 +279,24 @@ class ControlPanel:
                 pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
             )
 
-        if hasattr(app, "run_sheet_compare_for_selected_cases"):
-            app.compare_btn = ctk.CTkButton(
+        if hasattr(app, "check_app_update"):
+            app.update_check_btn = ctk.CTkButton(
                 row3,
-                text=sanitize(config.BTN_TEXT_COMPARE),
+                text=sanitize(
+                    getattr(config, "BTN_TEXT_CHECK_UPDATE", "버전 업데이트 확인")
+                ),
                 font=btn_font,
                 width=ControlPanel.BTN_W,
                 height=ControlPanel.BTN_H,
                 corner_radius=ControlPanel.BTN_CORNER_RADIUS,
                 cursor="hand2",
-                fg_color="#2980B9",
-                hover_color="#1F618D",
+                fg_color="#7F8C8D",
+                hover_color="#5D6D7E",
                 text_color="#FFFFFF",
-                command=app.run_sheet_compare_for_selected_cases,
+                command=app.check_app_update,
             )
-            app._control_btn_colors[app.compare_btn] = ("#2980B9", "#1F618D", "#FFFFFF")
-            app.compare_btn.pack(
+            app._control_btn_colors[app.update_check_btn] = ("#7F8C8D", "#5D6D7E", "#FFFFFF")
+            app.update_check_btn.pack(
                 side=tk.LEFT,
                 padx=(0, 10),
                 pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,

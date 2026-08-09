@@ -339,7 +339,38 @@ class GeneralInfoDialog(tk.Toplevel):
         tb.configure(state="disabled")
         tb.pack(fill=tk.X)
 
+    def _cell_value_for_header(self, row, header, col_index):
+        """
+        행 dict에서 헤더에 맞는 값을 찾습니다.
+
+        주니어 참고:
+        1) 키 정확 일치
+        2) 공백 제거한 키 / 부분 일치
+        3) 그래도 없으면 행 값을 열 인덱스 순으로 사용 (스크래핑 키가 깨진 경우)
+        """
+        if not isinstance(row, dict):
+            return ""
+        if header in row:
+            return str(row.get(header) or "")
+        norm_h = "".join(str(header).split())
+        for k, v in row.items():
+            nk = "".join(str(k).split())
+            if nk == norm_h or (norm_h and (norm_h in nk or nk in norm_h)):
+                return str(v or "")
+        values = list(row.values())
+        if 0 <= col_index < len(values):
+            return str(values[col_index] or "")
+        return ""
+
     def _render_table(self, preferred_headers, rows, empty_msg="내용이 없습니다."):
+        """
+        표 렌더: pack이 아니라 grid로 열을 고정합니다.
+
+        주니어 참고:
+        pack(expand=True)는 글자 길이에 따라 칸 시작 폭이 달라져
+        헤더 행과 데이터 행의 열 경계가 어긋납니다.
+        grid + uniform 을 쓰면 같은 표 안에서는 열이 항상 맞습니다.
+        """
         bg = self._c("bg_primary")
         row_bg = self._c("bg_white", "#1E1E1E")
         header_bg = self._c("bg_header", "#2C3E50")
@@ -357,14 +388,19 @@ class GeneralInfoDialog(tk.Toplevel):
             ).pack(anchor="w", padx=12, pady=4)
             return
 
-        # 헤더: 첫 행의 키 중 preferred 우선, 없으면 실제 키 사용
-        actual_keys = list(rows[0].keys()) if rows else []
-        headers = [h for h in preferred_headers if h in actual_keys]
-        for k in actual_keys:
-            if k not in headers:
-                headers.append(k)
-        if not headers:
-            headers = preferred_headers
+        # 열 순서는 preferred_headers로 고정 (키 불일치여도 빈 칸으로 유지)
+        headers = list(preferred_headers) if preferred_headers else []
+        if not headers and rows:
+            headers = list(rows[0].keys())
+
+        n = max(len(headers), 1)
+        # 열 비중: 앞쪽(일자·구분)은 좁게, 내용/이름 쪽은 넓게
+        if n == 2:
+            weights = [1, 4]
+        elif n == 5:
+            weights = [2, 1, 2, 2, 2]
+        else:
+            weights = [1] * n
 
         wrap = tk.Frame(self.content, bg=border)
         wrap.pack(fill=tk.X, padx=8, pady=2)
@@ -372,7 +408,8 @@ class GeneralInfoDialog(tk.Toplevel):
         # 헤더 행
         hrow = tk.Frame(wrap, bg=header_bg)
         hrow.pack(fill=tk.X, padx=1, pady=1)
-        for h in headers:
+        for i, h in enumerate(headers):
+            hrow.grid_columnconfigure(i, weight=weights[i], uniform="gi_cols")
             tk.Label(
                 hrow,
                 text=h,
@@ -380,16 +417,19 @@ class GeneralInfoDialog(tk.Toplevel):
                 fg="#FFFFFF",
                 bg=header_bg,
                 anchor="center",
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=3)
+            ).grid(row=0, column=i, sticky="nsew", padx=2, pady=3)
 
         for row in rows:
             rframe = tk.Frame(wrap, bg=row_bg)
             rframe.pack(fill=tk.X, padx=1, pady=1)
-            for h in headers:
-                val = str(row.get(h, "") or "")
+            for i, h in enumerate(headers):
+                rframe.grid_columnconfigure(i, weight=weights[i], uniform="gi_cols")
+                val = self._cell_value_for_header(row, h, i)
+                # 긴 텍스트면 줄 수를 조금 늘림 (대략 22자당 1줄)
+                lines = max(1, min(4, (len(val) // 22) + 1)) if val else 1
                 tb = tk.Text(
                     rframe,
-                    height=1,
+                    height=lines,
                     wrap="word",
                     font=("맑은 고딕", 9),
                     fg=text_main,
@@ -400,7 +440,7 @@ class GeneralInfoDialog(tk.Toplevel):
                 )
                 tb.insert("1.0", val)
                 tb.configure(state="disabled")
-                tb.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=2)
+                tb.grid(row=0, column=i, sticky="nsew", padx=2, pady=2)
 
     def _on_refresh_parties(self):
         """

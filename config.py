@@ -41,7 +41,7 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.12.1"
+APP_VERSION = "4.12.2"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -65,7 +65,19 @@ BTN_TEXT_EMAIL = "모든 사건 메일 발송"
 BTN_TEXT_SETTINGS = "설정"
 BTN_TEXT_PERIOD = "특정 기간 조회"
 BTN_TEXT_COMPARE = "시트-대법원 대조"
+BTN_TEXT_SHEET_MGMT = "사건 시트 관리"
+BTN_TEXT_CHECK_UPDATE = "버전 업데이트 확인"
 BTN_TEXT_CONTROL_TITLE = "제어 패널"
+
+# GitHub 릴리스/태그 (버전 업데이트 확인용)
+# 참고: Releases가 비어 있으면 tags API로 폴백합니다.
+GITHUB_REPO = "JWP9412/save_case_ing"
+GITHUB_RELEASES_LATEST_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+)
+GITHUB_TAGS_URL = f"https://api.github.com/repos/{GITHUB_REPO}/tags?per_page=30"
+GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
+GITHUB_TAGS_PAGE_URL = f"https://github.com/{GITHUB_REPO}/tags"
 # 제목 배너 이미지 경로 (없으면 텍스트 헤더 사용)
 HEADER_IMAGE_PATH = "./assets/title_banner.png"
 # 앱 아이콘 (창·작업표시줄·exe). BASE_DIR 기준 상대경로.
