@@ -41,7 +41,7 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.12.2"
+APP_VERSION = "4.13.0"
 # 창 제목 및 헤더 제목에 쓰는 이름
 APP_TITLE = "사건 일괄 처리 시스템"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -65,7 +65,7 @@ BTN_TEXT_EMAIL = "모든 사건 메일 발송"
 BTN_TEXT_SETTINGS = "설정"
 BTN_TEXT_PERIOD = "특정 기간 조회"
 BTN_TEXT_COMPARE = "시트-대법원 대조"
-BTN_TEXT_SHEET_MGMT = "사건 시트 관리"
+BTN_TEXT_SHEET_MGMT = "사건 시트 관리 ▾"
 BTN_TEXT_CHECK_UPDATE = "버전 업데이트 확인"
 BTN_TEXT_CONTROL_TITLE = "제어 패널"
 

@@ -340,6 +340,7 @@ class GoogleSheetsService:
                 if len(all_values[i]) > 0 and str(all_values[i][0]).strip() in (
                     "업데이트 일시",
                     "최근 과거 업데이트",
+                    "최근 조회 일시",
                 ):
                     rows_to_delete.append(i + 1)
             for row_1based in sorted(rows_to_delete, reverse=True):
@@ -378,16 +379,19 @@ class GoogleSheetsService:
         self, worksheet, start_row_1based, num_cols=6
     ):
         """
-        빈 행과 '업데이트 일시' 행을 지정 행부터 A열 기준으로 기록합니다.
+        빈 행 + '업데이트 일시' + '최근 조회 일시' 를 지정 행부터 A열 기준으로 기록합니다.
 
         주니어 개발자 참고:
-        append_rows 대신 update를 쓰는 이유는 save_progress_data와 동일하게
-        열 밀림(우측 열에 붙는 현상)을 막기 위함입니다.
+        - append_rows 대신 update를 쓰는 이유는 save_progress_data와 동일하게
+          열 밀림(우측 열에 붙는 현상)을 막기 위함입니다.
+        - 업데이트 일시: 진행내용을 덮어쓴 시각
+        - 최근 조회 일시: 대법원 조회(크롤링) 시각 (기간조회·변경없음에도 갱신)
         """
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         empty_rows = [[""] * num_cols for _ in range(config.EMPTY_ROWS_BEFORE_UPDATE)]
         rows_to_write = empty_rows + [
-            ["업데이트 일시", current_time, "", "", "", ""][:num_cols]
+            ["업데이트 일시", current_time, "", "", "", ""][:num_cols],
+            ["최근 조회 일시", current_time, "", "", "", ""][:num_cols],
         ]
         end_col = _a1_end_column_letter(num_cols)
         end_row = start_row_1based + len(rows_to_write) - 1
@@ -434,13 +438,14 @@ class GoogleSheetsService:
                     result_data, start_row_1based
                 )
                 n_new = len(processed_new_data)
-                # 타임스탬프 행 = 데이터 직후 빈 행(EMPTY_ROWS_BEFORE_UPDATE) 다음 한 줄
+                # 타임스탬프 시작 행 = 데이터 직후 빈 행 다음 ('업데이트 일시')
+                # 그 아래 한 줄이 '최근 조회 일시' → +2 여유
                 timestamp_row_1based = (
                     start_row_1based
                     + n_new
                     + config.EMPTY_ROWS_BEFORE_UPDATE
                 )
-                self._ensure_worksheet_rows(worksheet, timestamp_row_1based + 2)
+                self._ensure_worksheet_rows(worksheet, timestamp_row_1based + 3)
 
                 end_col = _a1_end_column_letter(6)
                 end_data_row = start_row_1based + n_new - 1
@@ -566,8 +571,12 @@ class GoogleSheetsService:
                     })
 
                 n_new = len(processed_rows)
+                # '업데이트 일시' 행 번호 (그 다음 행이 '최근 조회 일시')
                 timestamp_row_1based = data_start + n_new + config.EMPTY_ROWS_BEFORE_UPDATE
-                self._ensure_worksheet_rows(worksheet, max(timestamp_row_1based + 2, old_row_count))
+                last_footer_row = timestamp_row_1based + 1  # 최근 조회 일시
+                self._ensure_worksheet_rows(
+                    worksheet, max(last_footer_row + 1, old_row_count)
+                )
 
                 end_col = _a1_end_column_letter(6)
 
@@ -581,19 +590,19 @@ class GoogleSheetsService:
                         value_input_option="USER_ENTERED",
                     )
 
-                # 2) 빈 행 + '업데이트 일시' 행
+                # 2) 빈 행 + '업데이트 일시' + '최근 조회 일시'
                 after_data_row = data_start + n_new
                 self._append_empty_and_timestamp_rows(
                     worksheet, after_data_row, num_cols=6
                 )
 
-                # 3) 새 블록(타임스탬프 행) 아래로 남은 옛 A:F 행을 빈 값으로 정리 (G열 메모는 보존)
-                if old_row_count > timestamp_row_1based:
-                    clear_count = old_row_count - timestamp_row_1based
+                # 3) footer(2행) 아래로 남은 옛 A:F 행을 빈 값으로 정리 (G열 메모는 보존)
+                if old_row_count > last_footer_row:
+                    clear_count = old_row_count - last_footer_row
                     blank_rows = [[""] * 6 for _ in range(clear_count)]
                     self._throttle_api()
                     worksheet.update(
-                        f"A{timestamp_row_1based + 1}:{end_col}{old_row_count}",
+                        f"A{last_footer_row + 1}:{end_col}{old_row_count}",
                         blank_rows,
                         value_input_option="USER_ENTERED",
                     )
@@ -854,7 +863,7 @@ class GoogleSheetsService:
         if len(all_values) <= 1:
             return None
 
-        skip_first_col_values = ("업데이트 일시", "최근 과거 업데이트")
+        skip_first_col_values = ("업데이트 일시", "최근 과거 업데이트", "최근 조회 일시")
         for i in range(len(all_values) - 1, 0, -1):
             row = all_values[i]
             if not row or len(row) < 2:
@@ -1098,7 +1107,14 @@ class GoogleSheetsService:
         first_cell = cls._normalize_sheet_cell(row[0] if len(row) > 0 else "")
         if not first_cell:
             return False
-        if first_cell in ("업데이트일시", "업데이트 일시", "최근 과거 업데이트", "일자"):
+        if first_cell in (
+            "업데이트일시",
+            "업데이트 일시",
+            "최근 과거 업데이트",
+            "최근 조회 일시",
+            "최근조회일시",
+            "일자",
+        ):
             return False
         return True
 
@@ -1186,6 +1202,61 @@ class GoogleSheetsService:
             "removed": removed_count,
             "message": f"대법원 기록과 대조하여 중복 {removed_count}행 제거",
         }
+
+    @retry_on_quota_error()
+    def touch_last_query_time(self, case):
+        """
+        진행내용(A:F 데이터)은 건드리지 않고 '최근 조회 일시'만 갱신합니다.
+
+        주니어 개발자 참고:
+        - 기간조회·변경없음처럼 시트를 덮어쓰지 않는 경로에서 호출합니다.
+        - 행이 없으면 '업데이트 일시' 바로 아래(또는 시트 맨 아래)에 새로 씁니다.
+        """
+        with self._save_lock:
+            try:
+                case_number = case.get("사건번호", "") if isinstance(case, dict) else str(case)
+                worksheet_name = self._get_case_worksheet_name(case)
+                spreadsheet = self._get_spreadsheet()
+                try:
+                    worksheet = spreadsheet.worksheet(worksheet_name)
+                except gspread.WorksheetNotFound:
+                    self._log(f"⚠️ 최근 조회 일시: 시트 없음 ({case_number})")
+                    return False
+
+                self._throttle_api()
+                all_values = worksheet.get_all_values()
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                label = "최근 조회 일시"
+
+                query_row_1based = None
+                update_row_1based = None
+                for i, row in enumerate(all_values):
+                    first = str(row[0]).strip() if row else ""
+                    if first == label:
+                        query_row_1based = i + 1
+                    elif first == "업데이트 일시":
+                        update_row_1based = i + 1
+
+                if query_row_1based is not None:
+                    target_row = query_row_1based
+                elif update_row_1based is not None:
+                    target_row = update_row_1based + 1
+                else:
+                    # footer가 전혀 없으면 맨 아래(+빈 행 1칸)에만 조회 시각을 남김
+                    target_row = len(all_values) + 2
+
+                self._ensure_worksheet_rows(worksheet, target_row + 1)
+                self._throttle_api()
+                worksheet.update(
+                    f"A{target_row}:B{target_row}",
+                    [[label, current_time]],
+                    value_input_option="USER_ENTERED",
+                )
+                self._log(f"🕒 최근 조회 일시 갱신: {case_number} → {current_time}")
+                return True
+            except Exception as e:
+                self._log(f"⚠️ 최근 조회 일시 갱신 실패: {e}")
+                return False
 
     def overwrite_sheet_data(self, case, data):
         """

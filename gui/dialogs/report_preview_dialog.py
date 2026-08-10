@@ -67,14 +67,9 @@ class ReportPreviewDialog(ctk.CTkToplevel):
 
         self.tabs = ctk.CTkTabview(self)
         self.tabs.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.tabs.add("HTML")
+        # Markdown을 먼저 두고 기본 선택 (요청: MD 기본값)
         self.tabs.add("Markdown")
-
-        self.html_box = ctk.CTkTextbox(
-            self.tabs.tab("HTML"), font=ctk.CTkFont(family="Consolas", size=12)
-        )
-        self.html_box.pack(fill=tk.BOTH, expand=True)
-        self.html_box.insert("1.0", self.html_text)
+        self.tabs.add("HTML")
 
         self.md_box = ctk.CTkTextbox(
             self.tabs.tab("Markdown"), font=ctk.CTkFont(family="Consolas", size=12)
@@ -82,11 +77,22 @@ class ReportPreviewDialog(ctk.CTkToplevel):
         self.md_box.pack(fill=tk.BOTH, expand=True)
         self.md_box.insert("1.0", self.markdown_text)
 
+        self.html_box = ctk.CTkTextbox(
+            self.tabs.tab("HTML"), font=ctk.CTkFont(family="Consolas", size=12)
+        )
+        self.html_box.pack(fill=tk.BOTH, expand=True)
+        self.html_box.insert("1.0", self.html_text)
+
+        try:
+            self.tabs.set("Markdown")
+        except Exception:
+            pass
+
     def _current_is_html(self) -> bool:
         try:
             return self.tabs.get() == "HTML"
         except Exception:
-            return True
+            return False
 
     def _open_browser(self):
         path = os.path.join(tempfile.gettempdir(), "case_ing_report_preview.html")

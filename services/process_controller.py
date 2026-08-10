@@ -621,6 +621,8 @@ class ProcessController:
             lanes[lane].append((case, case_index))
 
         def run_lane(lane_index, queue):
+            # 레인마다 시작 시점을 살짝 어긋내 동시 Chrome launch 폭주를 줄입니다.
+            time.sleep(0.25 * (lane_index % 8))
             for case, case_index in queue:
                 if not self.app.processing:
                     return
@@ -649,8 +651,6 @@ class ProcessController:
         if (is_period or is_compare) and not auto_started:
             # 선택 사건 대부분이 CLICK으로 이미 _process_auto_case 를 탄 상태
             self._show_special_mode_report()
-            self.app.is_period_mode = False
-            self.app.is_compare_mode = False
         elif not is_period and not is_compare:
             self.app.ui_queue.put(
                 ("function", (self.app.show_info, "선택한 모든 작업 조회 완료!"), {})
@@ -669,7 +669,8 @@ class ProcessController:
         self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.stop_btn, False), {}))
         if not is_period and not is_compare:
             self._save_run_result_for_email(cases)
-            self._check_and_prompt_failed_cases(cases)
+        # 기간/대조에서도 실패 건 재실행 확인 (플래그는 콜백에서 유지/해제)
+        self._check_and_prompt_failed_cases(cases)
 
     def _save_run_result_for_email(self, processed_cases):
         """
@@ -725,33 +726,73 @@ class ProcessController:
         email_manager_module.record_run_results(results)
 
     def _check_and_prompt_failed_cases(self, processed_cases):
-        """처리된 사건 중 실패/오류/재입력대기 상태인 사건들을 찾아 재실행 여부를 묻습니다."""
+        """
+        처리된 사건 중 실패/오류/재입력대기 상태인 사건들을 찾아 재실행 여부를 묻습니다.
+
+        주니어 참고:
+        - 기간/대조 모드에서도 호출됩니다. '예'면 is_period_mode 등을 유지한 채
+          실패 건만 다시 start_batch_processing 합니다.
+        - '아니오'이거나 실패가 없으면 특수 모드 플래그를 해제합니다.
+        """
         failed_cases = []
         for case in processed_cases:
             case_number = case.get("사건번호", "")
             case_index = self.app.find_case_index(case_number)
-            if case_index != -1 and case_index in self.app.case_status:
-                status_text = self.app.get_case_status_text(case_index)
-                if any(keyword in status_text for keyword in ["실패", "오류", "취소", "재입력대기"]):
+            if case_index != -1 and case_index in getattr(self.app, "case_status", {}):
+                status_text = self.app.get_case_status_text(case_index) or ""
+                if any(
+                    keyword in status_text
+                    for keyword in ["실패", "오류", "취소", "재입력대기", "타임아웃"]
+                ):
                     failed_cases.append((case_index, case_number))
 
+        was_period = getattr(self.app, "is_period_mode", False)
+        was_compare = getattr(self.app, "is_compare_mode", False)
+        saved_period_range = getattr(self.app, "period_range", None)
+
+        def _clear_special_flags():
+            if hasattr(self.app, "is_period_mode"):
+                self.app.is_period_mode = False
+            if hasattr(self.app, "is_compare_mode"):
+                self.app.is_compare_mode = False
+
         if not failed_cases:
+            _clear_special_flags()
             return
 
         def _show_prompt():
             failed_msg = "\n".join([f"- {num}" for _, num in failed_cases])
+            mode_hint = ""
+            if was_period:
+                mode_hint = "\n(기간 조회 모드로 다시 실행됩니다)"
+            elif was_compare:
+                mode_hint = "\n(시트 대조 모드로 다시 실행됩니다)"
             prompt_msg = (
-                f"총 {len(failed_cases)}건의 사건 처리에 실패했습니다.\n\n[실패 목록]\n{failed_msg}\n\n"
-                "실패한 사건들만 다시 실행하시겠습니까?"
+                f"총 {len(failed_cases)}건의 사건 처리에 실패했습니다.\n\n"
+                f"[실패 목록]\n{failed_msg}\n\n"
+                f"실패한 사건들만 다시 실행하시겠습니까?{mode_hint}"
             )
             if self.app.ask_yesno("재실행 확인", prompt_msg):
                 self.app.log_message(f"🔄 실패한 {len(failed_cases)}건 재실행 시작")
+                # 특수 모드 유지 (배치가 같은 경로로 돌도록)
+                if was_period:
+                    self.app.is_period_mode = True
+                    if saved_period_range is not None:
+                        self.app.period_range = saved_period_range
+                    if not getattr(self.app, "period_results", None):
+                        self.app.period_results = {}
+                if was_compare:
+                    self.app.is_compare_mode = True
+                    if not getattr(self.app, "compare_results", None):
+                        self.app.compare_results = {}
                 self.app.deselect_all_cases()
                 for case_idx, _ in failed_cases:
                     if case_idx in self.app.case_checkboxes:
                         self.app.case_checkboxes[case_idx].set(True)
                 self.app.header_select_all_var.set(False)
                 self.app.start_batch_processing()
+            else:
+                _clear_special_flags()
 
         self.app.ui_queue.put(("function", (_show_prompt,), {}))
 
@@ -805,30 +846,46 @@ class ProcessController:
         """CLI 전용: 브라우저 기동 후 바로 'CLICK' 명령을 전송합니다."""
         case_number = case.get("사건번호", "")
         profile_index = self.get_case_profile_index(case_number)
-        
+        locks = getattr(self.app, "profile_locks", None)
+        lock = None
+        if locks and 0 <= profile_index < len(locks):
+            lock = locks[profile_index]
+
         try:
             self.app.case_start_times[case_index] = time.time()
             self.app.update_case_status(case_index, "처리중(캡차로딩)", "orange", "🔄")
 
-            with self.app.profile_locks[profile_index]:
+            if lock is not None:
+                lock.acquire()
+            try:
                 # 브라우저 기동 및 캡차 캡처 (스마트 스킵 시 '__CLICK__' 반환)
-                result_data = self.execute_case_processing_with_captcha(case, case_index, profile_index)
+                result_data = self.execute_case_processing_with_captcha(
+                    case, case_index, profile_index
+                )
 
-            elapsed_time = int(time.time() - self.app.case_start_times[case_index])
+                elapsed_time = int(time.time() - self.app.case_start_times[case_index])
 
-            if result_data == "__CLICK__":
-                self.app.update_case_status(case_index, "입력완료", "green", "⚡")
-                self.app.log_message(f"⚡ 캡차 스킵: {case_number} (자동 클릭 준비 완료)")
-                # 브라우저가 정상적으로 떴으므로 CLICK 전송 및 크롤링 실행
-                return self._process_auto_case(case, case_index)
-            elif result_data:
-                # 일반 캡차 이미지가 반환된 경우 (CLI 모드는 CLICK 전용이므로 실패 처리)
-                self.app.log_message(f"⚠️ 스마트 스킵 불가 (일반 캡차 발생): {case_number}")
-                return "captcha"
-            else:
-                self.app.update_case_status(case_index, f"실패 ({elapsed_time}초)", "red", "❌")
-                self.app.log_message(f"❌ 캡차 이미지 로딩 실패: {case_number}")
-                return "fail"
+                if result_data == "__CLICK__":
+                    self.app.update_case_status(case_index, "입력완료", "green", "⚡")
+                    self.app.log_message(f"⚡ 캡차 스킵: {case_number} (자동 클릭 준비 완료)")
+                    # 브라우저가 살아있는 동안 같은 프로필 락을 유지합니다.
+                    return self._process_auto_case(case, case_index)
+                elif result_data:
+                    # 일반 캡차 이미지가 반환된 경우 (CLI 모드는 CLICK 전용이므로 실패 처리)
+                    self.app.log_message(f"⚠️ 스마트 스킵 불가 (일반 캡차 발생): {case_number}")
+                    self.cleanup_case_process(case_number)
+                    return "captcha"
+                else:
+                    self.app.update_case_status(case_index, f"실패 ({elapsed_time}초)", "red", "❌")
+                    self.app.log_message(f"❌ 캡차 이미지 로딩 실패: {case_number}")
+                    self.cleanup_case_process(case_number)
+                    return "fail"
+            finally:
+                if lock is not None:
+                    try:
+                        lock.release()
+                    except RuntimeError:
+                        pass
 
         except Exception as e:
             elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
@@ -837,63 +894,105 @@ class ProcessController:
             return "fail"
 
     def process_single_case_parallel(self, case, case_index, instance_index=0):
-        """병렬 처리용 단일 사건: 캡차 캡처 후 대기 또는 자동 처리."""
+        """
+        병렬 처리용 단일 사건: 캡차 캡처 후 대기 또는 자동 처리.
+
+        주니어 참고:
+        - instance_index(레인)를 userDataDir(instance_N)와 동일하게 씁니다.
+          예전처럼 사건번호 해시 % 20 이면 다른 레인이 같은 폴더를 열어 Code 21이 납니다.
+        - 프로필 락은 브라우저 cleanup 까지 유지합니다(CLICK/캡차대기 포함).
+        """
         case_number = case.get("사건번호", "")
-        profile_index = self.get_case_profile_index(case_number)
+        max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+        # 레인 인덱스 = Chromium userDataDir 인덱스
+        profile_index = int(instance_index) % max(1, max_limit)
+        locks = getattr(self.app, "profile_locks", None)
+        lock = None
+        if locks and 0 <= profile_index < len(locks):
+            lock = locks[profile_index]
 
         try:
             self.app.case_start_times[case_index] = time.time()
             self.app.update_case_status(case_index, "처리중(캡차로딩)", "orange", "🔄")
 
-            with self.app.profile_locks[profile_index]:
-                result_data = self.execute_case_processing_with_captcha(case, case_index, profile_index)
-
-            elapsed_time = int(time.time() - self.app.case_start_times[case_index])
-
-            if result_data:
-                if result_data == "__CLICK__":
-                    if case_index in self.app.case_inputs:
-                        self.app.case_inputs[case_index].set("CLICK")
-                    self.app.update_case_status(case_index, "입력완료", "green", "⚡")
-                    self.app.log_message(f"⚡ 캡차 스킵: {case_number} (자동 클릭 준비 완료)")
-                    self._process_auto_case(case, case_index)
-                    return True
-
-                # OCR: 숫자 인식 → 입력칸 채움 (실패 시 수동 폴백 표시)
-                if isinstance(result_data, str) and os.path.isfile(result_data):
-                    if getattr(config, "OCR_ENABLED", False):
-                        ocr_ok = self._run_ocr_fill_case(case, case_index, result_data)
-                        if not ocr_ok:
-                            self._set_manual_captcha_fallback(case_index, case_number)
-                        else:
-                            self.app.log_message(
-                                f"✅ 캡차 OCR 완료: {case_number} (소요 시간: {elapsed_time}초)"
-                            )
-                    else:
-                        self.app.update_case_status(case_index, "입력대기", "blue", "⏳")
-
-                self.app.log_message(f"✅ 캡차 이미지 로드 완료: {case_number} (소요 시간: {elapsed_time}초)")
-                need_manual_complete = (
-                    not getattr(config, "OCR_ENABLED", False)
-                    or not getattr(config, "OCR_AUTO_SUBMIT", False)
-                    or self.app.ocr_manual_required.get(case_number, False)
+            if lock is not None:
+                lock.acquire()
+            try:
+                result_data = self.execute_case_processing_with_captcha(
+                    case, case_index, profile_index
                 )
-                if need_manual_complete:
-                    self.app.ui_queue.put(
-                        ("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {})
+
+                elapsed_time = int(time.time() - self.app.case_start_times[case_index])
+
+                if result_data:
+                    if result_data == "__CLICK__":
+                        if case_index in self.app.case_inputs:
+                            self.app.case_inputs[case_index].set("CLICK")
+                        self.app.update_case_status(case_index, "입력완료", "green", "⚡")
+                        self.app.log_message(
+                            f"⚡ 캡차 스킵: {case_number} (자동 클릭 준비 완료)"
+                        )
+                        # cleanup은 _process_auto_case finally → 그 후 락 해제
+                        self._process_auto_case(case, case_index)
+                        return True
+
+                    # OCR: 숫자 인식 → 입력칸 채움 (실패 시 수동 폴백 표시)
+                    if isinstance(result_data, str) and os.path.isfile(result_data):
+                        if getattr(config, "OCR_ENABLED", False):
+                            ocr_ok = self._run_ocr_fill_case(case, case_index, result_data)
+                            if not ocr_ok:
+                                self._set_manual_captcha_fallback(case_index, case_number)
+                            else:
+                                self.app.log_message(
+                                    f"✅ 캡차 OCR 완료: {case_number} (소요 시간: {elapsed_time}초)"
+                                )
+                        else:
+                            self.app.update_case_status(case_index, "입력대기", "blue", "⏳")
+
+                    self.app.log_message(
+                        f"✅ 캡차 이미지 로드 완료: {case_number} (소요 시간: {elapsed_time}초)"
                     )
-                ev = threading.Event()
-                self.app.lane_events[case_number] = ev
-                ev.wait()
-                return True
-            else:
-                self.app.update_case_status(case_index, f"실패 ({elapsed_time}초)", "red", "❌")
-                return False
+                    need_manual_complete = (
+                        not getattr(config, "OCR_ENABLED", False)
+                        or not getattr(config, "OCR_AUTO_SUBMIT", False)
+                        or self.app.ocr_manual_required.get(case_number, False)
+                    )
+                    if need_manual_complete:
+                        self.app.ui_queue.put(
+                            (
+                                "function",
+                                (self.app._set_control_btn_state, self.app.complete_btn, True),
+                                {},
+                            )
+                        )
+                    # 캡차 완료·cleanup 후 lane_events 가 set 될 때까지 락 유지
+                    ev = threading.Event()
+                    self.app.lane_events[case_number] = ev
+                    ev.wait()
+                    return True
+                else:
+                    self.app.update_case_status(
+                        case_index, f"실패 ({elapsed_time}초)", "red", "❌"
+                    )
+                    self.cleanup_case_process(case_number)
+                    return False
+            finally:
+                if lock is not None:
+                    try:
+                        lock.release()
+                    except RuntimeError:
+                        pass
 
         except Exception as e:
-            elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
+            elapsed_time = int(
+                time.time() - self.app.case_start_times.get(case_index, time.time())
+            )
             self.app.log_message(f"❌ 처리 오류: {case_number} - {e}")
             self.app.update_case_status(case_index, f"오류 ({elapsed_time}초)", "red", "⚠️")
+            try:
+                self.cleanup_case_process(case_number)
+            except Exception:
+                pass
             return False
 
     # -------------------------------------------------------------------------
@@ -955,6 +1054,11 @@ class ProcessController:
         new_total = max(prev_total, current_count)
         self.app.update_case_timestamp(case, original_index, new_total, hearing_info=hearing_info)
         self._maybe_sync_hearing_calendar(case, result_data)
+        # 진행내용은 안 바뀌어도 '최근 조회 일시'는 남김
+        try:
+            self.app.google_sheets_service.touch_last_query_time(case)
+        except Exception as e:
+            self.app.log_message(f"⚠️ 최근 조회 일시 갱신 생략: {e}")
         self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
         return self._as_process_result(1, 0, tuple_return=tuple_return)
 
@@ -1071,9 +1175,23 @@ class ProcessController:
             "rows": rows,
             "sheet_url": sheet_url,
         }
+        # 상태칸: 기간을 보이게 (건수는 로그에만)
+        try:
+            from services.date_utils import format_date_yy
+
+            period_label = f"{format_date_yy(start)} ~ {format_date_yy(end)}"
+        except Exception:
+            period_label = f"{start} ~ {end}"
         self.app.update_case_status(
-            original_index, f"기간조회 완료 ({len(rows)}건)", "green", ""
+            original_index,
+            f"기간조회 완료({period_label})",
+            "green",
+            "",
         )
+        try:
+            self.app.google_sheets_service.touch_last_query_time(case)
+        except Exception as e:
+            self.app.log_message(f"⚠️ 최근 조회 일시 갱신 생략: {e}")
         self.app.log_message(
             f"기간조회 완료: {case_number} {len(rows)}건 (소요 {elapsed_time}초)"
         )
@@ -1105,6 +1223,10 @@ class ProcessController:
         }
         verdict = diff.get("verdict", "")
         self.app.update_case_status(original_index, f"대조 {verdict}", "green", "")
+        try:
+            self.app.google_sheets_service.touch_last_query_time(case)
+        except Exception as e:
+            self.app.log_message(f"⚠️ 최근 조회 일시 갱신 생략: {e}")
         self.app.log_message(
             f"시트 대조: {case_number} {verdict} (소요 {elapsed_time}초)"
         )
@@ -1547,11 +1669,8 @@ class ProcessController:
             self.app.is_dedup_mode = False
         if hasattr(self.app, "is_reset_mode"):
             self.app.is_reset_mode = False
-        # 기간/대조 플래그는 리포트 연 뒤에 해제 (이미 스냅샷을 떠 둠)
-        if hasattr(self.app, "is_period_mode"):
-            self.app.is_period_mode = False
-        if hasattr(self.app, "is_compare_mode"):
-            self.app.is_compare_mode = False
+        # 기간/대조 플래그는 실패 재실행 확인 콜백에서 해제/유지
+        self._check_and_prompt_failed_cases([c for _, c in selected_cases])
         self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, False), {}))
 
         def _restore_start():

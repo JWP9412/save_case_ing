@@ -85,6 +85,17 @@ def format_date(d: date, sep: str = ".") -> str:
     return f"{d.year:04d}{sep}{d.month:02d}{sep}{d.day:02d}"
 
 
+def format_date_yy(d: date) -> str:
+    """
+    date → 'YY.MM.DD.' 형식 (상태칸·기일 표기와 맞춤).
+
+    예: 2026-08-07 → '26.08.07.'
+    """
+    if d is None:
+        return ""
+    return f"{d.year % 100:02d}.{d.month:02d}.{d.day:02d}."
+
+
 def yesterday_today() -> Tuple[date, date]:
     """기본 기간: 어제 ~ 오늘."""
     today = date.today()

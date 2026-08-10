@@ -94,10 +94,20 @@ def update_case_status(app, case_index, status, color, emoji=""):
     # 맑은 고딕에서 이모지가 깨지므로 sanitize 후 표시
     raw = f"{emoji} {status}" if emoji else status
     display_text = sanitize(raw)
+    # 행 배경: 처리중=노랑, 성공 계열=초록, 실패=분홍
+    # 주니어 참고: "기간조회 완료(...)" 는 startswith("완료")에 안 걸리므로
+    # 별도 접두어/포함 검사로 초록을 줍니다. 안 주면 이전 노랑이 남습니다.
     bg_color = None
     if status.startswith("처리중"):
         bg_color = "#FFF3CD"
-    elif status.startswith("완료"):
+    elif (
+        status.startswith("완료")
+        or status.startswith("기간조회 완료")
+        or status.startswith("재수집 완료")
+        or status.startswith("중복 정리 완료")
+        or status.startswith("입력완료")
+        or status.startswith("대조")
+    ):
         bg_color = "#D4EDDA"
     elif status.startswith("실패") or status.startswith("오류"):
         bg_color = "#F8D7DA"
