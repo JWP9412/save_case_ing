@@ -1134,7 +1134,7 @@ class ProcessController:
     def _finish_period_query_case(
         self, case, original_index, case_number, result_data, elapsed_time, *, tuple_return=True
     ):
-        """기간 조회: 시트/이력 미기록, 기간 내 행만 app.period_results 에 저장."""
+        """기간 조회: 기간 내 행만 메모리 저장. 진행내용은 안 덮고 최근 조회 일시만 갱신."""
         from services.date_utils import in_period
 
         period = getattr(self.app, "period_range", None)
