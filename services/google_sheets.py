@@ -362,7 +362,7 @@ class GoogleSheetsService:
                 progress_row.get("content", ""),
                 progress_row.get("result", ""),
                 progress_row.get("document", ""),
-                f"{today_str}. 업데이트 됨",
+                self._new_row_remark_text(progress_row, today_str),
                 "X",
             ]
             processed_new_data.append(row_list)
@@ -1075,6 +1075,29 @@ class GoogleSheetsService:
         return self.count_progress_rows_from_values(all_values)
 
     @classmethod
+    def _new_row_remark_text(cls, progress_row, today_str):
+        """
+        신규 진행내용 행의 E열(비고) 문구.
+
+        기본: 'YYYY.MM.DD. 업데이트 됨'
+        진행내용 일자가 조회일보다 영업일 1일 이상 과거면:
+          'YYYY.MM.DD. 업데이트 됨 (n일 지연 등록. 영업일 기준)'
+        """
+        base = f"{today_str}. 업데이트 됨"
+        try:
+            from services.date_utils import delay_business_days, format_delay_remark_suffix
+
+            delay = delay_business_days(
+                (progress_row or {}).get("date", "") if isinstance(progress_row, dict) else ""
+            )
+            min_days = int(getattr(config, "DELAY_REMARK_MIN_BUSINESS_DAYS", 1))
+            if delay is not None and delay >= min_days:
+                return f"{base} {format_delay_remark_suffix(delay)}"
+        except Exception:
+            pass
+        return base
+
+    @classmethod
     def _resolve_ef_columns(cls, progress_row, existing_map, existing_ef_by_dc, existing_f_sent_by_dc, today_str):
         """
         덮어쓰기 시 E·F열 값을 결정합니다.
@@ -1082,7 +1105,7 @@ class GoogleSheetsService:
         우선순위:
         1) (일자·내용·결과·공시문) 4열 키가 기존과 같으면 E·F 그대로
         2) 없으면 (일자·내용)으로 E·F fallback (결과 변경 시에도 발송 이력 유지)
-        3) 둘 다 없으면 신규 행 → 오늘 날짜 + X
+        3) 둘 다 없으면 신규 행 → 오늘 날짜(+지연 등록 문구) + X
         """
         key = cls._dict_row_dedup_key(progress_row)
         if key in existing_map:
@@ -1095,7 +1118,7 @@ class GoogleSheetsService:
                 col6 = existing_f_sent_by_dc[dc_key]
             return col5, col6
 
-        return f"{today_str}. 업데이트 됨", "X"
+        return cls._new_row_remark_text(progress_row, today_str), "X"
 
     @classmethod
     def _is_progress_data_row(cls, row):

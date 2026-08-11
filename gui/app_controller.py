@@ -656,10 +656,18 @@ class AppController:
         except Exception as e:
             self.log_message(f"Failed to save update history: {e}")
 
-    def update_case_timestamp(self, case, original_index=None, row_count=0, is_auto=False, hearing_info=None):
+    def update_case_timestamp(
+        self, case, original_index=None, row_count=0, is_auto=False, hearing_info=None, hearing_events=None
+    ):
         """Update case timestamp. Delegated to history_ui."""
         history_ui_module.update_case_timestamp(
-            self, case, original_index=original_index, row_count=row_count, is_auto=is_auto, hearing_info=hearing_info
+            self,
+            case,
+            original_index=original_index,
+            row_count=row_count,
+            is_auto=is_auto,
+            hearing_info=hearing_info,
+            hearing_events=hearing_events,
         )
 
     def get_days_since_update(self, case):
@@ -730,6 +738,37 @@ class AppController:
     def run_sheet_compare_for_selected_cases(self):
         """선택 사건 시트-대법원 대조. Delegated to batch_actions."""
         batch_actions_module.run_sheet_compare_for_selected_cases(self)
+
+    def open_hearing_calendar(self):
+        """
+        미어캣싱 기일 달력 창을 엽니다.
+        update_history의 hearing_events + 사건 목록으로 월간 기일을 표시합니다.
+        """
+        try:
+            from gui.dialogs.hearing_calendar_dialog import (
+                HearingCalendarDialog,
+                collect_hearing_items,
+            )
+
+            history = self.load_update_history()
+            cases = getattr(self, "case_list", None) or []
+            items = collect_hearing_items(history, cases)
+            HearingCalendarDialog(self.root, items=items)
+            if not items:
+                self.log_message(
+                    "📅 기일 달력: 아직 저장된 기일이 없습니다. "
+                    "사건을 한 번 조회하면 hearing_events가 쌓입니다."
+                )
+            else:
+                self.log_message(f"📅 기일 달력 열림 ({len(items)}건)")
+        except Exception as e:
+            self.log_message(f"⚠️ 기일 달력 오류: {e}")
+            try:
+                from tkinter import messagebox
+
+                messagebox.showerror("기일 달력", f"달력을 열지 못했습니다.\n{e}", parent=self.root)
+            except Exception:
+                pass
 
     def check_app_update(self):
         """

@@ -41,9 +41,9 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.13.0"
-# 창 제목 및 헤더 제목에 쓰는 이름
-APP_TITLE = "사건 일괄 처리 시스템"
+APP_VERSION = "4.14.0"
+# 창 제목 및 헤더 제목에 쓰는 이름 (제품명: 미어캣싱)
+APP_TITLE = "미어캣싱"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
 APP_SUBTITLE = "사건 조회 자동화 시스템"
 
@@ -67,7 +67,13 @@ BTN_TEXT_PERIOD = "특정 기간 조회"
 BTN_TEXT_COMPARE = "시트-대법원 대조"
 BTN_TEXT_SHEET_MGMT = "사건 시트 관리 ▾"
 BTN_TEXT_CHECK_UPDATE = "버전 업데이트 확인"
+BTN_TEXT_HEARING_CALENDAR = "기일 달력"
 BTN_TEXT_CONTROL_TITLE = "제어 패널"
+
+# 신규 진행내용 비고: 영업일 지연 등록 표시
+# 주니어 참고: 지연 일수 = 진행내용 일자 다음날~조회일 중 월~금 개수(토·일 제외)
+DELAY_REMARK_MIN_BUSINESS_DAYS = 1
+DELAY_REMARK_SUFFIX_FMT = "({n}일 지연 등록. 영업일 기준)"
 
 # GitHub 릴리스/태그 (버전 업데이트 확인용)
 # 참고: Releases가 비어 있으면 tags API로 폴백합니다.

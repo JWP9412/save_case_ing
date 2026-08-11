@@ -106,21 +106,61 @@ def get_days_until_hearing(hearing_info):
         return None
 
 
-def update_case_record(case_number, row_count, history, is_auto=False, hearing_info=None):
+def serialize_hearing_events(events):
+    """
+    process_controller._extract_hearing_events_from_result 결과를
+    JSON 저장용 리스트로 변환합니다.
+
+    입력: [{"kind", "start_dt"(datetime), "label"}, ...]
+    출력: [{"kind", "start"(ISO), "label"}, ...]
+    """
+    out = []
+    if not events:
+        return out
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        start_dt = ev.get("start_dt")
+        if start_dt is None:
+            # 이미 직렬화된 dict 허용
+            start = ev.get("start")
+            kind = (ev.get("kind") or "").strip()
+            label = (ev.get("label") or "").strip()
+            if start and kind:
+                out.append({"kind": kind, "start": str(start), "label": label})
+            continue
+        try:
+            start_iso = start_dt.isoformat()
+        except Exception:
+            continue
+        out.append(
+            {
+                "kind": (ev.get("kind") or "").strip(),
+                "start": start_iso,
+                "label": (ev.get("label") or "").strip(),
+            }
+        )
+    return out
+
+
+def update_case_record(
+    case_number,
+    row_count,
+    history,
+    is_auto=False,
+    hearing_info=None,
+    hearing_events=None,
+):
     """
     사건번호에 대한 업데이트 기록(시간 + 행 개수 + 자동여부 + 기일정보)을 갱신한 새 딕셔너리 반환.
 
-    case_number: 사건번호 문자열.
-    row_count: 저장된 진행내용 행 개수.
-    history: load_update_history()로 얻은 딕셔너리 (수정하지 않음).
-    is_auto: 자동 조회 여부 (기본 False).
-    hearing_info: 기일 정보 문자열 (예: "판결선고기일 26.03.11.(14:00)"). None이면 기존 값 유지.
-    반환: 갱신된 새 딕셔너리 (원본 history와 동일 참조가 아닌 복사본).
+    hearing_info: 최신 기일 1건 문자열 (목록 UI용). None이면 기존 유지.
+    hearing_events: 기일 목록(달력용). None이면 기존 유지, 리스트면 교체.
     """
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     new_history = dict(history)
     existing = new_history.get(case_number) if isinstance(new_history.get(case_number), dict) else {}
-    keep_keys = ("last_entry", "hearing_info")
+    keep_keys = ("last_entry", "hearing_info", "hearing_events")
     merged = {k: v for k, v in existing.items() if k in keep_keys}
     record = {
         "last_update": current_time,
@@ -130,6 +170,8 @@ def update_case_record(case_number, row_count, history, is_auto=False, hearing_i
     }
     if hearing_info is not None:
         record["hearing_info"] = hearing_info
+    if hearing_events is not None:
+        record["hearing_events"] = serialize_hearing_events(hearing_events)
     new_history[case_number] = record
     return new_history
 

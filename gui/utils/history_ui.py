@@ -15,7 +15,9 @@ import customtkinter as ctk
 from services import update_history as update_history_service
 
 
-def update_case_timestamp(app, case, original_index=None, row_count=0, is_auto=False, hearing_info=None):
+def update_case_timestamp(
+    app, case, original_index=None, row_count=0, is_auto=False, hearing_info=None, hearing_events=None
+):
     """사건 업데이트 타임스탬프 및 행 개수·기일 정보 기록, GUI 갱신 (기록은 services.update_history 사용)"""
     try:
         case_number = case.get("사건번호", "")
@@ -30,7 +32,12 @@ def update_case_timestamp(app, case, original_index=None, row_count=0, is_auto=F
                 old_row_count = old_data.get("row_count", 0)
 
             new_history = update_history_service.update_case_record(
-                case_number, row_count, history, is_auto=is_auto, hearing_info=hearing_info
+                case_number,
+                row_count,
+                history,
+                is_auto=is_auto,
+                hearing_info=hearing_info,
+                hearing_events=hearing_events,
             )
             update_history_service.save_update_history(
                 new_history, config.UPDATE_HISTORY_FILE

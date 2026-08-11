@@ -3,7 +3,7 @@
 제어 패널 (Control Panel)
 =========================
 새로고침, 사건 기록 수집, 캡차 입력 완료, 처리 중지,
-사건 시트 관리(드롭다운), 기간 조회, 버전 업데이트 확인 버튼을 배치합니다.
+사건 시트 관리(드롭다운), 기간 조회, 기일 달력, 버전 업데이트 확인 버튼을 배치합니다.
 
 Why: 사용자가 구글 시트 로드·수집·처리·중지를 한 곳에서 제어할 수 있게 합니다.
 
@@ -253,7 +253,7 @@ class ControlPanel:
             )
             settings_btn.pack(side=tk.LEFT, padx=(0, 0), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
 
-        # --- 3행: 특정 기간 조회 / 버전 업데이트 확인 ---
+        # --- 3행: 특정 기간 조회 / 기일 달력 / 버전 업데이트 확인 ---
         row3 = ctk.CTkFrame(control_frame, fg_color="transparent", height=ControlPanel.ROW_H)
         row3.pack(fill=tk.X, padx=0, pady=(0, 10))
         row3.pack_propagate(False)
@@ -274,6 +274,29 @@ class ControlPanel:
             )
             app._control_btn_colors[app.period_btn] = ("#1ABC9C", "#16A085", "#FFFFFF")
             app.period_btn.pack(
+                side=tk.LEFT,
+                padx=(0, 10),
+                pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
+            )
+
+        if hasattr(app, "open_hearing_calendar"):
+            app.hearing_cal_btn = ctk.CTkButton(
+                row3,
+                text=sanitize(
+                    getattr(config, "BTN_TEXT_HEARING_CALENDAR", "기일 달력")
+                ),
+                font=btn_font,
+                width=ControlPanel.BTN_W,
+                height=ControlPanel.BTN_H,
+                corner_radius=ControlPanel.BTN_CORNER_RADIUS,
+                cursor="hand2",
+                fg_color="#8E44AD",
+                hover_color="#6C3483",
+                text_color="#FFFFFF",
+                command=app.open_hearing_calendar,
+            )
+            app._control_btn_colors[app.hearing_cal_btn] = ("#8E44AD", "#6C3483", "#FFFFFF")
+            app.hearing_cal_btn.pack(
                 side=tk.LEFT,
                 padx=(0, 10),
                 pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,

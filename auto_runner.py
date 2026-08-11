@@ -108,14 +108,21 @@ class MockApp:
     def load_update_history(self):
         return self.history_manager.load_history()
         
-    def update_case_timestamp(self, case, original_index, row_count, is_auto=True, hearing_info=None):
+    def update_case_timestamp(
+        self, case, original_index, row_count, is_auto=True, hearing_info=None, hearing_events=None
+    ):
         """CLI 조회 성공 시 업데이트 기록 저장 (자동 조회 플래그·기일 캐시 포함). history_ui.py 시그니처와 동일."""
         try:
             case_number = case.get("사건번호", "")
             with self._file_lock:
                 history = update_history_service.load_update_history(config.UPDATE_HISTORY_FILE)
                 new_history = update_history_service.update_case_record(
-                    case_number, row_count, history, is_auto=is_auto, hearing_info=hearing_info
+                    case_number,
+                    row_count,
+                    history,
+                    is_auto=is_auto,
+                    hearing_info=hearing_info,
+                    hearing_events=hearing_events,
                 )
                 update_history_service.save_update_history(
                     new_history, config.UPDATE_HISTORY_FILE

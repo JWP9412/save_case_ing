@@ -133,6 +133,7 @@ def parse_datetime_loose(text) -> Optional[datetime]:
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y.%m.%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d",
         "%Y.%m.%d",
     ):
@@ -144,3 +145,63 @@ def parse_datetime_loose(text) -> Optional[datetime]:
     if d:
         return datetime(d.year, d.month, d.day)
     return None
+
+
+def business_days_between(start: date, end: date) -> int:
+    """
+    start 다음날부터 end(포함)까지 영업일(월~금) 개수.
+
+    주니어 개발자 참고:
+    - 토·일만 제외합니다. 공휴일 달력은 쓰지 않습니다.
+    - 예: 금(8/7) → 월(8/10) = 1 (토·일 제외, 월만 카운트)
+    - 예: 월(8/10) → 수(8/12) = 2 (화·수)
+    - end <= start 이면 0
+    """
+    if start is None or end is None:
+        return 0
+    if end <= start:
+        return 0
+    count = 0
+    cur = start + timedelta(days=1)
+    while cur <= end:
+        # weekday(): 월=0 ... 일=6 → 0~4 가 영업일
+        if cur.weekday() < 5:
+            count += 1
+        cur += timedelta(days=1)
+    return count
+
+
+def delay_business_days(progress_date_str, as_of=None) -> Optional[int]:
+    """
+    진행내용 일자와 조회일(as_of) 사이 영업일 지연 일수.
+
+    반환:
+      - int: 영업일 지연 (0 이상)
+      - None: 일자 파싱 실패
+    """
+    progress = parse_date(progress_date_str)
+    if progress is None:
+        return None
+    if as_of is None:
+        as_of = date.today()
+    elif isinstance(as_of, datetime):
+        as_of = as_of.date()
+    return business_days_between(progress, as_of)
+
+
+def format_delay_remark_suffix(delay_days: int) -> str:
+    """
+    시트 비고용 지연 문구.
+    예: '(3일 지연 등록. 영업일 기준)'
+    """
+    try:
+        import config
+
+        fmt = getattr(
+            config,
+            "DELAY_REMARK_SUFFIX_FMT",
+            "({n}일 지연 등록. 영업일 기준)",
+        )
+        return str(fmt).format(n=int(delay_days))
+    except Exception:
+        return f"({int(delay_days)}일 지연 등록. 영업일 기준)"

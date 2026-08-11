@@ -1040,6 +1040,40 @@ class ProcessController:
             return (completed_delta, failed_delta)
         return "fail" if failed_delta else True
 
+    def _log_delayed_registrations(self, case_number, new_data):
+        """
+        신규 행 중 영업일 지연 등록이 있으면 앱 로그에 남깁니다.
+        시트 비고에 쓰는 것과 같은 delay_business_days 계산을 사용합니다.
+        """
+        if not isinstance(new_data, list) or not new_data:
+            return
+        try:
+            from services.date_utils import delay_business_days
+
+            min_days = int(getattr(config, "DELAY_REMARK_MIN_BUSINESS_DAYS", 1))
+            delayed = []
+            for row in new_data:
+                if not isinstance(row, dict):
+                    continue
+                delay = delay_business_days(row.get("date", ""))
+                if delay is None or delay < min_days:
+                    continue
+                content = re.sub(r"\s+", " ", (row.get("content") or "").strip())
+                if len(content) > 40:
+                    content = content[:40] + "..."
+                delayed.append((row.get("date", ""), delay, content))
+            if not delayed:
+                return
+            self.app.log_message(
+                f"⏱️ 지연 등록 {len(delayed)}건: {case_number}"
+            )
+            for date_s, delay, content in delayed:
+                self.app.log_message(
+                    f"   └ {date_s} ({delay}일, 영업일) {content}"
+                )
+        except Exception as e:
+            self.app.log_message(f"⚠️ 지연 등록 로그 생략: {e}")
+
     def _finish_case_no_change(
         self, case, original_index, case_number, result_data, elapsed_time, hearing_info=None, *, tuple_return=True
     ):
@@ -1052,7 +1086,14 @@ class ProcessController:
         prev_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
         current_count = len(result_data) if isinstance(result_data, list) else 0
         new_total = max(prev_total, current_count)
-        self.app.update_case_timestamp(case, original_index, new_total, hearing_info=hearing_info)
+        hearing_events = self._extract_hearing_events_from_result(result_data)
+        self.app.update_case_timestamp(
+            case,
+            original_index,
+            new_total,
+            hearing_info=hearing_info,
+            hearing_events=hearing_events,
+        )
         self._maybe_sync_hearing_calendar(case, result_data)
         # 진행내용은 안 바뀌어도 '최근 조회 일시'는 남김
         try:
@@ -1101,13 +1142,21 @@ class ProcessController:
             total_rows = len(result_data) if isinstance(result_data, list) else row_count
         else:
             total_rows = (old_total + row_count) if row_count else old_total
-        self.app.update_case_timestamp(case, original_index, total_rows, hearing_info=hearing_info)
+        hearing_events = self._extract_hearing_events_from_result(result_data)
+        self.app.update_case_timestamp(
+            case,
+            original_index,
+            total_rows,
+            hearing_info=hearing_info,
+            hearing_events=hearing_events,
+        )
         self._maybe_sync_hearing_calendar(case, result_data)
         if row_count > 0:
             update_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.app.log_message(
                 f"📊 이번 조회 신규 {row_count}건 추가, 업데이트 시각 {update_ts} ({case_number})"
             )
+            self._log_delayed_registrations(case_number, new_data)
             self.app.log_history_manager.add_to_search_log(case_number)
             self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
             try:
@@ -1340,7 +1389,13 @@ class ProcessController:
             if not isinstance(result_data, list) or len(result_data) == 0:
                 self.app.log_message(f"📭 수집 데이터 없음(초기화만 완료): {case_number}")
                 self.app.update_case_status(original_index, "초기화 완료(데이터 없음)", "#7F8C8D", "📭")
-                self.app.update_case_timestamp(case, original_index, 0, hearing_info=hearing_info)
+                self.app.update_case_timestamp(
+                    case,
+                    original_index,
+                    0,
+                    hearing_info=hearing_info,
+                    hearing_events=self._extract_hearing_events_from_result(result_data),
+                )
                 self.app.log_message(f"✅ 초기화 완료: {case_number} (소요 시간: {elapsed_time}초)")
                 return self._as_process_result(1, 0, tuple_return=tuple_return)
 
@@ -1377,7 +1432,13 @@ class ProcessController:
             else:
                 self.app.update_case_status(original_index, "제거 실패", "red", "❌")
 
-            self.app.update_case_timestamp(case, original_index, len(result_data), hearing_info=hearing_info)
+            self.app.update_case_timestamp(
+                case,
+                original_index,
+                len(result_data),
+                hearing_info=hearing_info,
+                hearing_events=self._extract_hearing_events_from_result(result_data),
+            )
             self._maybe_sync_hearing_calendar(case, result_data)
             self.app.log_message(f"✅ 대조/중복 제거 완료: {case_number} (소요 시간: {elapsed_time}초)")
             return self._as_process_result(1, 0, tuple_return=tuple_return)
@@ -1452,7 +1513,11 @@ class ProcessController:
                 )
                 self.app.update_case_status(original_index, "중복 정리 완료", "green", "✅")
                 self.app.update_case_timestamp(
-                    case, original_index, court_count, hearing_info=hearing_info
+                    case,
+                    original_index,
+                    court_count,
+                    hearing_info=hearing_info,
+                    hearing_events=self._extract_hearing_events_from_result(result_data),
                 )
                 self._maybe_sync_hearing_calendar(case, result_data)
                 self.app.log_message(
