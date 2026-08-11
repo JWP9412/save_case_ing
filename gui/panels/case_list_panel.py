@@ -6,6 +6,7 @@
 헤더와 행 영역은 각각 Canvas 위에 올려 가로 스크롤을 동기화하고, 열 너비 리사이즈를 지원합니다.
 Why: 대량의 사건을 스크롤·검색·정렬·리사이즈할 수 있는 하나의 통합 뷰를 제공합니다.
 """
+import os
 import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
@@ -79,13 +80,37 @@ class CaseListPanel:
             command=app._open_case_list_manage_dialog,
         )
         manage_btn.pack(side=tk.RIGHT, padx=(8, 0))
-        # 기일 달력: 사건목록 관리 왼쪽. sanitize 미적용(📅 유지, 사건 목록 제목과 동일)
+        # 달력: 사건목록 관리 왼쪽. 이모지 대신 assets 달력 아이콘 사용
         if hasattr(app, "open_hearing_calendar"):
+            cal_img = None
+            try:
+                from PIL import Image
+
+                icon_rel = getattr(
+                    config, "BTN_ICON_HEARING_CALENDAR", "assets/btn_calendar_icon.png"
+                )
+                icon_path = (
+                    config.path_from_base(icon_rel)
+                    if hasattr(config, "path_from_base")
+                    else None
+                )
+                if icon_path and os.path.isfile(icon_path):
+                    pil = Image.open(icon_path).convert("RGBA")
+                    # 버튼 높이(28)에 맞는 작은 아이콘
+                    cal_img = ctk.CTkImage(
+                        light_image=pil, dark_image=pil, size=(20, 20)
+                    )
+                    app._hearing_cal_btn_image = cal_img  # GC 방지용 참조 유지
+            except Exception:
+                cal_img = None
+
             app.hearing_cal_btn = ctk.CTkButton(
                 title_row,
-                text=getattr(config, "BTN_TEXT_HEARING_CALENDAR", "📅 기일 달력"),
+                text=getattr(config, "BTN_TEXT_HEARING_CALENDAR", "달력"),
+                image=cal_img,
+                compound="left",
                 font=ctk.CTkFont(family="맑은 고딕", size=12),
-                width=110,
+                width=78 if cal_img is not None else 72,
                 height=28,
                 fg_color="#8E44AD",
                 hover_color="#6C3483",

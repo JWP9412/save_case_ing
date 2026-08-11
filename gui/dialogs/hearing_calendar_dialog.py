@@ -9,7 +9,8 @@
 주니어 개발자 참고:
 - 데이터: update_history.json 의 hearing_events (조회 성공 시 저장).
 - hearing_events가 없으면 hearing_info(목록용 최신 1건)를 폴백으로 사용합니다.
-- 날짜 칸 안에 「• 이름 종류」요약을 바로 보여, 클릭 없이도 한눈에 볼 수 있습니다.
+- 날짜 칸 안에는 기일 1건만 요약하고, 2건 이상이면 우하단에 +n(그날 기일 수)을 표시합니다.
+- 하단 상세는 「▶ 사건번호 / 피고 / 사건명 [종류 시각]」 한 줄 형식입니다.
 """
 from __future__ import annotations
 
@@ -32,18 +33,25 @@ KIND_COLORS = {
     "판결선고기일": "#E67E22",
 }
 DEFAULT_KIND_COLOR = "#7F8C8D"
+TODAY_COLOR = "#1ABC9C"  # 오늘 칸 테두리·범례
 
-# 칸 안 짧은 종류 표기
-KIND_SHORT = {
-    "변론기일": "변론",
-    "감정기일": "감정",
-    "판결선고기일": "판결",
+# 칸·범례에 쓰는 기일 종류 표기(「기일」까지 포함)
+KIND_LABEL = {
+    "변론기일": "변론기일",
+    "감정기일": "감정기일",
+    "판결선고기일": "판결선고기일",
 }
 
-CELL_W = 100
-CELL_H = 82
-NAME_MAX = 8  # 칸 안 이름 최대 글자 수
-MAX_LINES_IN_CELL = 2
+# 창·칸 크기: 우측 여백 없이 달력 그리드에 맞춤
+CELL_W = 112
+CELL_H = 96  # 글씨 키운 만큼 칸 높이 확보 (하단 잘림 방지용 계산에 사용)
+GRID_PAD_X = 10
+GRID_GAP = 2
+NAME_MAX = 16  # 글씨 커져서 줄 길이 약간 축소
+MAX_LINES_IN_CELL = 1  # 칸에는 기일 1건만 표시, 복수면 우하단에 +n
+FONT_DAY = 14  # 날짜 숫자
+FONT_SUMMARY = 12  # 칸 안 기일 요약
+FONT_WEEKDAY = 13
 
 
 def _parse_event_day(start_val):
@@ -56,22 +64,36 @@ def _parse_event_day(start_val):
     return dt.date() if dt else None
 
 
-def _short_name(item):
-    """칸 표시용 짧은 이름: 피고 > 사건명 > 사건번호."""
-    for key in ("피고", "사건명", "사건번호"):
-        val = (item.get(key) or "").strip()
-        if val:
-            if len(val) > NAME_MAX:
-                return val[: NAME_MAX - 1] + "…"
-            return val
-    return "?"
+def _party_case_label(item):
+    """
+    사건 목록 '피고/사건명' 열과 같은 데이터.
+    피고 · 사건명을 ' / '로 이어서 구분이 쉽게 합니다.
+    """
+    parts = []
+    defendant = (item.get("피고") or "").strip()
+    case_name = (item.get("사건명") or "").strip()
+    if defendant:
+        parts.append(defendant)
+    if case_name:
+        parts.append(case_name)
+    if parts:
+        return " / ".join(parts)
+    return (item.get("사건번호") or "?").strip() or "?"
+
+
+def _truncate(text, max_len):
+    s = (text or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
 
 
 def _cell_line(item):
-    """칸 한 줄: '• 이름 변론'"""
+    """칸 한 줄: '• 피고 / 사건명 변론기일' (기일까지 표기)"""
     kind = item.get("kind") or ""
-    short_kind = KIND_SHORT.get(kind, kind.replace("기일", "") or "?")
-    return f"• {_short_name(item)} {short_kind}"
+    kind_label = KIND_LABEL.get(kind, kind or "?")
+    name = _truncate(_party_case_label(item), NAME_MAX)
+    return f"• {name} {kind_label}"
 
 
 def _append_event_item(items, case_number, meta, ev):
@@ -124,18 +146,25 @@ def collect_hearing_items(history, case_list):
     for case_number, rec in (history or {}).items():
         if not isinstance(rec, dict):
             continue
-        meta = case_map.get(str(case_number), {})
+        cn_key = str(case_number).strip()
+        # 목록과 이력 사건번호 표기가 미세하게 달라도 매칭되도록 폴백
+        meta = case_map.get(cn_key) or case_map.get(str(case_number)) or {}
+        if not meta:
+            for k, c in case_map.items():
+                if k.replace(" ", "") == cn_key.replace(" ", ""):
+                    meta = c
+                    break
         events = rec.get("hearing_events") or []
         added = 0
         if isinstance(events, list):
             for ev in events:
-                if _append_event_item(items, case_number, meta, ev):
+                if _append_event_item(items, cn_key, meta, ev):
                     added += 1
         # 조회 전 이력: hearing_info만 있는 경우 달력에도 보이도록
         if added == 0:
             fallback = parse_hearing_info_to_event(rec.get("hearing_info") or "")
             if fallback:
-                _append_event_item(items, case_number, meta, fallback)
+                _append_event_item(items, cn_key, meta, fallback)
     return items
 
 
@@ -144,11 +173,39 @@ class HearingCalendarDialog(ctk.CTkToplevel):
 
     WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
 
+    @staticmethod
+    def _content_width():
+        """달력 그리드 기준 창 내용 너비(우측 빈 공간 최소화)."""
+        return 7 * CELL_W + 7 * (GRID_GAP * 2) + GRID_PAD_X * 2
+
+    @staticmethod
+    def _grid_height(num_weeks: int) -> int:
+        """요일 헤더 + 주 행 수에 맞춘 그리드 픽셀 높이."""
+        weekday_row = 30
+        return weekday_row + num_weeks * (CELL_H + GRID_GAP * 2)
+
+    def _window_height_for_weeks(self, num_weeks: int) -> int:
+        """
+        상단바·그리드·상세·안내가 잘리지 않는 창 높이.
+        주니어 참고: 6주인 달(예: 2026-08)은 5주보다 커야 맨 아래 칸이 안 잘립니다.
+        """
+        top_h = 52
+        grid_h = self._grid_height(num_weeks)
+        detail_h = 22 + 100  # 제목 + 텍스트박스
+        hint_h = 40
+        pads = 40  # 여유 여백 (맨 아래 칸·안내 문구 잘림 방지)
+        return top_h + grid_h + detail_h + hint_h + pads
+
     def __init__(self, parent, items=None, title=None):
         super().__init__(parent)
         app_name = getattr(config, "APP_TITLE", "미어캣싱")
         self.title(title or f"{app_name} · 기일 달력")
-        self.geometry("820x640")
+        w = self._content_width()
+        # 초기값: 최대 6주 기준으로 잡아 하단 잘림 예방
+        h = self._window_height_for_weeks(6)
+        self.geometry(f"{w}x{h}")
+        self.minsize(w, self._window_height_for_weeks(5))
+        self.resizable(False, False)
         self.transient(parent)
 
         self.items = list(items or [])
@@ -168,38 +225,70 @@ class HearingCalendarDialog(ctk.CTkToplevel):
         except Exception:
             pass
 
-    def _build(self):
-        top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill=tk.X, padx=12, pady=10)
+    def _fit_window_to_month(self):
+        """현재 월의 주 수에 맞춰 창 높이를 다시 맞춥니다."""
+        cal = calendar.Calendar(firstweekday=0)
+        weeks = cal.monthdayscalendar(self.view_year, self.view_month)
+        num_weeks = len(weeks)
+        w = self._content_width()
+        h = self._window_height_for_weeks(num_weeks)
+        try:
+            # 그리드는 자식 크기로 자연 확장 (강제 height clip 방지)
+            self.grid_frame.pack_propagate(True)
+            self.grid_frame.configure(width=w - GRID_PAD_X * 2)
+        except Exception:
+            pass
+        self.geometry(f"{w}x{h}")
+        self.update_idletasks()
+        # 실제 요청 높이가 더 크면 그에 맞춤 (하단 잘림 최종 방지)
+        try:
+            req_h = max(h, int(self.winfo_reqheight()) + 8)
+            if req_h > h:
+                self.geometry(f"{w}x{req_h}")
+        except Exception:
+            pass
 
-        ctk.CTkButton(top, text="◀", width=40, command=self._prev_month).pack(
-            side=tk.LEFT, padx=(0, 6)
+    def _build(self):
+        content_w = self._content_width()
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill=tk.X, padx=GRID_PAD_X, pady=(8, 6))
+
+        ctk.CTkButton(top, text="◀", width=36, command=self._prev_month).pack(
+            side=tk.LEFT, padx=(0, 4)
         )
         self.month_label = ctk.CTkLabel(
             top,
             text="",
-            font=ctk.CTkFont(family="맑은 고딕", size=16, weight="bold"),
+            font=ctk.CTkFont(family="맑은 고딕", size=15, weight="bold"),
         )
-        self.month_label.pack(side=tk.LEFT, padx=8)
-        ctk.CTkButton(top, text="▶", width=40, command=self._next_month).pack(
-            side=tk.LEFT, padx=(6, 0)
+        self.month_label.pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(top, text="▶", width=36, command=self._next_month).pack(
+            side=tk.LEFT, padx=(4, 0)
         )
-        ctk.CTkButton(top, text="오늘", width=60, command=self._goto_today).pack(
-            side=tk.LEFT, padx=(12, 0)
+        ctk.CTkButton(top, text="오늘", width=52, command=self._goto_today).pack(
+            side=tk.LEFT, padx=(10, 0)
         )
 
+        # 범례: 기일 종류 + 오늘(민트 테두리) — 두 번째 사진처럼 상단 우측
         legend = ctk.CTkFrame(top, fg_color="transparent")
         legend.pack(side=tk.RIGHT)
         for kind, color in KIND_COLORS.items():
             ctk.CTkLabel(
                 legend,
-                text=f"● {kind.replace('기일', '')}",
+                text=f"● {KIND_LABEL.get(kind, kind)}",
                 text_color=color,
                 font=ctk.CTkFont(family="맑은 고딕", size=11),
-            ).pack(side=tk.LEFT, padx=4)
+            ).pack(side=tk.LEFT, padx=3)
+        ctk.CTkLabel(
+            legend,
+            text="● 오늘",
+            text_color=TODAY_COLOR,
+            font=ctk.CTkFont(family="맑은 고딕", size=11),
+        ).pack(side=tk.LEFT, padx=3)
 
-        self.grid_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.grid_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        # expand=False 로 우측 빈 공간 최소화. 높이는 _fit_window_to_month에서 맞춤
+        self.grid_frame = ctk.CTkFrame(self, fg_color="transparent", width=content_w)
+        self.grid_frame.pack(fill=tk.X, expand=False, padx=GRID_PAD_X, pady=(0, 6))
 
         self.detail_title = ctk.CTkLabel(
             self,
@@ -207,29 +296,30 @@ class HearingCalendarDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
             anchor="w",
         )
-        self.detail_title.pack(fill=tk.X, padx=12, pady=(0, 4))
+        self.detail_title.pack(fill=tk.X, padx=GRID_PAD_X, pady=(0, 2))
 
         self.detail_box = ctk.CTkTextbox(
-            self, height=120, font=ctk.CTkFont(family="맑은 고딕", size=12)
+            self, height=100, font=ctk.CTkFont(family="맑은 고딕", size=12)
         )
-        self.detail_box.pack(fill=tk.X, padx=12, pady=(0, 8))
+        self.detail_box.pack(fill=tk.X, padx=GRID_PAD_X, pady=(0, 4))
 
         hint = ctk.CTkLabel(
             self,
             text=(
-                "안내: 칸 안 「• 이름 종류」는 클릭 없이 보입니다. "
-                "hearing_events가 없으면 목록의 최신 기일(hearing_info)을 표시합니다."
+                "안내: 칸에는 목록의 「피고/사건명」+ 기일종류가 보입니다. "
+                "hearing_events가 없으면 hearing_info(최신 1건)를 사용합니다."
             ),
             font=ctk.CTkFont(family="맑은 고딕", size=11),
             text_color="#7F8C8D",
             anchor="w",
-            wraplength=780,
+            wraplength=content_w - 8,
             justify="left",
         )
-        hint.pack(fill=tk.X, padx=12, pady=(0, 10))
+        hint.pack(fill=tk.X, padx=GRID_PAD_X, pady=(0, 8))
 
         self._render_month()
         self._show_day(self.selected_day)
+        self._fit_window_to_month()
 
     def _prev_month(self):
         if self.view_month == 1:
@@ -238,6 +328,7 @@ class HearingCalendarDialog(ctk.CTkToplevel):
         else:
             self.view_month -= 1
         self._render_month()
+        self._fit_window_to_month()
 
     def _next_month(self):
         if self.view_month == 12:
@@ -246,6 +337,7 @@ class HearingCalendarDialog(ctk.CTkToplevel):
         else:
             self.view_month += 1
         self._render_month()
+        self._fit_window_to_month()
 
     def _goto_today(self):
         today = date.today()
@@ -254,6 +346,7 @@ class HearingCalendarDialog(ctk.CTkToplevel):
         self.selected_day = today
         self._render_month()
         self._show_day(today)
+        self._fit_window_to_month()
 
     def _cell_colors(self, d, day_items, today):
         """
@@ -270,7 +363,7 @@ class HearingCalendarDialog(ctk.CTkToplevel):
         else:
             fg = "#3D3D3D"
         if is_today:
-            border = "#1ABC9C"
+            border = TODAY_COLOR
         elif is_sel:
             border = "#2980B9"
         elif has:
@@ -293,7 +386,7 @@ class HearingCalendarDialog(ctk.CTkToplevel):
             corner_radius=6,
             cursor="hand2",
         )
-        outer.grid(row=row, column=col, padx=2, pady=2)
+        outer.grid(row=row, column=col, padx=GRID_GAP, pady=GRID_GAP)
         outer.grid_propagate(False)
 
         inner = ctk.CTkFrame(
@@ -312,51 +405,61 @@ class HearingCalendarDialog(ctk.CTkToplevel):
             text=str(d.day),
             font=ctk.CTkFont(
                 family="맑은 고딕",
-                size=12,
+                size=FONT_DAY,
                 weight="bold" if (is_today or is_sel or has) else "normal",
             ),
-            text_color="#FFFFFF" if not is_today else "#1ABC9C",
+            text_color=TODAY_COLOR if is_today else "#FFFFFF",
             anchor="w",
         )
         day_label.pack(fill=tk.X, padx=4, pady=(2, 0))
 
-        # 칸 안 요약: 최대 2줄, 넘치면 +N
+        # 칸 안: 기일 1건만 표시. 2건 이상이면 우하단에 +n (n=그날 기일 수)
         sorted_items = sorted(
             day_items,
             key=lambda x: (x.get("time_str") or "", x.get("사건번호") or ""),
         )
-        lines = [_cell_line(it) for it in sorted_items[:MAX_LINES_IN_CELL]]
-        extra = len(sorted_items) - MAX_LINES_IN_CELL
-        if extra > 0:
-            if len(lines) >= MAX_LINES_IN_CELL:
-                lines[-1] = f"+{extra + 1}건 더"
-            else:
-                lines.append(f"+{extra}건 더")
-
-        summary_text = "\n".join(lines) if lines else ""
+        summary_text = _cell_line(sorted_items[0]) if sorted_items else ""
+        sum_label = None
+        plus_label = None
         if summary_text:
-            # 첫 기일 색으로 요약 글자색
             first_color = KIND_COLORS.get(
                 sorted_items[0]["kind"], DEFAULT_KIND_COLOR
             )
             sum_label = ctk.CTkLabel(
                 inner,
                 text=summary_text,
-                font=ctk.CTkFont(family="맑은 고딕", size=10),
+                font=ctk.CTkFont(family="맑은 고딕", size=FONT_SUMMARY),
                 text_color=first_color,
                 anchor="nw",
                 justify="left",
-                wraplength=CELL_W - 12,
+                wraplength=CELL_W - 22,
             )
-            sum_label.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 2))
+            sum_label.pack(fill=tk.BOTH, expand=True, padx=3, pady=(0, 2))
+
+        n_count = len(sorted_items)
+        if n_count >= 2:
+            # 우하단 +n (전체 기일 수). 예: 2건이면 +2
+            plus_label = ctk.CTkLabel(
+                inner,
+                text=f"+{n_count}",
+                font=ctk.CTkFont(family="맑은 고딕", size=11, weight="bold"),
+                text_color="#ECF0F1",
+                fg_color="#5D6D7E",
+                corner_radius=4,
+                width=28,
+                height=18,
+            )
+            plus_label.place(relx=1.0, rely=1.0, anchor="se", x=-3, y=-3)
 
         def _click(_event=None, dd=d):
             self._on_day_click(dd)
 
         for w in (outer, inner, day_label):
             w.bind("<Button-1>", _click)
-        if summary_text:
+        if sum_label is not None:
             sum_label.bind("<Button-1>", _click)
+        if plus_label is not None:
+            plus_label.bind("<Button-1>", _click)
 
     def _render_month(self):
         for w in self.grid_frame.winfo_children():
@@ -369,8 +472,8 @@ class HearingCalendarDialog(ctk.CTkToplevel):
                 self.grid_frame,
                 text=name,
                 width=CELL_W,
-                font=ctk.CTkFont(family="맑은 고딕", size=12, weight="bold"),
-            ).grid(row=0, column=i, padx=2, pady=2)
+                font=ctk.CTkFont(family="맑은 고딕", size=FONT_WEEKDAY, weight="bold"),
+            ).grid(row=0, column=i, padx=GRID_GAP, pady=GRID_GAP)
 
         cal = calendar.Calendar(firstweekday=0)
         weeks = cal.monthdayscalendar(self.view_year, self.view_month)
@@ -380,11 +483,14 @@ class HearingCalendarDialog(ctk.CTkToplevel):
                 if day_num == 0:
                     ctk.CTkLabel(
                         self.grid_frame, text="", width=CELL_W, height=CELL_H
-                    ).grid(row=r, column=c, padx=2, pady=2)
+                    ).grid(row=r, column=c, padx=GRID_GAP, pady=GRID_GAP)
                     continue
                 d = date(self.view_year, self.view_month, day_num)
                 day_items = self.by_day.get(d, [])
                 self._make_day_cell(self.grid_frame, d, day_items, r, c)
+
+        # 주 수에 맞춰 그리드·창 높이 재조정 (6주인 달 하단 잘림 방지)
+        self._fit_window_to_month()
 
     def _on_day_click(self, d: date):
         self.selected_day = d
@@ -405,14 +511,10 @@ class HearingCalendarDialog(ctk.CTkToplevel):
             return
         lines = []
         for it in items:
-            title_bits = [it.get("사건번호", "")]
-            if it.get("피고"):
-                title_bits.append(it["피고"])
-            if it.get("사건명"):
-                title_bits.append(it["사건명"])
-            head = " / ".join(title_bits)
+            # 예: ▶ 2026가합5436 / 롯데 / 자양동 뚝섬 [감정기일 14:50]
+            kind = (it.get("kind") or "").strip() or "?"
             time_s = it.get("time_str") or "--:--"
-            lines.append(f"[{it.get('kind')}] {time_s}  {head}")
-            if it.get("label"):
-                lines.append(f"    {it['label']}")
+            case_no = (it.get("사건번호") or "").strip()
+            party = _party_case_label(it)
+            lines.append(f"▶ {case_no} / {party} [{kind} {time_s}]")
         self.detail_box.insert("end", "\n".join(lines))

@@ -19,19 +19,20 @@ def load_right_panel_width():
     저장된 우측(진행상황) 패널 너비를 로드합니다.
     없거나 잘못된 값이면 config 기본값을 반환합니다.
     Returns:
-        int: 픽셀 단위 너비 (200~800).
+        int: 픽셀 단위 너비 (RIGHT_PANEL_MIN_WIDTH~800).
     """
     path = getattr(config, "RIGHT_PANEL_WIDTH_FILE", "right_panel_width.json")
+    min_w = int(getattr(config, "RIGHT_PANEL_MIN_WIDTH", 280))
     try:
         if os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             w = data.get("width")
-            if isinstance(w, (int, float)) and 200 <= w <= 800:
+            if isinstance(w, (int, float)) and min_w <= w <= 800:
                 return int(w)
     except Exception:
         pass
-    return config.RIGHT_PANEL_WIDTH
+    return max(int(config.RIGHT_PANEL_WIDTH), min_w)
 
 
 def run_app():
@@ -51,6 +52,7 @@ def run_app():
     main_container.pack(fill=tk.BOTH, expand=True)
 
     right_width = load_right_panel_width()
+    min_right = int(getattr(config, "RIGHT_PANEL_MIN_WIDTH", 280))
     paned = tk.PanedWindow(
         main_container,
         orient=tk.HORIZONTAL,
@@ -59,13 +61,15 @@ def run_app():
         sashrelief=tk.RAISED,
     )
     paned.pack(fill=tk.BOTH, expand=True)
+    gui.main_paned = paned
 
     left_panel = ctk.CTkFrame(paned, fg_color=bg_primary)
     paned.add(left_panel, minsize=400, stretch="always")
 
     right_panel = ctk.CTkFrame(paned, fg_color=bg_primary, width=right_width)
     right_panel.pack_propagate(False)
-    paned.add(right_panel, minsize=200, width=right_width, stretch="never")
+    # minsize: 로고가 잘리지 않는 최소 폭
+    paned.add(right_panel, minsize=min_right, width=right_width, stretch="never")
     gui.right_panel = right_panel
 
     sashwidth = 8
@@ -76,13 +80,13 @@ def run_app():
         if total_w > 100:
             min_left = 400
             effective_right = min(right_width, total_w - min_left - sashwidth)
-            effective_right = max(effective_right, 200)
+            effective_right = max(effective_right, min_right)
             paned.sash_place(0, total_w - effective_right - sashwidth, 0)
 
     root.after(100, apply_saved_sash)
 
     gui.create_control_panel(left_panel)
-    gui.create_settings_panel(left_panel)
+    # 「처리 설정」은 설정 창 탭으로 이동함 (메인 좌측 단락 제거)
     gui.create_case_list_panel(left_panel)
     gui.create_progress_panel(right_panel)
 

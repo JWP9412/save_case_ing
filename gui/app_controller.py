@@ -58,7 +58,6 @@ from gui.dialogs.general_info_dialog import GeneralInfoDialog
 from gui.panels import (
     HeaderPanel,
     ControlPanel,
-    SettingsPanel,
     ProgressPanel,
     CaseListPanel,
 )
@@ -231,7 +230,7 @@ class AppController:
         dlg = SettingsDialog(
             self.root,
             app=self,
-            on_save_callback=lambda: self.log_message("Settings saved. Some items apply after restart."),
+            on_save_callback=lambda: self.log_message("설정을 적용했습니다."),
         )
         dlg.focus_set()
 
@@ -271,12 +270,11 @@ class AppController:
         dlg = FirstRunDialog(self.root, app=self)
         dlg.focus_set()
 
-    def create_settings_panel(self, parent):
-        """Create settings panel. Delegated to SettingsPanel."""
-        return SettingsPanel.create(parent, self)
-
     def _sync_spin(self, entry_widget, int_var, low, high):
-        """Sync entry value with IntVar within range [low, high]."""
+        """
+        Entry 값을 IntVar에 맞추고 [low, high]로 클램프합니다.
+        (설정 창·기타 숫자 입력에서 재사용 가능)
+        """
         try:
             val = int(entry_widget.get().strip())
             val = max(low, min(high, val))

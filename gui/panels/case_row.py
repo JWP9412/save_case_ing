@@ -227,13 +227,17 @@ class CaseRow:
         else:
             d_day_str = "-"
             d_day_fg = app.get_theme_color("text_sub")
-        # '변론기일' / '판결선고기일' 뒤로 줄바꿈하여 일시 표기. 일시는 연도 4자리로 표기.
-        if hearing_text.startswith("변론기일 "):
+        # '변론기일' / '감정기일' / '판결선고기일' 뒤로 줄바꿈하여 일시 표기.
+        if hearing_text.startswith("변론기일"):
             kind_line = "변론기일\n"
-            rest_line = hearing_text[6:].strip()
-        elif hearing_text.startswith("판결선고기일 "):
+            rest_line = hearing_text[len("변론기일"):].strip()
+        elif hearing_text.startswith("감정기일"):
+            # 변론기일과 동일: 민트색 종류명 + 다음 줄 일시
+            kind_line = "감정기일\n"
+            rest_line = hearing_text[len("감정기일"):].strip()
+        elif hearing_text.startswith("판결선고기일"):
             kind_line = "판결선고기일\n"
-            rest_line = hearing_text[8:].strip()
+            rest_line = hearing_text[len("판결선고기일"):].strip()
         else:
             kind_line = None
             rest_line = hearing_text

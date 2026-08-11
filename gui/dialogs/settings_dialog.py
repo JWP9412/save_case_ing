@@ -19,14 +19,14 @@ from services import google_oauth
 
 
 class SettingsDialog(ctk.CTkToplevel):
-    """설정 창. 탭별로 구글 시트 / 자동화 / 일반 항목을 편집하고 저장합니다."""
+    """설정 창. 탭별로 구글 시트 / 사건 조회 설정 / 테마 / 자동화 / 일반 항목을 편집합니다."""
 
     def __init__(self, parent, on_save_callback=None, app=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.on_save_callback = on_save_callback  # 저장 후 호출 (예: 헤더 색상 즉시 반영)
         self.app = app
         self.title("설정")
-        self.geometry("520x420")
+        self.geometry("540x480")
         self.resizable(True, True)
         self.transient(parent)
         self.entries = {}
@@ -34,12 +34,14 @@ class SettingsDialog(ctk.CTkToplevel):
         self.calendar_enabled_var = tk.IntVar(
             value=int(getattr(config, "GOOGLE_CALENDAR_ENABLED", 0))
         )
+        # 사건 조회 설정·테마 탭용(앱 IntVar·테마와 동기)
+        self._theme_var = None
         self._build_ui()
         self._fill_from_config()
         self.grab_set()
 
     def _build_ui(self):
-        tabview = ctk.CTkTabview(self, width=480, height=320)
+        tabview = ctk.CTkTabview(self, width=500, height=360)
         tabview.pack(padx=12, pady=12, fill=tk.BOTH, expand=True)
 
         # ---------- 구글 시트 탭 ----------
@@ -155,6 +157,60 @@ class SettingsDialog(ctk.CTkToplevel):
             anchor="w",
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        # ---------- 사건 조회 설정 탭 (병렬·재시도 등) ----------
+        tab_proc = tabview.add("사건 조회 설정")
+        self._add_row(tab_proc, "DEFAULT_MAX_PARALLEL", "병렬 처리 수", 1)
+        self._add_row(tab_proc, "DEFAULT_MAX_RETRY", "캡차 재시도 횟수", 1)
+        self._add_row(tab_proc, "DEFAULT_RETRY_DELAY", "재시도 간 대기시간(초)", 1)
+        ctk.CTkLabel(
+            tab_proc,
+            text=(
+                "적용/확인 시 바로 반영됩니다. "
+                "병렬 처리 수는 「최대 병렬 처리 수」(일반 탭)를 넘지 않습니다."
+            ),
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+            justify="left",
+            wraplength=480,
+        ).pack(fill=tk.X, pady=(8, 4))
+
+        # ---------- 테마 탭 ----------
+        tab_theme = tabview.add("테마")
+        theme_row = ctk.CTkFrame(tab_theme, fg_color="transparent")
+        theme_row.pack(fill=tk.X, pady=4)
+        ctk.CTkLabel(
+            theme_row,
+            text="화면 테마",
+            font=ctk.CTkFont(size=12),
+            width=200,
+            anchor="w",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        theme_display = {
+            "Dark": "다크(Dark)",
+            "Light": "라이트(Light)",
+            "System": "시스템(System)",
+        }
+        mode = "Dark"
+        if self.app is not None:
+            mode = getattr(self.app, "_appearance_mode", None) or mode
+        self._theme_var = ctk.StringVar(
+            value=theme_display.get(mode, "다크(Dark)")
+        )
+        ctk.CTkOptionMenu(
+            theme_row,
+            values=["다크(Dark)", "라이트(Light)", "시스템(System)"],
+            variable=self._theme_var,
+            width=160,
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            tab_theme,
+            text="적용/확인 시 테마가 바로 반영되고 theme_config.json에 저장됩니다.",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+            justify="left",
+            wraplength=480,
+        ).pack(fill=tk.X, pady=(8, 4))
+
         # ---------- 자동화 탭 ----------
         tab_auto = tabview.add("자동화")
         self._add_row(tab_auto, "PUPPETEER_CAPTCHA_TIMEOUT", "캡차 캡처 타임아웃(초)", 1)
@@ -173,9 +229,15 @@ class SettingsDialog(ctk.CTkToplevel):
         btn_frame.pack(pady=(0, 12))
         ctk.CTkButton(
             btn_frame,
-            text="저장",
+            text="적용",
             width=100,
-            command=self._on_save,
+            command=lambda: self._on_apply(close=False),
+        ).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(
+            btn_frame,
+            text="확인",
+            width=100,
+            command=lambda: self._on_apply(close=True),
         ).pack(side=tk.LEFT, padx=4)
         ctk.CTkButton(
             btn_frame,
@@ -246,7 +308,16 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _fill_from_config(self):
         for key in self.entries:
-            val = getattr(config, key, "")
+            # 사건 조회 설정: 앱 런타임 IntVar가 있으면 그걸 우선(현재 세션 값)
+            if key == "DEFAULT_MAX_PARALLEL" and self.app and getattr(self.app, "max_parallel", None):
+                val = self.app.max_parallel.get()
+            elif key == "DEFAULT_MAX_RETRY" and self.app and getattr(self.app, "max_retry", None):
+                val = self.app.max_retry.get()
+            elif key == "DEFAULT_RETRY_DELAY" and self.app and getattr(self.app, "retry_delay", None):
+                val = self.app.retry_delay.get()
+            else:
+                val = getattr(config, key, "")
+            self.entries[key].delete(0, tk.END)
             self.entries[key].insert(0, str(val))
         self.calendar_enabled_var.set(int(getattr(config, "GOOGLE_CALENDAR_ENABLED", 0)))
         for key, tb in self.textboxes.items():
@@ -257,6 +328,17 @@ class SettingsDialog(ctk.CTkToplevel):
     def _collect_data(self):
         data = {}
         data["GOOGLE_CALENDAR_ENABLED"] = int(self.calendar_enabled_var.get())
+        int_keys = (
+            "PUPPETEER_CAPTCHA_TIMEOUT",
+            "PUPPETEER_PROCESSING_TIMEOUT",
+            "CAPTCHA_INPUT_TIMEOUT",
+            "MAX_PARALLEL_LIMIT",
+            "DEFAULT_MAX_PARALLEL",
+            "DEFAULT_MAX_RETRY",
+            "DEFAULT_RETRY_DELAY",
+            "GOOGLE_CALENDAR_ENABLED",
+            "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES",
+        )
         for key in config.USER_SETTINGS_OVERRIDABLE:
             if key == "GOOGLE_CALENDAR_ENABLED":
                 continue
@@ -267,9 +349,7 @@ class SettingsDialog(ctk.CTkToplevel):
             if key not in self.entries:
                 continue
             raw = self.entries[key].get().strip()
-            if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
-                       "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT",
-                       "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES"):
+            if key in int_keys:
                 try:
                     data[key] = int(raw) if raw else getattr(config, key, 0)
                 except ValueError:
@@ -278,8 +358,54 @@ class SettingsDialog(ctk.CTkToplevel):
                 data[key] = raw or getattr(config, key, "")
         return data
 
+    def _clamp_int(self, value, low, high, default):
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            v = int(default)
+        return max(low, min(high, v))
+
+    def _apply_processing_to_app(self, data):
+        """
+        사건 조회 설정(IntVar)과 테마를 앱 런타임에 즉시 반영합니다.
+        주니어: 다음 조회 웨이브부터 max_parallel 등이 이 값을 씁니다.
+        """
+        if self.app is None:
+            return
+        max_limit = int(data.get("MAX_PARALLEL_LIMIT") or getattr(config, "MAX_PARALLEL_LIMIT", 20))
+        parallel = self._clamp_int(
+            data.get("DEFAULT_MAX_PARALLEL"), 1, max_limit, config.DEFAULT_MAX_PARALLEL
+        )
+        retry = self._clamp_int(data.get("DEFAULT_MAX_RETRY"), 1, 10, config.DEFAULT_MAX_RETRY)
+        delay = self._clamp_int(data.get("DEFAULT_RETRY_DELAY"), 1, 10, config.DEFAULT_RETRY_DELAY)
+        if getattr(self.app, "max_parallel", None) is not None:
+            self.app.max_parallel.set(parallel)
+        if getattr(self.app, "max_retry", None) is not None:
+            self.app.max_retry.set(retry)
+        if getattr(self.app, "retry_delay", None) is not None:
+            self.app.retry_delay.set(delay)
+
+        # 테마
+        choice = (self._theme_var.get() if self._theme_var is not None else "") or ""
+        mode = (
+            "Dark"
+            if choice == "다크(Dark)"
+            else ("Light" if choice == "라이트(Light)" else "System")
+        )
+        if hasattr(self.app, "_apply_theme"):
+            self.app._apply_theme(mode)
+        if hasattr(self.app, "_save_theme_setting"):
+            self.app._save_theme_setting(mode)
+        if hasattr(self.app, "case_list") and self.app.case_list and hasattr(
+            self.app, "update_case_list_ui"
+        ):
+            try:
+                self.app.update_case_list_ui()
+            except Exception:
+                pass
+
     def _on_link_google(self):
-        # [저장] 전에도 연동 시도 가능: 입력창에 적힌 경로를 이번 호출용으로 config에 반영
+        # [적용] 전에도 연동 시도 가능: 입력창에 적힌 경로를 이번 호출용으로 config에 반영
         ent = self.entries.get("GOOGLE_OAUTH_CLIENT_SECRET_FILE")
         if ent is not None:
             typed = (ent.get() or "").strip()
@@ -326,18 +452,43 @@ class SettingsDialog(ctk.CTkToplevel):
 
             FirstRunDialog(self, app=self.app)
 
-    def _on_save(self):
+    def _on_apply(self, close=False):
+        """
+        설정 저장 + 런타임 반영.
+        close=False: 「적용」(창 유지 + 안내)
+        close=True: 「확인」(적용 후 닫기)
+        """
         try:
             data = self._collect_data()
-            # 폼에 없는 키(예: SHOW_FIRST_RUN_GUIDE)는 현재 메모리 값을 유지
+            # 병렬 수는 상한 클램프 후 다시 data에 반영
+            max_limit = self._clamp_int(
+                data.get("MAX_PARALLEL_LIMIT"),
+                1,
+                100,
+                getattr(config, "MAX_PARALLEL_LIMIT", 20),
+            )
+            data["MAX_PARALLEL_LIMIT"] = max_limit
+            data["DEFAULT_MAX_PARALLEL"] = self._clamp_int(
+                data.get("DEFAULT_MAX_PARALLEL"), 1, max_limit, config.DEFAULT_MAX_PARALLEL
+            )
+            data["DEFAULT_MAX_RETRY"] = self._clamp_int(
+                data.get("DEFAULT_MAX_RETRY"), 1, 10, config.DEFAULT_MAX_RETRY
+            )
+            data["DEFAULT_RETRY_DELAY"] = self._clamp_int(
+                data.get("DEFAULT_RETRY_DELAY"), 1, 10, config.DEFAULT_RETRY_DELAY
+            )
             for key in config.USER_SETTINGS_OVERRIDABLE:
                 if key not in data:
                     data[key] = getattr(config, key, None)
             config.save_user_settings(data)
             config.load_user_settings()
+            self._apply_processing_to_app(data)
             if self.on_save_callback:
                 self.on_save_callback()
         except Exception as e:
-            messagebox.showerror("저장 실패", str(e))
+            messagebox.showerror("적용 실패", str(e), parent=self)
             return
-        self.destroy()
+        if close:
+            self.destroy()
+        else:
+            messagebox.showinfo("설정", "적용되었습니다.", parent=self)

@@ -17,13 +17,16 @@ def handle_window_closing(app):
         return
     if getattr(app, "right_panel", None) is not None:
         try:
-            if app.right_panel.winfo_exists():
+            # 접힌 상태면 이미 저장된 펼침 폭을 유지 (탭 폭으로 덮어쓰지 않음)
+            if not getattr(app, "_progress_hidden", False) and app.right_panel.winfo_exists():
                 w = app.right_panel.winfo_width()
-                path = getattr(
-                    config, "RIGHT_PANEL_WIDTH_FILE", "right_panel_width.json"
-                )
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump({"width": w}, f, indent=2)
+                min_w = int(getattr(config, "RIGHT_PANEL_MIN_WIDTH", 280))
+                if w >= min_w:
+                    path = getattr(
+                        config, "RIGHT_PANEL_WIDTH_FILE", "right_panel_width.json"
+                    )
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump({"width": w}, f, indent=2)
         except Exception:
             pass
     if hasattr(app, "puppeteer_service"):

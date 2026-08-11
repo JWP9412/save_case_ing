@@ -443,8 +443,21 @@ class ProcessController:
                 self.app.update_captcha_image(case_index, image_path)
                 self.app.update_case_status(case_index, "캡차입력", "blue")
                 self.app.log_message(f"🔐 캡차 입력 대기: {case_number}")
-                self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
-                self.app.log_message("✅ 캡차 입력 완료 버튼 활성화됨")
+                # OCR 자동 제출 모드면 여기서 완료 버튼을 켜지 않음.
+                # (OCR 실패/수동 폴백·웨이브 미완일 때만 나중에 활성화)
+                ocr_auto = (
+                    getattr(config, "OCR_ENABLED", False)
+                    and getattr(config, "OCR_AUTO_SUBMIT", False)
+                )
+                if not ocr_auto:
+                    self.app.ui_queue.put(
+                        (
+                            "function",
+                            (self.app._set_control_btn_state, self.app.complete_btn, True),
+                            {},
+                        )
+                    )
+                    self.app.log_message("✅ 캡차 입력 완료 버튼 활성화됨")
                 return image_path
             self.app.log_message(f"❌ 캡차 이미지 캡처 실패: {case_number}")
             return False
@@ -612,6 +625,7 @@ class ProcessController:
             n_lanes = 1
 
         lanes = [[] for _ in range(n_lanes)]
+        queued_cases = []
         for case in cases:
             case_number = case.get("사건번호", "")
             case_index = self.app.find_case_index(case_number)
@@ -619,6 +633,9 @@ class ProcessController:
                 continue
             lane = self._lane_for_case(case_number, n_lanes)
             lanes[lane].append((case, case_index))
+            queued_cases.append(case)
+        # OCR auto-submit은 실제로 레인에 올라간 사건만 대기
+        self._wave_cases = list(queued_cases)
 
         def run_lane(lane_index, queue):
             # 레인마다 시작 시점을 살짝 어긋내 동시 Chrome launch 폭주를 줄입니다.
@@ -939,7 +956,10 @@ class ProcessController:
                     # OCR: 숫자 인식 → 입력칸 채움 (실패 시 수동 폴백 표시)
                     if isinstance(result_data, str) and os.path.isfile(result_data):
                         if getattr(config, "OCR_ENABLED", False):
-                            ocr_ok = self._run_ocr_fill_case(case, case_index, result_data)
+                            # sync_apply: UI 큐에 값이 들어간 뒤 auto-submit이 읽도록 대기
+                            ocr_ok = self._run_ocr_fill_case(
+                                case, case_index, result_data, sync_apply=True
+                            )
                             if not ocr_ok:
                                 self._set_manual_captcha_fallback(case_index, case_number)
                             else:
@@ -968,6 +988,11 @@ class ProcessController:
                     # 캡차 완료·cleanup 후 lane_events 가 set 될 때까지 락 유지
                     ev = threading.Event()
                     self.app.lane_events[case_number] = ev
+                    # 주니어: join() 뒤에 auto-submit을 두면 ev.wait()와 교착남.
+                    # lane 등록 직후(wait 전)에 전원 입력됐는지 확인하고 자동 제출.
+                    wave = getattr(self, "_wave_cases", None) or []
+                    if wave:
+                        self._try_auto_submit_captcha_wave(wave)
                     ev.wait()
                     return True
                 else:

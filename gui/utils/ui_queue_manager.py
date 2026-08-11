@@ -14,6 +14,35 @@ import tkinter as tk
 from tkinter import messagebox
 
 
+def append_status_log(app, text):
+    """
+    진행상황 로그에 한 줄 추가.
+    status_text 는 CTkTextbox 또는 StatusLogCanvas 어댑터입니다.
+    (Canvas도 insert/see/configure(state=...) API를 맞춰 두었습니다.)
+    Text 계열은 disabled 이므로 쓸 때만 normal 로 열었다가 다시 잠급니다.
+    Canvas 어댑터는 configure(state=...) 를 무시합니다.
+    """
+    st = getattr(app, "status_text", None)
+    if not st:
+        return
+    try:
+        if not st.winfo_exists():
+            return
+    except Exception:
+        return
+    try:
+        st.configure(state="normal")
+        st.insert("end", text)
+        st.see("end")
+    except Exception:
+        pass
+    finally:
+        try:
+            st.configure(state="disabled")
+        except Exception:
+            pass
+
+
 def process_ui_queue(app):
     """
     메인 스레드에서 주기적으로 호출되어 UI 업데이트 큐를 처리합니다.
@@ -28,9 +57,7 @@ def process_ui_queue(app):
             try:
                 if task == "log":
                     msg = args[0]
-                    if app.status_text and app.status_text.winfo_exists():
-                        app.status_text.insert("end", msg + "\n")
-                        app.status_text.see("end")
+                    append_status_log(app, msg + "\n")
 
                 elif task == "status":
                     case_index, display_text, text_color, bg_color = args
@@ -57,10 +84,9 @@ def process_ui_queue(app):
                         app.progress_var.set(percentage)
                     if hasattr(app, "progress_bar") and app.progress_bar.winfo_exists():
                         app.progress_bar.set(percentage / 100.0)
-                    if text_status and app.status_text and app.status_text.winfo_exists():
+                    if text_status:
                         timestamp = datetime.now().strftime("%H:%M:%S")
-                        app.status_text.insert("end", f"[{timestamp}] {text_status}\n")
-                        app.status_text.see("end")
+                        append_status_log(app, f"[{timestamp}] {text_status}\n")
 
                 elif task == "function":
                     func = args[0]

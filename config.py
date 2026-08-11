@@ -41,7 +41,7 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "4.14.1"
+APP_VERSION = "5.0.0"
 # 창 제목 및 헤더 제목에 쓰는 이름 (제품명: 미어캣싱)
 APP_TITLE = "미어캣싱"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -67,7 +67,9 @@ BTN_TEXT_PERIOD = "특정 기간 조회"
 BTN_TEXT_COMPARE = "시트-대법원 대조"
 BTN_TEXT_SHEET_MGMT = "사건 시트 관리 ▾"
 BTN_TEXT_CHECK_UPDATE = "버전 업데이트 확인"
-BTN_TEXT_HEARING_CALENDAR = "📅 기일 달력"
+BTN_TEXT_HEARING_CALENDAR = "달력"
+# 달력 버튼 아이콘 (이모지 대신). BASE_DIR 기준 상대경로.
+BTN_ICON_HEARING_CALENDAR = "assets/btn_calendar_icon.png"
 BTN_TEXT_CONTROL_TITLE = "제어 패널"
 
 # 신규 진행내용 비고: 영업일 지연 등록 표시
@@ -274,6 +276,8 @@ WINDOW_HEIGHT = 800
 
 # 우측 패널 너비
 RIGHT_PANEL_WIDTH = 400
+# 진행상황 패널 최소 너비(로고가 잘리지 않도록). progress_panel.LOGO_MAX_PX 와 맞춤
+RIGHT_PANEL_MIN_WIDTH = 280
 
 # 사건 목록 행 높이
 CASE_ROW_HEIGHT = 60
@@ -354,6 +358,9 @@ USER_SETTINGS_OVERRIDABLE = (
     "HEADER_IMAGE_PATH",
     "HEADER_BG_COLOR",
     "MAX_PARALLEL_LIMIT",
+    "DEFAULT_MAX_PARALLEL",
+    "DEFAULT_MAX_RETRY",
+    "DEFAULT_RETRY_DELAY",
     "SHOW_FIRST_RUN_GUIDE",
 )
 
@@ -381,6 +388,7 @@ def load_user_settings():
         val = data[key]
         if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
                    "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT",
+                   "DEFAULT_MAX_PARALLEL", "DEFAULT_MAX_RETRY", "DEFAULT_RETRY_DELAY",
                    "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES",
                    "SHOW_FIRST_RUN_GUIDE"):
             try:
