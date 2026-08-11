@@ -9,6 +9,7 @@ Why: 대량의 사건을 스크롤·검색·정렬·리사이즈할 수 있는 �
 import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
+import config
 from config import COL_NAMES
 
 
@@ -62,9 +63,10 @@ class CaseListPanel:
         case_frame = ctk.CTkFrame(parent, fg_color="transparent")
         case_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # ---- 제목 + 열 순서 설정 버튼 + 검색창 한 줄 (사건목록 관리 버튼 최우측) ----
+        # ---- 제목 + 열 순서 + 검색 + 기일 달력 + 사건목록 관리 (관리가 최우측) ----
         title_row = ctk.CTkFrame(case_frame, fg_color="transparent")
         title_row.pack(fill=tk.X, pady=(0, 4))
+        # side=RIGHT는 먼저 pack한 위젯이 더 오른쪽에 옴 → 관리를 먼저, 달력을 다음에
         manage_btn = ctk.CTkButton(
             title_row,
             text="사건목록 관리",
@@ -77,6 +79,21 @@ class CaseListPanel:
             command=app._open_case_list_manage_dialog,
         )
         manage_btn.pack(side=tk.RIGHT, padx=(8, 0))
+        # 기일 달력: 사건목록 관리 왼쪽. sanitize 미적용(📅 유지, 사건 목록 제목과 동일)
+        if hasattr(app, "open_hearing_calendar"):
+            app.hearing_cal_btn = ctk.CTkButton(
+                title_row,
+                text=getattr(config, "BTN_TEXT_HEARING_CALENDAR", "📅 기일 달력"),
+                font=ctk.CTkFont(family="맑은 고딕", size=12),
+                width=110,
+                height=28,
+                fg_color="#8E44AD",
+                hover_color="#6C3483",
+                text_color="#FFFFFF",
+                cursor="hand2",
+                command=app.open_hearing_calendar,
+            )
+            app.hearing_cal_btn.pack(side=tk.RIGHT, padx=(8, 0))
         search_frame = ctk.CTkFrame(title_row, fg_color="transparent")
         search_frame.pack(side=tk.RIGHT, padx=(16, 0))
         settings_btn = ctk.CTkButton(

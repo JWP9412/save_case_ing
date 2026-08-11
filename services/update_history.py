@@ -75,25 +75,25 @@ def get_days_since_update(case, history):
         return -1
 
 
-def get_days_until_hearing(hearing_info):
+def _parse_hearing_info_parts(hearing_info):
     """
-    기일 문자열에서 날짜를 파싱하여 오늘로부터 기일까지의 일수 반환.
+    hearing_info 문자열에서 종류·날짜·시각을 뽑습니다.
 
-    hearing_info: "변론기일 26.03.11.(14:00)" 또는 "판결선고기일 26.03.11.(14:00)" 형식.
-    반환: (hearing_date - today).days. 미래면 양수, 당일 0, 과거면 음수. 파싱 실패 시 None.
+    예: "변론기일 26.03.11.(14:00)" → (kind, date, "14:00") 또는 실패 시 None.
+    주니어 참고: 목록 UI용 최신 기일 1건 문자열과 같은 형식을 가정합니다.
     """
     if not hearing_info or not isinstance(hearing_info, str):
         return None
     s = hearing_info.strip()
-    # Y.MM.DD, YY.MM.DD 또는 YYYY.MM.DD 패턴 추출 (괄호 앞까지)
-    m = re.search(r"(\d{1,4})\.(\d{1,2})\.(\d{1,2})\.?", s)
-    if not m:
+    kind_m = re.search(r"(변론기일|감정기일|판결선고기일)", s)
+    date_m = re.search(r"(\d{1,4})\.(\d{1,2})\.(\d{1,2})\.?", s)
+    if not kind_m or not date_m:
         return None
+    time_m = re.search(r"\((\d{1,2}:\d{2})\)", s)
     try:
-        y_str, mo_str, d_str = m.group(1), m.group(2), m.group(3)
-        y = int(y_str)
-        mo = int(mo_str)
-        d = int(d_str)
+        y = int(date_m.group(1))
+        mo = int(date_m.group(2))
+        d = int(date_m.group(3))
         if y < 10:
             y = 2020 + y
         elif y < 100:
@@ -101,9 +101,51 @@ def get_days_until_hearing(hearing_info):
         if not (1 <= mo <= 12 and 1 <= d <= 31):
             return None
         hearing_date = date(y, mo, d)
-        return (hearing_date - date.today()).days
+        time_str = time_m.group(1) if time_m else "00:00"
+        return kind_m.group(1), hearing_date, time_str
     except (ValueError, TypeError):
         return None
+
+
+def get_days_until_hearing(hearing_info):
+    """
+    기일 문자열에서 날짜를 파싱하여 오늘로부터 기일까지의 일수 반환.
+
+    hearing_info: "변론기일 26.03.11.(14:00)" 또는 "판결선고기일 26.03.11.(14:00)" 형식.
+    반환: (hearing_date - today).days. 미래면 양수, 당일 0, 과거면 음수. 파싱 실패 시 None.
+    """
+    parts = _parse_hearing_info_parts(hearing_info)
+    if parts is None:
+        return None
+    _kind, hearing_date, _time_str = parts
+    return (hearing_date - date.today()).days
+
+
+def parse_hearing_info_to_event(hearing_info):
+    """
+    목록용 hearing_info 문자열을 달력용 이벤트 dict로 변환.
+
+    반환 예:
+      {"kind": "변론기일", "start": "2026-07-23T13:55:00", "label": "변론기일 26.07.23.(13:55)"}
+    파싱 실패 시 None.
+    """
+    parts = _parse_hearing_info_parts(hearing_info)
+    if parts is None:
+        return None
+    kind, hearing_date, time_str = parts
+    try:
+        hh, mm = time_str.split(":")
+        start_dt = datetime(hearing_date.year, hearing_date.month, hearing_date.day, int(hh), int(mm))
+    except (ValueError, TypeError):
+        start_dt = datetime(hearing_date.year, hearing_date.month, hearing_date.day)
+    label = (hearing_info or "").strip() or (
+        f"{kind} {hearing_date.strftime('%y.%m.%d.')}({time_str})"
+    )
+    return {
+        "kind": kind,
+        "start": start_dt.isoformat(),
+        "label": label,
+    }
 
 
 def serialize_hearing_events(events):
