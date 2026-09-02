@@ -20,6 +20,7 @@ import config
 # 상태 상수 (run_results 값)
 STATUS_SUCCESS = "성공"
 STATUS_NO_UPDATE = "변경없음"
+STATUS_RESULT_CHANGED = "결과변경"
 STATUS_FAIL = "실패"
 STATUS_CAPTCHA = "캡차"
 STATUS_NOT_QUERIED = "미조회"
@@ -33,7 +34,7 @@ def load_unsent_emails(file_path=None):
     """
     미발송 이메일 내역 로드.
 
-    반환: {"last_sent": "...", "updates": [...], "run_results": {...}}
+    반환: {"last_sent": "...", "updates": [...], "result_changes": [...], "run_results": {...}}
     """
     path = file_path or _get_path()
     try:
@@ -43,10 +44,12 @@ def load_unsent_emails(file_path=None):
                 if isinstance(data, dict) and "updates" in data:
                     if "run_results" not in data or not isinstance(data.get("run_results"), dict):
                         data["run_results"] = {}
+                    if "result_changes" not in data or not isinstance(data.get("result_changes"), list):
+                        data["result_changes"] = []
                     return data
     except Exception:
         pass
-    return {"last_sent": "", "updates": [], "run_results": {}}
+    return {"last_sent": "", "updates": [], "result_changes": [], "run_results": {}}
 
 
 def save_unsent_emails(data, file_path=None):
@@ -108,12 +111,42 @@ def add_new_update(case_number, updates, sheet_name="", sheet_url=""):
     save_unsent_emails(data)
 
 
+def add_result_changes(case_number, changes, sheet_name="", sheet_url=""):
+    """
+    송달 '결과' 칸만 바뀐 행을 미발송 목록에 추가합니다.
+
+    주니어 개발자 참고:
+    - updates(최신 업데이트)와 별도로 result_changes에 쌓습니다.
+    - old_result: 시트에 있던 이전 결과, result: 대법원에서 가져온 새 결과
+    """
+    data = load_unsent_emails()
+    if "result_changes" not in data:
+        data["result_changes"] = []
+    for ch in changes or []:
+        if not isinstance(ch, dict):
+            continue
+        data["result_changes"].append({
+            "case": case_number,
+            "date": ch.get("date", ""),
+            "content": ch.get("content", ""),
+            "old_result": ch.get("old_result", ""),
+            "result": ch.get("result", ""),
+            "dateColor": ch.get("dateColor") or "",
+            "contentColor": ch.get("contentColor") or "",
+            "resultColor": ch.get("resultColor") or "",
+            "sheet_name": sheet_name or "",
+            "sheet_url": _normalize_sheet_url(sheet_url),
+        })
+    save_unsent_emails(data)
+
+
 def clear_unsent_emails_and_update_last_sent(file_path=None):
     """
     발송 완료 후: updates·run_results를 비우고 last_sent를 현재 시간으로 갱신.
     """
     data = load_unsent_emails(file_path)
     data["updates"] = []
+    data["result_changes"] = []
     data["run_results"] = {}
     data["last_sent"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if "last_run_result" in data:
@@ -163,7 +196,7 @@ def record_run_results(results):
 
 def _sync_cache_from_run_results(run_results):
     """run_results dict → 구버전 success/fail/... 리스트 캐시."""
-    success, failed, no_update, captcha = [], [], [], []
+    success, result_changed, failed, no_update, captcha = [], [], [], [], []
     for cn, info in (run_results or {}).items():
         item = {
             "사건번호": info.get("사건번호") or cn,
@@ -177,9 +210,12 @@ def _sync_cache_from_run_results(run_results):
             failed.append(item)
         elif st == STATUS_CAPTCHA:
             captcha.append(item)
+        elif st == STATUS_RESULT_CHANGED:
+            result_changed.append(item)
         else:
             success.append(item)
     _last_run_result_cache["success_cases"] = success
+    _last_run_result_cache["result_changed_cases"] = result_changed
     _last_run_result_cache["failed_cases"] = failed
     _last_run_result_cache["no_update_cases"] = no_update
     _last_run_result_cache["captcha_cases"] = captcha
@@ -246,8 +282,9 @@ def get_summary_text():
     """
     data = load_unsent_emails()
     updates = data.get("updates", [])
+    result_changes = data.get("result_changes", [])
     last_sent = data.get("last_sent", "") or "없음"
-    if not updates:
+    if not updates and not result_changes:
         return "", last_sent
     lines = []
     for u in updates:
@@ -255,6 +292,13 @@ def get_summary_text():
         date = u.get("date", "")
         content = u.get("content", "")
         lines.append(f"{case} {date} -{content}-")
+    for ch in result_changes:
+        case = ch.get("case", "")
+        date = ch.get("date", "")
+        content = ch.get("content", "")
+        old_r = ch.get("old_result", "")
+        new_r = ch.get("result", "")
+        lines.append(f"{case} {date} -{content}- [결과변경: {old_r} → {new_r}]")
     return "\n".join(lines), last_sent
 
 
@@ -268,7 +312,7 @@ def _case_lists_from_run_results(run_results, all_cases=None):
     run_results + (선택) 전체 사건 목록 → 상태별 리스트.
     all_cases가 있으면 run_results에 없는 사건은 '미조회'로 분류합니다.
     """
-    success, no_update, failed, captcha, not_queried = [], [], [], [], []
+    success, no_update, failed, captcha, result_changed, not_queried = [], [], [], [], [], []
     seen = set()
 
     for cn, info in (run_results or {}).items():
@@ -285,6 +329,8 @@ def _case_lists_from_run_results(run_results, all_cases=None):
             failed.append(item)
         elif st == STATUS_CAPTCHA:
             captcha.append(item)
+        elif st == STATUS_RESULT_CHANGED:
+            result_changed.append(item)
         else:
             success.append(item)
 
@@ -301,7 +347,7 @@ def _case_lists_from_run_results(run_results, all_cases=None):
                 "사건명": case.get("사건명", ""),
             })
 
-    return success, no_update, failed, captcha, not_queried
+    return success, no_update, failed, captcha, result_changed, not_queried
 
 
 def _build_run_result_footer(
@@ -309,6 +355,7 @@ def _build_run_result_footer(
     failed_cases=None,
     no_update_cases=None,
     captcha_cases=None,
+    result_changed_cases=None,
     not_queried_cases=None,
     total_count=None,
 ):
@@ -317,12 +364,14 @@ def _build_run_result_footer(
     failed_cases = failed_cases or []
     no_update_cases = no_update_cases or []
     captcha_cases = captcha_cases or []
+    result_changed_cases = result_changed_cases or []
     not_queried_cases = not_queried_cases or []
     if not (
         success_cases
         or failed_cases
         or no_update_cases
         or captcha_cases
+        or result_changed_cases
         or not_queried_cases
     ):
         return ""
@@ -378,10 +427,12 @@ def _build_run_result_footer(
             + len(no_update_cases)
             + len(failed_cases)
             + len(captcha_cases)
+            + len(result_changed_cases)
             + len(not_queried_cases)
         )
     parts = [f"<h3>이번 조회 결과 요약 (전체 {total_count}건)</h3>"]
     parts.append(_render_case_table("성공", success_cases))
+    parts.append(_render_case_table("성공(결과 변경)", result_changed_cases))
     parts.append(_render_case_table("성공(변경없음)", no_update_cases))
     parts.append(_render_case_table("실패", failed_cases))
     parts.append(_render_case_table("캡차(재시도 안 함)", captcha_cases))
@@ -405,6 +456,7 @@ def get_summary_html(
     """
     data = load_unsent_emails()
     updates = data.get("updates", [])
+    result_changes = data.get("result_changes", [])
     last_sent = data.get("last_sent", "") or "없음"
     run_results = data.get("run_results") or {}
 
@@ -418,6 +470,7 @@ def get_summary_html(
         use_failed = failed_cases or []
         use_no_update = no_update_cases or []
         use_captcha = captcha_cases or []
+        use_result_changed = []
         use_not_queried = []
         if all_cases:
             seen = set()
@@ -435,7 +488,7 @@ def get_summary_html(
                         "사건명": case.get("사건명", ""),
                     })
     else:
-        use_success, use_no_update, use_failed, use_captcha, use_not_queried = (
+        use_success, use_no_update, use_failed, use_captcha, use_result_changed, use_not_queried = (
             _case_lists_from_run_results(run_results, all_cases=all_cases)
         )
 
@@ -444,10 +497,11 @@ def get_summary_html(
         or use_failed
         or use_no_update
         or use_captcha
+        or use_result_changed
         or use_not_queried
     )
 
-    if not updates and not has_footer:
+    if not updates and not result_changes and not has_footer:
         return "", last_sent
 
     body_parts = []
@@ -498,6 +552,55 @@ def get_summary_html(
             sections.append(table)
         body_parts.append(f"<h3>최신 업데이트 내역</h3>{'<br>'.join(sections)}")
 
+    if result_changes:
+        changes_by_sheet = {}
+        for ch in result_changes:
+            s_name = ch.get("sheet_name") or "기타"
+            if s_name not in changes_by_sheet:
+                changes_by_sheet[s_name] = []
+            changes_by_sheet[s_name].append(ch)
+        ch_sections = []
+        for s_name, sheet_changes in changes_by_sheet.items():
+            ch_sections.append(f"<h4>{_esc_html(s_name)}</h4>")
+            rep_url = next(
+                (
+                    _normalize_sheet_url(ch.get("sheet_url"))
+                    for ch in sheet_changes
+                    if ch.get("sheet_url")
+                ),
+                "",
+            )
+            if rep_url:
+                ch_sections.append(
+                    f'<div style="margin:-6px 0 8px 0;">'
+                    f'<a href="{_esc_html(rep_url)}" target="_blank" '
+                    f'style="color:#1a73e8; text-decoration:none; font-size:13px;">'
+                    f"바로가기 &rarr;</a></div>"
+                )
+            rows = ["<tr><th>일자</th><th>내용</th><th>이전 결과</th><th>변경 결과</th></tr>"]
+            for ch in sheet_changes:
+                date = ch.get("date", "")
+                content = ch.get("content", "")
+                old_result = ch.get("old_result", "")
+                result = ch.get("result", "")
+                dc = _rgb_to_css(ch.get("dateColor"))
+                cc = _rgb_to_css(ch.get("contentColor"))
+                rc = _rgb_to_css(ch.get("resultColor"))
+                rows.append(
+                    f"<tr>"
+                    f'<td style="color:{dc}">{_esc_html(date)}</td>'
+                    f'<td style="color:{cc}">{_esc_html(content)}</td>'
+                    f'<td>{_esc_html(old_result)}</td>'
+                    f'<td style="color:{rc}">{_esc_html(result)}</td>'
+                    f"</tr>"
+                )
+            table = (
+                '<table border="1" cellpadding="4" cellspacing="0" '
+                f'style="border-collapse:collapse;">{"".join(rows)}</table>'
+            )
+            ch_sections.append(table)
+        body_parts.append(f"<h3>결과 변경 내역</h3>{'<br>'.join(ch_sections)}")
+
     if has_footer:
         total = None
         if all_cases is not None:
@@ -508,6 +611,7 @@ def get_summary_html(
                 use_failed,
                 use_no_update,
                 use_captcha,
+                use_result_changed,
                 use_not_queried,
                 total_count=total,
             )

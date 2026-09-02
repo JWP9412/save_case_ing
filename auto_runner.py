@@ -199,7 +199,7 @@ def run_auto_batch():
     max_workers = getattr(config, "MAX_PARALLEL_INSTANCES", 3)
     
     # 처리 완료 여부: 건수 + 메일 하단용 결과 맵 (스레드 안전)
-    results = {"success": 0, "no_update": 0, "captcha": 0, "fail": 0}
+    results = {"success": 0, "no_update": 0, "result_changed": 0, "captcha": 0, "fail": 0}
     run_results_map = {}
     results_lock = threading.Lock()
 
@@ -227,6 +227,9 @@ def run_auto_batch():
                         if "변경없음" in status_text:
                             results["no_update"] += 1
                             case_info["상태"] = email_manager_module.STATUS_NO_UPDATE
+                        elif "결과변경" in status_text:
+                            results["result_changed"] += 1
+                            case_info["상태"] = email_manager_module.STATUS_RESULT_CHANGED
                         else:
                             results["success"] += 1
                             case_info["상태"] = email_manager_module.STATUS_SUCCESS
@@ -269,7 +272,8 @@ def run_auto_batch():
             future.result()  # 예외 확인
 
     app.log_message(
-        f"조회 완료: 성공 {results['success']}건, 변경없음 {results['no_update']}건, "
+        f"조회 완료: 성공 {results['success']}건, 결과변경 {results['result_changed']}건, "
+        f"변경없음 {results['no_update']}건, "
         f"캡차(재시도 안 함) {results['captcha']}건, 3회 시도 후 실패 {results['fail']}건"
     )
 

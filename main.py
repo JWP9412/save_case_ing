@@ -10,6 +10,10 @@
 import config
 config.load_user_settings()
 
+# 크래시/미처리 예외가 로그 파일에 남도록 가능한 한 빨리 설치합니다.
+from services.crash_guard import install_crash_guard
+install_crash_guard()
+
 from gui.main_window import run_app
 
 

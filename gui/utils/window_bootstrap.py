@@ -19,6 +19,7 @@ from services.process_controller import ProcessController
 from services.history_manager import HistoryManager
 from services.logger_service import setup_logger
 from services import update_history as update_history_service
+from services.crash_guard import attach_tk_callback_guard
 
 
 def _apply_window_icon(root, app):
@@ -80,6 +81,8 @@ def create_root_and_services(app):
     app.retry_delay = tk.IntVar(value=config.DEFAULT_RETRY_DELAY)
 
     setup_logger()
+    # Tk after/이벤트 콜백 예외도 파일 로그에 남깁니다.
+    attach_tk_callback_guard(app.root)
 
     app.google_sheets_service = GoogleSheetsService()
     app.puppeteer_service = PuppeteerService()

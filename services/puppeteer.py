@@ -51,7 +51,14 @@ class PuppeteerService:
         """로그 메시지 출력 (표준 로거 사용)"""
         logger.info(message)
 
-    def capture_captcha_image(self, case_number, defendant, court, instance_index=0):
+    def capture_captcha_image(
+        self,
+        case_number,
+        defendant,
+        court,
+        instance_index=0,
+        smart_skip_enabled=True,
+    ):
         """
         1단계: 프로세스 시작 및 캡차 캡처 (또는 스마트 스킵 확인).
         instance_index: 전용 차로제용. cookie_data_for_save/instance_N 사용.
@@ -84,6 +91,20 @@ class PuppeteerService:
             # Windows에서 node.exe를 띄우면 기본적으로 검은 콘솔 창이 열립니다.
             # CREATE_NO_WINDOW 를 주면 창 없이 백그라운드로만 실행됩니다.
             # stdin/stdout 파이프는 그대로라서 CaseIng과의 통신은 변하지 않습니다.
+            #
+            # Node 쪽 page.goto / 재시도 설정은 argv가 아니라 환경변수로 넘깁니다.
+            # (CLI 인자 순서를 바꾸면 기존 호출부가 깨지기 때문입니다.)
+            env = os.environ.copy()
+            env["CASEING_GOTO_TIMEOUT_MS"] = str(
+                getattr(config, "NODE_GOTO_TIMEOUT_MS", 45000)
+            )
+            env["CASEING_NAV_MAX_RETRY"] = str(
+                getattr(config, "NODE_NAV_MAX_RETRY", 2)
+            )
+            env["CASEING_NAV_RETRY_DELAY_MS"] = str(
+                getattr(config, "NODE_NAV_RETRY_DELAY_MS", 3000)
+            )
+            env["CASEING_SMART_SKIP_ENABLED"] = "1" if smart_skip_enabled else "0"
             popen_kwargs = dict(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -93,6 +114,7 @@ class PuppeteerService:
                 errors="ignore",
                 bufsize=1,  # 라인 버퍼링
                 cwd=base_dir,
+                env=env,
             )
             if os.name == "nt":
                 popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -241,7 +263,18 @@ class PuppeteerService:
                 try:
                     result = json.loads(json_str)
                     if result.get("success"):
-                        progress_data = result.get("progressData", [])
+                        progress_data = result.get("progressData")
+                        # 주니어 참고 (2026-08-12 사고):
+                        # success=true 라도 progressData가 없거나 리스트가 아니면
+                        # "0건 성공"으로 오인하지 않고 실패로 올립니다.
+                        if progress_data is None:
+                            self._log("❌ 처리 실패 (Node): 진행내용 데이터가 없습니다")
+                            return False
+                        if not isinstance(progress_data, list):
+                            self._log(
+                                f"❌ 처리 실패 (Node): 진행내용 타입 오류 ({type(progress_data).__name__})"
+                            )
+                            return False
                         # 일반내용은 반환값에 넣지 않고 별도 보관함으로
                         # (호출부가 list를 기대하므로 반환 타입을 깨뜨리지 않음)
                         general_info = result.get("generalInfo")
@@ -251,12 +284,18 @@ class PuppeteerService:
                                 f"📋 일반내용 수신: {case_number} "
                                 f"(basic={len((general_info or {}).get('basic') or {})}키)"
                             )
-                        self._log(f"✅ 처리 완료: {len(progress_data)}건 데이터 추출")
-                        # 빈 리스트일 경우 그대로 빈 리스트 반환 (True로 변환하지 않음)
+                        if len(progress_data) == 0:
+                            # 진짜 0건(화면에 '내용 없음')일 때만 여기 옵니다.
+                            # 실패를 빈 배열로 위장하던 경로는 더 이상 성공 로그를 찍지 않습니다.
+                            self._log("ℹ️ 처리 완료: 진행내용 0건 (정상 빈 결과)")
+                        else:
+                            self._log(f"✅ 처리 완료: {len(progress_data)}건 데이터 추출")
                         return progress_data
                     else:
                         error_msg = result.get("error", "Unknown error")
                         self._log(f"❌ 처리 실패 (Node): {error_msg}")
+                        if "WRONG_CAPTCHA" in str(error_msg):
+                            return {"status": "WRONG_CAPTCHA", "image_path": None}
                         return False
                 except json.JSONDecodeError:
                     self._log(f"❌ JSON 파싱 실패: {json_str[:100]}...")

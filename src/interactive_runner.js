@@ -98,17 +98,23 @@ async function main() {
         // 2. 사이트 접속
         await controller.navigateToSite();
 
-        // 3. 스마트 스킵 확인 (최근 검색 내역)
-        console.log(`🔍 [Smart Skip] 최근 검색 내역 확인 중: ${caseNumber}`);
-        const foundInRecent = await page.evaluate((targetNo) => {
-            const elements = document.querySelectorAll('a, td');
-            for (const el of elements) {
-                if (el.textContent.trim() === targetNo) {
-                    return true;
+        const smartSkipEnabled = String(process.env.CASEING_SMART_SKIP_ENABLED || '1') !== '0';
+        let foundInRecent = false;
+        if (smartSkipEnabled) {
+            // 3. 스마트 스킵 확인 (최근 검색 내역)
+            console.log(`🔍 [Smart Skip] 최근 검색 내역 확인 중: ${caseNumber}`);
+            foundInRecent = await page.evaluate((targetNo) => {
+                const elements = document.querySelectorAll('a, td');
+                for (const el of elements) {
+                    if (el.textContent.trim() === targetNo) {
+                        return true;
+                    }
                 }
-            }
-            return false;
-        }, caseNumber);
+                return false;
+            }, caseNumber);
+        } else {
+            console.log(`ℹ️ [Smart Skip] 설정으로 비활성화됨 (${caseNumber})`);
+        }
 
         if (foundInRecent) {
             console.log(`✅ [Smart Skip] 최근 검색 내역 발견!`);
@@ -151,6 +157,25 @@ async function main() {
                 await controller.clickRecentCase(caseNumber);
                 progressData = await controller.extractProgressData(caseNumber);
                 break;
+            }
+            if (input === "FORCE_CAPTCHA") {
+                foundInRecent = false;
+                console.log('ℹ️ [Interactive] FORCE_CAPTCHA 수신 - 캡차 경로로 전환');
+                await controller.selectCourt(court);
+                await controller.checkCaseNumberInputMode();
+                await controller.checkSaveSearchResult();
+                await controller.inputCaseNumber(caseNumber);
+                await controller.inputPartyName(defendant);
+                const captchaSelector = '#mf_ssgoTopMainTab_contents_content1_body_img_captcha';
+                await page.waitForSelector(captchaSelector, { timeout: 15000 });
+                const screenshotsDir = path.join(process.cwd(), 'screenshots');
+                await fs.mkdir(screenshotsDir, { recursive: true }).catch(() => { });
+                const filename = `${caseNumber}-${Date.now()}-captcha-force.png`;
+                const filepath = path.join(screenshotsDir, filename);
+                const element = await page.$(captchaSelector);
+                await element.screenshot({ path: filepath });
+                console.log(`WRONG_CAPTCHA_IMAGE: ${filepath}`);
+                continue;
             }
 
             wrongCaptchaOccurred = false;

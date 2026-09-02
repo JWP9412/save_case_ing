@@ -158,6 +158,14 @@ def _on_ui_update_complete(app):
             selected_count = sum(1 for v in app.case_checkboxes.values() if v.get())
             app.header_select_all_var.set(selected_count == len(app.case_checkboxes))
 
+        # 목록 갱신 후 선택 의존 버튼 상태 동기화
+        try:
+            from gui.utils import selection_manager as selection_manager_module
+
+            selection_manager_module.update_selection_dependent_buttons(app)
+        except Exception:
+            pass
+
         app.log_message(f"✅ UI 업데이트 완료: {n}건")
 
         app.case_canvas.yview_moveto(0)

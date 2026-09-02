@@ -479,7 +479,7 @@ class GoogleSheetsService:
                 return False
 
     @retry_on_quota_error()
-    def overwrite_progress_area(self, case, result_data, existing_values=None):
+    def overwrite_progress_area(self, case, result_data, existing_values=None, allow_empty=False):
         """
         진행내용 영역(A:F)을 대법원 데이터로 매번 처음부터 다시 기록합니다.
 
@@ -491,10 +491,14 @@ class GoogleSheetsService:
         - 사용자 메모는 A:F 바깥(G열 이후)에 있으므로 건드리지 않고 보존합니다.
         - 기존에 이미 있던 행은 5·6열(업데이트 표기/X)을 그대로 유지하고,
           새로 생긴 행만 "오늘 업데이트 됨"으로 표시합니다.
+        - allow_empty=False(기본): 기존 진행내용이 있는데 빈 데이터로 덮어쓰면
+          2026-08-12처럼 시트가 통째로 비워지므로 거부합니다.
+          정말 0건으로 맞추려면 allow_empty=True를 명시해야 합니다.
 
         매개변수:
         - existing_values: 이미 읽어둔 시트 전체 값(2차원 리스트). 넘기면 시트를 다시
           읽지 않아 API 호출(429 원인)을 아낍니다. None이면 이 함수가 직접 1회 읽습니다.
+        - allow_empty: True면 빈 result_data로 A:F를 비우는 것을 허용합니다.
 
         반환: 기록한 진행내용 행 수(int) 또는 False(실패).
         """
@@ -524,6 +528,17 @@ class GoogleSheetsService:
                     remove_timestamps=False,
                 )
                 old_row_count = len(existing_values)  # 헤더 포함 행 수
+
+                # 2026-08-12 사고 재발 방지:
+                # 기존 진행내용이 있는데 빈 데이터로 덮어쓰면 A:F가 통째로 사라집니다.
+                # allow_empty=True를 명시하지 않는 한 거부합니다.
+                existing_progress_count = self.count_progress_rows_from_values(existing_values)
+                if len(result_data) == 0 and existing_progress_count > 0 and not allow_empty:
+                    self._log(
+                        f"🛑 보호: {case_number} 빈 데이터로 덮어쓰기 거부 "
+                        f"(기존 진행내용 {existing_progress_count}행 보존, allow_empty=False)"
+                    )
+                    return False
 
                 # E·F 보존용 매핑 (덮어쓰기 전 기존 시트에서 읽음)
                 existing_map = {}          # 4열 키 → (E, F) — setdefault로 시트 위쪽(최초 등록) 우선

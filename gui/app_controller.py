@@ -100,6 +100,8 @@ class AppController:
         self.case_checkboxes = {}
         self.header_select_all_var = None
         self.processing_thread = None
+        # 캡차 제출 배치 스레드 중복 실행 방지 플래그
+        self._captcha_batch_running = False
 
         self._ui_updating = False
         self._extra_width_last_col = 0
@@ -571,6 +573,9 @@ class AppController:
 
     def start_processing_thread(self):
         """Start processing thread."""
+        if getattr(self, "_captcha_batch_running", False):
+            self.log_message("ℹ️ 캡차 제출 이미 진행 중 — 중복 시작 생략")
+            return
         processing_thread = threading.Thread(
             target=self.process_all_captcha_inputs, daemon=True
         )

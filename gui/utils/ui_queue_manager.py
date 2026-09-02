@@ -13,6 +13,10 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 
+from services.logger_service import get_logger
+
+_ui_logger = get_logger("ui_queue")
+
 
 def append_status_log(app, text):
     """
@@ -93,7 +97,8 @@ def process_ui_queue(app):
                     func(*args[1:], **kwargs)
 
             except Exception as e:
-                print(f"UI Queue 처리 중 오류: {e}")
+                # print만 하면 콘솔 없는 빌드에서 흔적이 사라지므로 파일 로그에 남깁니다.
+                _ui_logger.exception("UI Queue 처리 중 오류: %s", e)
             finally:
                 app.ui_queue.task_done()
 
@@ -148,7 +153,12 @@ def update_progress(app, percentage, status_text=""):
 
 def processing_completed(app):
     """처리 완료 후 UI 업데이트 (시작/중지 버튼 상태 및 완료 메시지)."""
-    app._set_control_btn_state(app.start_btn, True)
     app._set_control_btn_state(app.stop_btn, False)
+    try:
+        from gui.utils import selection_manager as selection_manager_module
+
+        selection_manager_module.update_selection_dependent_buttons(app)
+    except Exception:
+        app._set_control_btn_state(app.start_btn, True)
     app.log_message("🎉 모든 사건 처리 완료!")
     messagebox.showinfo("완료", "모든 사건 처리가 완료되었습니다.")

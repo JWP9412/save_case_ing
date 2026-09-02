@@ -11,14 +11,177 @@ Why: 사용자가 구글 시트 로드·수집·처리·중지를 한 곳에서 
 주니어 개발자 참고:
 - 버튼 문구는 config.BTN_TEXT_* 상수를 사용합니다(깨지는 이모지 제거).
 - glyphs.sanitize()로 한 번 더 감싸 혹시 남은 이모지도 정리합니다.
-- '사건 시트 관리'는 CTkOptionMenu가 아니라 tk.Menu 팝업입니다.
-  (값을 고르는 UI가 아니라 액션을 실행하는 UI이기 때문입니다.)
+- '사건 시트 관리'는 CTkOptionMenu가 아니라 CTkToplevel 팝업입니다.
+  (값을 고르는 UI가 아니라 액션을 실행하는 UI이기 때문입니다.
+   tk.Menu는 Windows 기본 흰 메뉴라 버튼과 폭·색이 안 맞아 CTk 팝업으로 통일.)
 """
 import tkinter as tk
 import customtkinter as ctk
 
 import config
 from gui.utils.glyphs import sanitize
+
+# 시트 관리 팝업 항목 높이·여백 (트리거 버튼과 톤 맞춤)
+_SHEET_POPUP_ITEM_H = 32
+_SHEET_POPUP_PAD = 4
+_SHEET_POPUP_FG = "#2980B9"
+_SHEET_POPUP_HOVER = "#1F618D"
+_SHEET_POPUP_BG = "#1A5276"
+
+
+def _close_sheet_mgmt_popup(app):
+    """열려 있는 시트 관리 팝업을 닫고 바깥클릭 바인딩을 해제합니다."""
+    popup = getattr(app, "_sheet_mgmt_popup", None)
+    app._sheet_mgmt_popup = None
+    bind_id = getattr(app, "_sheet_mgmt_outside_bind", None)
+    root = getattr(app, "root", None)
+    if root is not None and bind_id is not None:
+        try:
+            root.unbind("<Button-1>", bind_id)
+        except Exception:
+            pass
+        app._sheet_mgmt_outside_bind = None
+    esc_id = getattr(app, "_sheet_mgmt_esc_bind", None)
+    if root is not None and esc_id is not None:
+        try:
+            root.unbind("<Escape>", esc_id)
+        except Exception:
+            pass
+        app._sheet_mgmt_esc_bind = None
+    if popup is not None:
+        try:
+            if popup.winfo_exists():
+                popup.destroy()
+        except Exception:
+            pass
+
+
+def _open_sheet_mgmt_popup(app):
+    """
+    사건 시트 관리 CTk 드롭다운을 버튼 바로 아래에, 버튼과 같은 폭으로 엽니다.
+    이미 열려 있으면 토글로 닫습니다.
+    """
+    btn = getattr(app, "sheet_mgmt_btn", None)
+    if btn is None:
+        return
+    try:
+        if str(btn.cget("state")) == "disabled":
+            return
+    except Exception:
+        pass
+
+    # 토글: 이미 열려 있으면 닫기
+    existing = getattr(app, "_sheet_mgmt_popup", None)
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                _close_sheet_mgmt_popup(app)
+                return
+        except Exception:
+            app._sheet_mgmt_popup = None
+
+    items = []
+    if hasattr(app, "remove_duplicates_for_selected_cases"):
+        items.append(
+            (sanitize(config.BTN_TEXT_DEDUP), app.remove_duplicates_for_selected_cases)
+        )
+    if hasattr(app, "reset_and_refetch_selected_cases"):
+        items.append(
+            (sanitize(config.BTN_TEXT_RESET), app.reset_and_refetch_selected_cases)
+        )
+    if hasattr(app, "run_sheet_compare_for_selected_cases"):
+        items.append(
+            (sanitize(config.BTN_TEXT_COMPARE), app.run_sheet_compare_for_selected_cases)
+        )
+    if not items:
+        return
+
+    root = getattr(app, "root", None) or btn.winfo_toplevel()
+    btn.update_idletasks()
+    bw = max(ControlPanel.BTN_W, int(btn.winfo_width() or ControlPanel.BTN_W))
+    bx = int(btn.winfo_rootx())
+    by = int(btn.winfo_rooty() + btn.winfo_height())
+    n = len(items)
+    ph = _SHEET_POPUP_PAD * 2 + n * _SHEET_POPUP_ITEM_H + max(0, n - 1) * 2
+
+    popup = ctk.CTkToplevel(root)
+    popup.overrideredirect(True)
+    try:
+        popup.transient(root)
+    except Exception:
+        pass
+    popup.configure(fg_color=_SHEET_POPUP_BG)
+    popup.geometry(f"{bw}x{ph}+{bx}+{by}")
+    try:
+        popup.attributes("-topmost", True)
+    except Exception:
+        pass
+
+    frame = ctk.CTkFrame(popup, fg_color=_SHEET_POPUP_BG, corner_radius=6)
+    frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+
+    btn_font = ctk.CTkFont(family="맑은 고딕", size=12, weight="bold")
+
+    def _run_and_close(cmd):
+        _close_sheet_mgmt_popup(app)
+        if cmd:
+            cmd()
+
+    inner = ctk.CTkFrame(frame, fg_color="transparent")
+    inner.pack(fill=tk.BOTH, expand=True, padx=_SHEET_POPUP_PAD, pady=_SHEET_POPUP_PAD)
+    for i, (label, cmd) in enumerate(items):
+        row_btn = ctk.CTkButton(
+            inner,
+            text=label,
+            font=btn_font,
+            width=bw - _SHEET_POPUP_PAD * 2,
+            height=_SHEET_POPUP_ITEM_H,
+            corner_radius=ControlPanel.BTN_CORNER_RADIUS,
+            fg_color=_SHEET_POPUP_FG,
+            hover_color=_SHEET_POPUP_HOVER,
+            text_color="#FFFFFF",
+            cursor="hand2",
+            command=lambda c=cmd: _run_and_close(c),
+        )
+        row_btn.pack(fill=tk.X, pady=(0, 2) if i < n - 1 else 0)
+
+    app._sheet_mgmt_popup = popup
+
+    def _on_outside(event):
+        """팝업·트리거 버튼 밖을 클릭하면 닫기."""
+        try:
+            if not popup.winfo_exists():
+                return
+            px, py = popup.winfo_rootx(), popup.winfo_rooty()
+            pw, ph2 = popup.winfo_width(), popup.winfo_height()
+            ex, ey = event.x_root, event.y_root
+            inside_popup = px <= ex <= px + pw and py <= ey <= py + ph2
+            bx0, by0 = btn.winfo_rootx(), btn.winfo_rooty()
+            bw0, bh0 = btn.winfo_width(), btn.winfo_height()
+            inside_btn = bx0 <= ex <= bx0 + bw0 and by0 <= ey <= by0 + bh0
+            if not inside_popup and not inside_btn:
+                _close_sheet_mgmt_popup(app)
+        except Exception:
+            _close_sheet_mgmt_popup(app)
+
+    def _on_esc(_event=None):
+        _close_sheet_mgmt_popup(app)
+
+    # 살짝 뒤에 바인딩해, 방금 누른 버튼 클릭이 바로 닫히지 않게 함
+    def _bind_outside():
+        if getattr(app, "_sheet_mgmt_popup", None) is not popup:
+            return
+        try:
+            app._sheet_mgmt_outside_bind = root.bind("<Button-1>", _on_outside, add="+")
+            app._sheet_mgmt_esc_bind = root.bind("<Escape>", _on_esc, add="+")
+        except Exception:
+            pass
+
+    root.after(50, _bind_outside)
+    try:
+        popup.focus_force()
+    except Exception:
+        pass
 
 
 class ControlPanel:
@@ -45,25 +208,6 @@ class ControlPanel:
     def create(parent, app):
         """
         제어 패널 프레임을 생성하고, app에 버튼 참조를 저장한 뒤 반환합니다.
-
-        Parameters
-        ----------
-        parent : tk.Widget
-            부모 위젯.
-        app : object
-            메인 윈도우. 다음 메서드/속성이 필요합니다.
-            - get_theme_color(key)
-            - load_google_sheet()
-            - start_batch_processing()
-            - start_processing_thread()
-            - stop_batch_processing()
-            생성 후 app.refresh_btn, app.start_btn, app.complete_btn, app.stop_btn,
-            app._control_btn_colors, app._set_control_btn_state 가 설정됩니다.
-
-        Returns
-        -------
-        ctk.CTkFrame
-            제어 패널 프레임.
         """
         control_frame = ctk.CTkFrame(
             parent, fg_color=app.get_theme_color("bg_primary")
@@ -79,8 +223,8 @@ class ControlPanel:
             text_color=app.get_theme_color("text_main"),
         ).pack(anchor=tk.W, pady=(0, 8))
 
-        # 버튼별 "활성 시 색상"을 저장. 나중에 _set_control_btn_state에서 복원할 때 사용
         app._control_btn_colors = {}
+        app._sheet_mgmt_popup = None
 
         row1 = ctk.CTkFrame(control_frame, fg_color="transparent", height=ControlPanel.ROW_H)
         row1.pack(fill=tk.X, padx=0, pady=(0, 6))
@@ -106,14 +250,15 @@ class ControlPanel:
             row1,
             text=sanitize(config.BTN_TEXT_START_COLLECT),
             font=btn_font,
-            fg_color="#E67E22",
-            hover_color="#D35400",
-            text_color="#FFFFFF",
+            fg_color=ControlPanel.DISABLED_FG,
+            hover_color=ControlPanel.DISABLED_FG,
+            text_color=ControlPanel.DISABLED_TEXT,
             width=ControlPanel.BTN_W,
             height=ControlPanel.BTN_H,
             corner_radius=ControlPanel.BTN_CORNER_RADIUS,
             cursor="hand2",
             command=app.start_batch_processing,
+            state="disabled",
         )
         app._control_btn_colors[app.start_btn] = ("#E67E22", "#D35400", "#FFFFFF")
         app.start_btn.pack(side=tk.LEFT, padx=(0, 10), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
@@ -156,7 +301,7 @@ class ControlPanel:
         row2.pack(fill=tk.X, padx=0, pady=(0, 6))
         row2.pack_propagate(False)
 
-        # --- 사건 시트 관리: 클릭 시 드롭다운(팝업 메뉴) ---
+        # --- 사건 시트 관리: CTk 팝업 (버튼과 동일 폭·파란 톤) ---
         has_sheet_actions = any(
             hasattr(app, name)
             for name in (
@@ -166,39 +311,6 @@ class ControlPanel:
             )
         )
         if has_sheet_actions:
-            def _open_sheet_mgmt_menu():
-                # tearoff=0: 메뉴 위쪽 점선(분리) 제거
-                menu = tk.Menu(control_frame, tearoff=0)
-                if hasattr(app, "remove_duplicates_for_selected_cases"):
-                    menu.add_command(
-                        label=sanitize(config.BTN_TEXT_DEDUP),
-                        command=app.remove_duplicates_for_selected_cases,
-                    )
-                if hasattr(app, "reset_and_refetch_selected_cases"):
-                    menu.add_command(
-                        label=sanitize(config.BTN_TEXT_RESET),
-                        command=app.reset_and_refetch_selected_cases,
-                    )
-                if hasattr(app, "run_sheet_compare_for_selected_cases"):
-                    menu.add_command(
-                        label=sanitize(config.BTN_TEXT_COMPARE),
-                        command=app.run_sheet_compare_for_selected_cases,
-                    )
-                try:
-                    # 버튼 바로 아래에 메뉴 표시
-                    app.sheet_mgmt_btn.update_idletasks()
-                    x = app.sheet_mgmt_btn.winfo_rootx()
-                    y = (
-                        app.sheet_mgmt_btn.winfo_rooty()
-                        + app.sheet_mgmt_btn.winfo_height()
-                    )
-                    menu.tk_popup(x, y)
-                finally:
-                    try:
-                        menu.grab_release()
-                    except Exception:
-                        pass
-
             app.sheet_mgmt_btn = ctk.CTkButton(
                 row2,
                 text=sanitize(getattr(config, "BTN_TEXT_SHEET_MGMT", "사건 시트 관리")),
@@ -207,10 +319,11 @@ class ControlPanel:
                 height=ControlPanel.BTN_H,
                 corner_radius=ControlPanel.BTN_CORNER_RADIUS,
                 cursor="hand2",
-                fg_color="#2980B9",
-                hover_color="#1F618D",
-                text_color="#FFFFFF",
-                command=_open_sheet_mgmt_menu,
+                fg_color=ControlPanel.DISABLED_FG,
+                hover_color=ControlPanel.DISABLED_FG,
+                text_color=ControlPanel.DISABLED_TEXT,
+                command=lambda: _open_sheet_mgmt_popup(app),
+                state="disabled",
             )
             app._control_btn_colors[app.sheet_mgmt_btn] = ("#2980B9", "#1F618D", "#FFFFFF")
             app.sheet_mgmt_btn.pack(
@@ -219,7 +332,6 @@ class ControlPanel:
                 pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2,
             )
 
-        # 알림메일 발송 버튼 (미발송 내역이 있을 때만 활성 색상 표시)
         if hasattr(app, "send_notification_email"):
             app.email_btn = ctk.CTkButton(
                 row2,
@@ -237,7 +349,6 @@ class ControlPanel:
             app._control_btn_colors[app.email_btn] = ("#3498DB", "#2980B9", "#FFFFFF")
             app.email_btn.pack(side=tk.LEFT, padx=(0, 10), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
 
-        # 설정(Config 편집기) 버튼 - user_settings.json GUI (비활성 버튼과 구분되는 진한 색)
         if hasattr(app, "_open_settings_dialog"):
             settings_btn = ctk.CTkButton(
                 row2,
@@ -254,7 +365,6 @@ class ControlPanel:
             )
             settings_btn.pack(side=tk.LEFT, padx=(0, 0), pady=(ControlPanel.ROW_H - ControlPanel.BTN_H) // 2)
 
-        # --- 3행: 특정 기간 조회 / 버전 업데이트 확인 ---
         row3 = ctk.CTkFrame(control_frame, fg_color="transparent", height=ControlPanel.ROW_H)
         row3.pack(fill=tk.X, padx=0, pady=(0, 10))
         row3.pack_propagate(False)
@@ -268,10 +378,11 @@ class ControlPanel:
                 height=ControlPanel.BTN_H,
                 corner_radius=ControlPanel.BTN_CORNER_RADIUS,
                 cursor="hand2",
-                fg_color="#1ABC9C",
-                hover_color="#16A085",
-                text_color="#FFFFFF",
+                fg_color=ControlPanel.DISABLED_FG,
+                hover_color=ControlPanel.DISABLED_FG,
+                text_color=ControlPanel.DISABLED_TEXT,
                 command=app.run_period_query_for_selected_cases,
+                state="disabled",
             )
             app._control_btn_colors[app.period_btn] = ("#1ABC9C", "#16A085", "#FFFFFF")
             app.period_btn.pack(
@@ -310,15 +421,6 @@ class ControlPanel:
         """
         제어 패널 버튼 하나의 활성/비활성 상태와 색상을 갱신합니다.
         비활성 시 회색으로 보이도록 하고, 활성 시 _control_btn_colors에 저장된 색으로 복원합니다.
-
-        Parameters
-        ----------
-        app : object
-            _control_btn_colors 속성을 가진 메인 윈도우.
-        btn : ctk.CTkButton
-            대상 버튼.
-        enabled : bool
-            True면 활성(normal), False면 비활성(disabled) + 회색.
         """
         if enabled:
             colors = app._control_btn_colors.get(btn)
@@ -339,3 +441,5 @@ class ControlPanel:
                 hover_color=ControlPanel.DISABLED_FG,
                 text_color=ControlPanel.DISABLED_TEXT,
             )
+            if btn is getattr(app, "sheet_mgmt_btn", None):
+                _close_sheet_mgmt_popup(app)

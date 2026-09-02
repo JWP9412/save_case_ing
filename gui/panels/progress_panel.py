@@ -95,7 +95,7 @@ class StatusLogCanvas:
         self._line_layout = []  # redraw 시 [(line_idx, y0, y1), ...]
 
         # canvas + scrollbar
-        self._holder = tk.Frame(parent, bg=LOG_BG, highlightthickness=0)
+        self._holder = tk.Frame(parent, bg=LOG_BG, highlightthickness=0, padx=0, pady=0)
         self._holder.pack(fill=tk.BOTH, expand=True)
 
         self.canvas = tk.Canvas(
@@ -105,10 +105,18 @@ class StatusLogCanvas:
             borderwidth=0,
         )
         self._scrollbar = tk.Scrollbar(
-            self._holder, orient=tk.VERTICAL, command=self._on_scrollbar
+            self._holder,
+            orient=tk.VERTICAL,
+            command=self._on_scrollbar,
+            width=14,
+            bg="#2C3E50",
+            troughcolor="#1A252F",
+            activebackground="#1ABC9C",
+            highlightthickness=0,
+            borderwidth=0,
         )
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(2, 0))
 
         self._photo = _load_watermark_photo(master=self.canvas)
         if app is not None:
@@ -266,7 +274,8 @@ class StatusLogCanvas:
         total = max(1, len(self._lines))
         visible = self._visible_line_count()
         if total <= visible:
-            self._scrollbar.set(0.0, 1.0)
+            # 스크롤 대상이 없어도 트랙이 사라져 보이지 않지 않도록 아주 짧게 남깁니다.
+            self._scrollbar.set(0.0, 0.99)
             return
         first = self._scroll_y / total
         last = min(1.0, (self._scroll_y + visible) / total)

@@ -3,6 +3,7 @@ from datetime import datetime
 import tkinter as tk
 import customtkinter as ctk
 from config import COL_NAMES
+from gui.utils.bind_utils import bind_entry_return
 
 
 class CaseRow:
@@ -345,12 +346,10 @@ class CaseRow:
         captcha_entry.bind(
             "<KeyRelease>", lambda e, idx=index: app._validate_captcha_entry(idx)
         )
-        try:
-            captcha_entry.bind(
-                "<Return>", lambda e, idx=index: app.on_captcha_enter(idx)
-            )
-        except Exception:
-            pass
+        # CTkEntry 는 내부 _entry 에도 Enter 를 걸어야 키가 먹습니다.
+        bind_entry_return(
+            captcha_entry, lambda e, idx=index: app.on_captcha_enter(idx)
+        )
         components["captcha_var"] = captcha_var
         components["captcha_entry"] = captcha_entry
         

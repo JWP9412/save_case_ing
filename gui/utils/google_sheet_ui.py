@@ -100,9 +100,12 @@ def _apply_loaded_data_to_app(app, google_data):
         app.case_list = list(google_data)
     app.sort_case_list()
 
+    # 자동 병렬도 = min(사건수//2, AUTO_PARALLEL_CAP, MAX_PARALLEL_LIMIT)
+    # Chrome을 너무 많이 동시에 띄우면 대법원 접속 타임아웃·메모리 고갈이 납니다.
     max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+    auto_cap = getattr(config, "AUTO_PARALLEL_CAP", 4)
     n_cases = len(app.case_list)
-    smart_parallel = max(1, min(n_cases // 2, max_limit))
+    smart_parallel = max(1, min(n_cases // 2, auto_cap, max_limit))
     app.max_parallel.set(smart_parallel)
     if (
         hasattr(app, "_settings_parallel_entry")
@@ -110,6 +113,9 @@ def _apply_loaded_data_to_app(app, google_data):
     ):
         app._settings_parallel_entry.delete(0, tk.END)
         app._settings_parallel_entry.insert(0, str(smart_parallel))
+    app.log_message(
+        f"ℹ️ 자동 병렬도: {smart_parallel} (사건 {n_cases}건, 상한 {auto_cap})"
+    )
     if smart_parallel > 10:
         app.log_message(
             "⚠️ 고성능 모드: 인스턴스 폴더가 10개 이상 사용됩니다. 디스크/RAM 사용량이 늘어날 수 있습니다."
@@ -135,7 +141,9 @@ def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
             "▶ 사건 기록 수집 실행\n(캡차 로드 실행)",
         )
     )
-    app._set_control_btn_state(app.start_btn, True)
+    from gui.utils import selection_manager as selection_manager_module
+
+    selection_manager_module.update_selection_dependent_buttons(app)
 
     if error:
         app.log_message(f"❌ 구글 시트 로드 실패: {error}")
@@ -174,7 +182,7 @@ def load_google_sheet(app, force_network=False):
             "▶ 사건 기록 수집 실행\n(캡차 로드 실행)",
         )
     )
-    app._set_control_btn_state(app.start_btn, True)
+    # 네트워크 로드 시작 직전: 선택 의존 버튼은 아래에서 False로 잠금
     app.reset_internal_data()
 
     cookie_dir = getattr(config, "COOKIE_DATA_DIR", "cookie_data_for_save")

@@ -21,25 +21,52 @@ class PageController {
 
   /**
    * 대법원 사이트 접속
+   * 주니어 참고:
+   * - 1차 시도는 networkidle2 (완전한 로딩)
+   * - 재시도는 domcontentloaded 로 완화 (동시 접속 시 idle 대기가 자주 타임아웃남)
+   * - CASEING_* 환경변수는 Python(puppeteer.py)이 넘깁니다. 없으면 구버전과 동일하게 동작.
    */
   async navigateToSite() {
-    try {
-      console.log(`🌐 대법원 사이트 접속 중... (${this.browserId})`);
+    const gotoTimeout = parseInt(process.env.CASEING_GOTO_TIMEOUT_MS, 10) || 30000;
+    const maxRetry = parseInt(process.env.CASEING_NAV_MAX_RETRY, 10) || 0;
+    const retryDelayMs = parseInt(process.env.CASEING_NAV_RETRY_DELAY_MS, 10) || 3000;
+    const totalAttempts = 1 + Math.max(0, maxRetry);
+    let lastError = null;
 
-      await this.page.goto('https://ssgo.scourt.go.kr/ssgo/index.on?cortId=www', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
-      });
+    for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      try {
+        // 1차: networkidle2 / 재시도: domcontentloaded (부하 시 idle 대기 완화)
+        const waitUntil = attempt === 1 ? 'networkidle2' : 'domcontentloaded';
+        if (attempt === 1) {
+          console.log(`🌐 대법원 사이트 접속 중... (${this.browserId})`);
+        } else {
+          console.log(
+            `🔁 사이트 접속 재시도 (${attempt - 1}/${maxRetry}) waitUntil=${waitUntil} (${this.browserId})`
+          );
+          await new Promise((r) => setTimeout(r, retryDelayMs));
+        }
 
-      // 페이지 로딩 완료 대기
-      await this.page.waitForSelector('body', { timeout: 10000 });
+        await this.page.goto('https://ssgo.scourt.go.kr/ssgo/index.on?cortId=www', {
+          waitUntil,
+          timeout: gotoTimeout
+        });
 
-      console.log(`✅ 사이트 접속 완료 (${this.browserId})`);
-      return true;
-    } catch (error) {
-      console.error(`❌ 사이트 접속 실패 (${this.browserId}):`, error.message);
-      throw error;
+        // 페이지 로딩 완료 대기
+        await this.page.waitForSelector('body', { timeout: 10000 });
+
+        console.log(`✅ 사이트 접속 완료 (${this.browserId})`);
+        return true;
+      } catch (error) {
+        lastError = error;
+        console.error(
+          `⚠️ 사이트 접속 시도 ${attempt}/${totalAttempts} 실패 (${this.browserId}):`,
+          error.message
+        );
+      }
     }
+
+    console.error(`❌ 사이트 접속 실패 (${this.browserId}):`, lastError && lastError.message);
+    throw lastError;
   }
 
   /**
@@ -167,13 +194,32 @@ class PageController {
 
   /**
    * 법원 선택
+   * 주니어 참고:
+   * - select 요소가 안 보이면(페이지가 덜 뜬 경우) reload 후 1회만 재시도합니다.
+   * - 대기 시간은 CASEING_GOTO_TIMEOUT_MS 의 절반(최소 15초)을 씁니다.
    */
   async selectCourt(courtName) {
     try {
       console.log(`🏛️ 법원 선택 중: ${courtName} (${this.browserId})`);
 
-      // select 요소가 로드될 때까지 대기 (최대 15초)
-      await this.page.waitForSelector('select', { timeout: 15000 });
+      const gotoTimeout = parseInt(process.env.CASEING_GOTO_TIMEOUT_MS, 10) || 30000;
+      // select 대기는 goto 타임아웃의 절반, 최소 15초
+      const selectTimeout = Math.max(15000, Math.floor(gotoTimeout / 2));
+
+      // select 요소가 로드될 때까지 대기 (실패 시 reload 후 1회 재시도)
+      try {
+        await this.page.waitForSelector('select', { timeout: selectTimeout });
+      } catch (waitErr) {
+        console.log(
+          `⚠️ select 미발견 → 페이지 새로고침 후 재시도 (${this.browserId}): ${waitErr.message}`
+        );
+        try {
+          await this.page.reload({ waitUntil: 'domcontentloaded', timeout: gotoTimeout });
+        } catch (reloadErr) {
+          console.error(`⚠️ 페이지 reload 실패 (${this.browserId}):`, reloadErr.message);
+        }
+        await this.page.waitForSelector('select', { timeout: selectTimeout });
+      }
 
       // 모든 select 요소 찾기
       const selects = await this.page.$$('select');
@@ -498,8 +544,28 @@ class PageController {
       if (clicked) {
         console.log(`✅ [SMART SKIP] 최근 검색 결과 클릭 성공 (${this.browserId})`);
 
-        // 클릭 후 로딩 대기
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // 주니어 참고 (2026-08-12 사고):
+        // WebSquare는 이전 화면의 탭 DOM을 남겨 둡니다.
+        // "탭 엘리먼트가 존재하는가"만 보면 화면이 안 바뀌었는데도 즉시 통과해
+        // 진행내용 그리드를 못 찾고, 빈 배열([])이 정상 0건으로 둔갑했습니다.
+        // 상세 영역(wfSsgoDetail) 안에 해당 사건번호 + 기본내용 표지가
+        // 실제로 렌더될 때까지 기다립니다.
+        try {
+          await this.page.waitForFunction((targetNo) => {
+            const detail = document.querySelector('[id*="wfSsgoDetail"]');
+            if (!detail) return false;
+            const text = (detail.innerText || '').replace(/\s+/g, '');
+            const target = String(targetNo || '').replace(/\s+/g, '');
+            if (!target || !text.includes(target)) return false;
+            return text.includes('기본내용') || text.includes('사건명') || text.includes('원고');
+          }, { timeout: 8000 }, caseNumber);
+          console.log(`✅ [SMART SKIP] 상세 화면 렌더 확인 (${this.browserId})`);
+          // 탭/그리드가 안정화될 시간을 조금 더 줍니다.
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (e) {
+          console.log(`⚠️ [SMART SKIP] 상세 화면 렌더 대기 타임아웃 — 2초 보조 대기 (${this.browserId})`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
         return true;
       } else {
         throw new Error(`최근 검색 목록에서 사건번호(${caseNumber})를 찾을 수 없습니다.`);
@@ -958,19 +1024,34 @@ class PageController {
         throw new Error(errorMsg);
       }
 
+      // 탭 클릭 후 컨텐츠 영역이 열릴 때까지 짧게 대기
+      try {
+        await this.page.waitForFunction(() => {
+          const tabBody = document.querySelector('#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body');
+          if (!tabBody) return false;
+          const style = window.getComputedStyle(tabBody);
+          return style.display !== 'none' && style.visibility !== 'hidden';
+        }, { timeout: 2000 });
+      } catch (e) {
+        // 보조 대기 실패는 치명적이지 않음. 아래 그리드 대기로 이어집니다.
+      }
+
       // 2. 진행내용 그리드 대기 및 추출
       const gridSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body_grd_csProgLst_main_div';
-      console.log(`🔍 [DEBUG] 진행내용 그리드(#${gridSelector}) 대기 중... (최대 10초)`);
+      console.log(`🔍 [DEBUG] 진행내용 그리드(#${gridSelector}) 대기 중... (최대 18초)`);
 
       try {
-        await this.page.waitForSelector(gridSelector, { timeout: 10000 });
+        await this.page.waitForSelector(gridSelector, { timeout: 18000 });
         console.log(`✅ 진행내용 그리드 발견! (${this.browserId})`);
       } catch (error) {
         console.log(`⚠️ 기본 그리드 선택자 실패. 대체 선택자 시도... (${this.browserId})`);
         
         // 대체: 탭 컨텐츠 영역 내의 아무 그리드나 찾기
         const tabContentSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body';
-        const fallbackGrid = await this.page.$(`${tabContentSelector} .w2grid`);
+        const fallbackGrid =
+          (await this.page.$(`${tabContentSelector} .w2grid`)) ||
+          (await this.page.$(`${tabContentSelector} [id*="grd_csProgLst"]`)) ||
+          (await this.page.$(`${tabContentSelector} div.w2grid_main_div`));
         
         if (fallbackGrid) {
              console.log(`✅ 대체 그리드 발견! (${this.browserId})`);
@@ -980,10 +1061,16 @@ class PageController {
              
              // 혹시 "조회된 내용이 없습니다" 같은 메시지가 있는지 확인
              const bodyText = await this.page.$eval('body', el => el.innerText);
+             if (bodyText.includes('자동입력방지') || bodyText.includes('일치하지')) {
+                 throw new Error(`WRONG_CAPTCHA: ${error.message}`);
+             }
              if (bodyText.includes('조회된 내용이 없습니다') || bodyText.includes('검색결과가 없습니다')) {
                  console.log(`ℹ️ [DEBUG] 화면에 '내용 없음' 메시지 감지됨 -> 정상 결과(0건)로 처리`);
                  return [];
              }
+             const debugPath = `screenshots/grid_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
+             await this.page.screenshot({ path: debugPath, fullPage: true });
+             console.log(`📸 [DEBUG] 그리드 미발견 스크린샷: ${debugPath}`);
              
              throw new Error(errorMsg);
         }
@@ -1087,8 +1174,12 @@ class PageController {
       console.log(`⚠️ 진행내용 데이터가 없습니다 (${this.browserId})`);
       return [];
     } catch (error) {
+      // 주니어 참고 (2026-08-12 사고):
+      // 여기서 return [] 하면 호출부는 "조회 성공, 진행내용 0건"으로 오인합니다.
+      // 실패는 실패로 다시 던져서 Python이 시트를 덮어쓰지 못하게 합니다.
+      // 진짜 0건은 위쪽 "조회된 내용이 없습니다" 분기에서만 return [] 합니다.
       console.error(`❌ 진행내용 데이터 추출 실패 (${this.browserId}):`, error.message);
-      return [];
+      throw error;
     }
   }
 

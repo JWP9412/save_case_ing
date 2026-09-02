@@ -107,8 +107,28 @@ def validate_captcha_entry(app, index):
         app.case_inputs[index].set(cleaned)
 
 
+def _entry_is_disabled(app, case_index):
+    """캡차 Entry 가 disabled(OCR 잠금 등)인지."""
+    entry = getattr(app, "case_entries", {}).get(case_index)
+    if entry is None:
+        return False
+    try:
+        if not entry.winfo_exists():
+            return True
+        return str(entry.cget("state")) == "disabled"
+    except Exception:
+        return False
+
+
 def on_captcha_enter(app, case_index):
-    """캡차 입력 후 엔터키 처리 (다음 입력칸으로만 이동)."""
+    """
+    캡차 입력칸 Enter: 6자리면 확정(입력완료) 후 다음 칸으로 이동.
+    OCR 잠금(disabled) 칸에서는 무시합니다.
+    """
+    if _entry_is_disabled(app, case_index):
+        return
+
+    validate_captcha_entry(app, case_index)
     captcha_input = get_captcha_input(app, case_index)
     if captcha_input and captcha_input.strip():
         if len(captcha_input) == 6 and captcha_input.isdigit():
@@ -117,6 +137,8 @@ def on_captcha_enter(app, case_index):
             )
             app.update_case_status(case_index, "입력완료", "blue")
             move_to_next_input(app, case_index)
+            # 웨이브 대기 중이면 자동 제출 재검사 (OCR 완료 건 + 수동 채운 건)
+            _try_auto_submit_after_manual_enter(app)
         else:
             app.log_message(
                 f"⚠️ 캡차 입력 형식 오류: {captcha_input} (길이: {len(captcha_input)}, 숫자여부: {captcha_input.isdigit()})"
@@ -125,34 +147,70 @@ def on_captcha_enter(app, case_index):
         app.log_message(f"⚠️ 캡차 입력이 비어있습니다 (사건 인덱스: {case_index})")
 
 
+def _try_auto_submit_after_manual_enter(app):
+    """수동 Enter 확정 후, 대기 중인 웨이브가 있으면 자동 제출을 다시 검사합니다."""
+    try:
+        pc = getattr(app, "process_controller", None)
+        if pc is None:
+            return
+        wave = getattr(pc, "_wave_cases", None) or []
+        if not wave:
+            return
+        pc._try_auto_submit_captcha_wave(wave)
+    except Exception:
+        pass
+
+
 def move_to_next_input(app, current_case_index):
-    """다음 입력칸으로 포커스 이동 (선택된 사건 목록에서 현재보다 뒤, 없으면 맨 앞)."""
+    """
+    다음 입력칸으로 포커스 이동 (선택된 사건 중 disabled 가 아닌 칸).
+    반환: 포커스를 옮겼으면 True, 더 이상 없으면 False.
+    """
     try:
         selected_cases = app.get_selected_cases()  # [(case_index, case), ...]
-        next_index = None
 
-        for idx, _ in selected_cases:
-            if idx > current_case_index and idx in app.case_inputs:
+        def _candidates_after(start_exclusive):
+            for idx, _ in selected_cases:
+                if idx <= start_exclusive:
+                    continue
+                if idx not in app.case_inputs:
+                    continue
+                if _entry_is_disabled(app, idx):
+                    continue
+                yield idx
+
+        next_index = next(_candidates_after(current_case_index), None)
+        if next_index is None:
+            # 현재보다 뒤가 없으면 앞에서부터 (현재 자신 제외)
+            for idx, _ in selected_cases:
+                if idx == current_case_index:
+                    continue
+                if idx not in app.case_inputs:
+                    continue
+                if _entry_is_disabled(app, idx):
+                    continue
                 next_index = idx
                 break
 
-        if next_index is None:
-            for idx, _ in selected_cases:
-                if idx in app.case_inputs:
-                    next_index = idx
-                    break
-
-        if next_index is not None and next_index in app.case_inputs:
-            if next_index in app.case_entries and app.case_entries[next_index].winfo_exists():
-                app.case_entries[next_index].focus()
+        if next_index is not None and next_index in app.case_entries:
+            entry = app.case_entries[next_index]
+            if entry.winfo_exists():
+                entry.focus()
+                try:
+                    entry.icursor("end")
+                except Exception:
+                    pass
                 app.log_message(f"🔄 다음 입력칸으로 이동: 사건 인덱스 {next_index}")
-            else:
-                app.log_message("⚠️ 입력칸을 찾을 수 없습니다")
-        else:
-            app.log_message("ℹ️ 다음 입력할 사건이 없습니다")
+                return True
+            app.log_message("⚠️ 입력칸을 찾을 수 없습니다")
+            return False
+
+        app.log_message("ℹ️ 다음 입력할 사건이 없습니다")
+        return False
 
     except Exception as e:
         app.log_message(f"⚠️ 다음 입력칸 이동 실패: {e}")
+        return False
 
 
 def update_captcha_image(app, case_index, image_path):
@@ -193,6 +251,13 @@ def update_captcha_image(app, case_index, image_path):
                     f"🔍 [DEBUG] 이미지 파일 확인: 인덱스 {case_index}, 경로: {image_path} ({file_size} bytes)"
                 )
 
+                # 수동 모아보기 창·폴백용 경로 보관
+                paths = getattr(app, "case_captcha_image_paths", None)
+                if paths is None:
+                    app.case_captcha_image_paths = {}
+                    paths = app.case_captcha_image_paths
+                paths[case_index] = image_path
+
                 from PIL import Image, ImageTk
 
                 img = Image.open(image_path)
@@ -204,6 +269,15 @@ def update_captcha_image(app, case_index, image_path):
                 image_label.image = photo
 
                 app.root.update_idletasks()
+
+                # 수동 모아보기 창이 열려 있으면 이미지도 갱신
+                dlg = getattr(app, "_manual_captcha_dialog", None)
+                if dlg is not None:
+                    try:
+                        if dlg.winfo_exists():
+                            dlg.update_image(case_index, image_path)
+                    except Exception:
+                        pass
 
                 app.log_message(
                     f"🖼️ [DEBUG] 캡차 이미지 업데이트 성공: 인덱스 {case_index}, 사건번호: {app.case_list[case_index].get('사건번호', '') if case_index < len(app.case_list) else 'N/A'}"
