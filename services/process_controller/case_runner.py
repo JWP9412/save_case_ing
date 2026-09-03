@@ -43,12 +43,6 @@ class CaseRunnerMixin:
         h = int(hashlib.md5(case_number.encode("utf-8")).hexdigest(), 16)
         return h % max_profiles
 
-    # -------------------------------------------------------------------------
-    # 데이터/시트·Puppeteer 래퍼 (GUI 없이 app 서비스만 사용)
-    # -------------------------------------------------------------------------
-
-    @staticmethod
-
     def start_processing(self, cases):
         """
         캡차 이미지 로드 시작.

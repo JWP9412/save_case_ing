@@ -92,6 +92,7 @@ class StatusLogCanvas:
         self._sel_anchor = None  # 선택 시작 줄
         self._sel_end = None  # 선택 끝 줄
         self._dragging = False
+        self._moved = False  # 드래그로 실제 이동했는지 (단순 클릭과 구분)
         self._line_layout = []  # redraw 시 [(line_idx, y0, y1), ...]
 
         # canvas + scrollbar
@@ -101,22 +102,22 @@ class StatusLogCanvas:
         self.canvas = tk.Canvas(
             self._holder,
             bg=LOG_BG,
+            width=1,
             highlightthickness=0,
             borderwidth=0,
         )
-        self._scrollbar = tk.Scrollbar(
+        # 스크롤바를 먼저 pack 해야 좁은 패널에서도 오른쪽에 항상 보입니다.
+        self._scrollbar = ctk.CTkScrollbar(
             self._holder,
-            orient=tk.VERTICAL,
+            orientation="vertical",
             command=self._on_scrollbar,
             width=14,
-            bg="#2C3E50",
-            troughcolor="#1A252F",
-            activebackground="#1ABC9C",
-            highlightthickness=0,
-            borderwidth=0,
+            fg_color="#2C3E50",
+            button_color="#7F8C8D",
+            button_hover_color="#1ABC9C",
         )
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(2, 0))
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self._photo = _load_watermark_photo(master=self.canvas)
         if app is not None:
@@ -184,10 +185,7 @@ class StatusLogCanvas:
     config = configure
 
     def get(self, start="1.0", end="end-1c"):
-        """선택 구간이 있으면 선택만, 없으면 전체(복사 버튼용)."""
-        selected = self.get_selected_text()
-        if selected is not None:
-            return selected
+        """전체 로그 문자열 (복사 버튼용). 선택과 무관하게 항상 전체."""
         body = "\n".join(self._lines)
         if self._pending:
             body = (body + "\n" + self._pending) if body else self._pending
@@ -310,6 +308,7 @@ class StatusLogCanvas:
         self.canvas.focus_set()
         if not self._lines:
             return
+        self._moved = False
         idx = self._line_index_at_y(event.y)
         self._sel_anchor = idx
         self._sel_end = idx
@@ -319,6 +318,7 @@ class StatusLogCanvas:
     def _on_drag(self, event):
         if not self._dragging or not self._lines:
             return
+        self._moved = True
         # 위/아래 밖으로 드래그하면 스크롤
         h = max(1, int(self.canvas.winfo_height() or 1))
         if event.y < 0:
@@ -330,7 +330,13 @@ class StatusLogCanvas:
         self._redraw()
 
     def _on_release(self, _event):
+        # 드래그 없이 클릭만 한 경우 선택 해제 (Ctrl+C·복사 오동작 방지)
+        if self._dragging and not self._moved:
+            self._sel_anchor = None
+            self._sel_end = None
+            self._redraw()
         self._dragging = False
+        self._moved = False
 
     def _on_copy_sel(self, _event=None):
         text = self.get_selected_text()
@@ -681,8 +687,8 @@ class ProgressPanel:
         bottom_row.pack(fill=tk.X, pady=(0, 4))
         ctk.CTkButton(
             bottom_row,
-            text="📋 복사",
-            width=60,
+            text="📋 전체 복사",
+            width=80,
             command=copy_log_to_clipboard,
         ).pack(side=tk.LEFT, padx=(0, 8))
         ctk.CTkButton(

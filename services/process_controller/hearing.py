@@ -33,6 +33,7 @@ from services import google_calendar as google_calendar_module
 class HearingMixin:
     """Mixin - self.app 을 통해 GUI/서비스에 접근."""
 
+    @staticmethod
     def _normalize_text(text):
         """비교용: 공백 제거하여 중복 오판 방지."""
         if text is None:

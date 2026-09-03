@@ -1,11 +1,11 @@
 # case-ing (미어캣싱)
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.1.0**  
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.1.1**  
 제품 UI 명칭: **미어캣싱** (저장소/폴더명 case-ing 유지)
 
 - 개발자 : 박지원 -
 
-공식 버전 순서: **v5.0.0 → v5.1.0**
+공식 버전 순서: **v5.1.0 → v5.1.1**
 
 ## 원본 출처
 
@@ -27,7 +27,7 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 ```
 case-ing/
 ├── auto_runner.py               CLI 실행기
-├── config.py                    설정 상수 (APP_VERSION = "5.1.0", APP_TITLE = "미어캣싱")
+├── config.py                    설정 상수 (APP_VERSION = "5.1.1", APP_TITLE = "미어캣싱")
 ├── main.py                      진입점 (GUI 또는 --auto)
 ├── requirements.txt             Python 패키지
 ├── data/                        설정·이력 JSON
@@ -156,18 +156,18 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 
 ---
 
-## 현재 버전 특징 (v5.1.0)
+## 현재 버전 특징 (v5.1.1)
 
-1. **알림메일 결과 변경 분리** — 송달「결과」만 바뀐 행을「결과 변경 내역」으로 따로 표시. 요약에「성공(결과 변경)」.
-2. **시트 진행내용 보호** — 조회 실패를 0건으로 오인해 시트가 비워지던 사고 재발 방지 (3중 가드). `99.Error case` 문서화.
-3. **캡차·OCR 안정화** — 수동 창 화면 밖 표시 수정, 중지 후 자동 제출 차단, 스마트 스킵 실패 시 정규 캡차 폴백.
-4. **ProcessController 패키지화** — 2,300줄 단일 파일을 역할별 mixin으로 분리 (import 호환 유지).
-5. **v5.0.0 기능 유지** — 기일 달력·설정 창·진행상황 Canvas·기간조회·시트 관리·OCR·포터블·CLI `--auto` 등.
+1. **시작 버튼 오류 수정** — 패키지 분리 후 「사건 기록 수집 실행」 클릭 시 `cases` 인자 오류 해결.
+2. **진행상황 스크롤바** — CTkScrollbar + pack 순서 수정으로 항상 보이게.
+3. **「전체 복사」** — 진행상황 로그 전체를 클립보드에 복사 (한 줄만 복사되던 버그 수정).
+4. **v5.1.0 기능 유지** — 메일 결과변경 분리, 시트 보호, 캡cha/OCR 안정화, ProcessController 패키지 등.
 
 ---
 
 ## 개발 히스토리
 
+- **v5.1.1**: 시작 버튼 TypeError 수정, 진행상황 스크롤바·전체 복사 버그 수정
 - **v5.1.0**: 시트 보호·메일 결과변경 분리·캡차/OCR 안정화·ProcessController 패키지 분리
 - **v5.0.0**: 4.12.1 이후 누적 기능 통합 릴리스 (기일 달력·설정·OCR·진행상황·기간조회·시트 관리 등)
 - **v4.12.1**: Windows node.exe 콘솔 창 숨김 (CREATE_NO_WINDOW)
@@ -179,9 +179,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 - **v4.7.0**: 구글 캘린더·OAuth, 기록 초기화·재수집
 - **v4.6.x ~ v4.0.0**: 목록 캐시·관리 UI, 아키텍처, CLI, 알림메일 등
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.1.0.md](00.CHANGELOG/CHANGELOG_v5.1.0.md)  
-버전별 README: [00.README/README_v5.1.0.md](00.README/README_v5.1.0.md)  
-구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.0.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.0.md)
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.1.1.md](00.CHANGELOG/CHANGELOG_v5.1.1.md)  
+버전별 README: [00.README/README_v5.1.1.md](00.README/README_v5.1.1.md)  
+구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.1.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.1.md)
 
 ---
 
