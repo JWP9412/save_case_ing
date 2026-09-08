@@ -159,14 +159,56 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # ---------- 사건 조회 설정 탭 (병렬·재시도 등) ----------
         tab_proc = tabview.add("사건 조회 설정")
-        self._add_row(tab_proc, "DEFAULT_MAX_PARALLEL", "병렬 처리 수", 1)
+        self._add_row(tab_proc, "PROFILE_COUNT", "브라우저 프로필 수", 1)
+        self._add_row(
+            tab_proc,
+            "DEFAULT_MAX_PARALLEL",
+            "병렬 처리 수 (프로필 수와 동일)",
+            1,
+        )
         self._add_row(tab_proc, "DEFAULT_MAX_RETRY", "캡차 재시도 횟수", 1)
         self._add_row(tab_proc, "DEFAULT_RETRY_DELAY", "재시도 간 대기시간(초)", 1)
+
+        case_count = 0
+        if self.app is not None:
+            try:
+                case_count = len(getattr(self.app, "case_list", []) or [])
+            except Exception:
+                case_count = 0
+        # 권장: 프로필당 40건 이하 → ceil(case_count/40), 최소 2
+        import math
+
+        recommended = max(2, int(math.ceil(case_count / 40.0))) if case_count else 2
+        mem_hint = ""
+        try:
+            import psutil
+
+            available_mb = psutil.virtual_memory().available / (1024 * 1024)
+            estimate = int(getattr(config, "CHROME_MEM_ESTIMATE_MB", 450) or 450)
+            capacity = max(1, int((available_mb * 0.6) / max(estimate, 1)))
+            if recommended > capacity:
+                mem_hint = f"\n- 현재 가용 메모리로는 최대 약 {capacity}개 권장"
+            mem_hint += f"\n- 현재 가용 메모리 약 {available_mb/1024:.1f}GB (Chrome 1개≈{estimate}MB)"
+        except Exception:
+            pass
+
         ctk.CTkLabel(
             tab_proc,
             text=(
-                "적용/확인 시 바로 반영됩니다. "
-                "병렬 처리 수는 「최대 병렬 처리 수」(일반 탭)를 넘지 않습니다."
+                "브라우저 프로필 수 = 동시에 뜨는 Chrome 개수입니다.\n\n"
+                "- 대법원 최근 검색 기록은 프로필 1개당 50건까지 저장됩니다.\n"
+                "  안전하게 프로필당 40건 이하가 되도록 잡으세요.\n\n"
+                "  사건 80건 이하  → 2개\n"
+                "  사건 160건 이하 → 4개 (권장 기본값)\n"
+                "  사건 240건 이하 → 6개\n"
+                "  사건 320건 이하 → 8개\n\n"
+                f"- 많을수록 빠르지만 메모리를 더 씁니다.\n"
+                f"- 현재 사건 {case_count}건 → 권장 {recommended}개"
+                f"{mem_hint}\n\n"
+                "※ 이 값을 바꾸면 사건과 프로필의 짝이 새로 정해집니다.\n"
+                "   바꾼 직후 한 바퀴는 캡차를 다시 풀어야 하고,\n"
+                "   두 번째 바퀴부터 캡차 생략이 정상 동작합니다.\n\n"
+                "적용/확인 시 바로 반영됩니다. 병렬 처리 수는 프로필 수와 같게 유지됩니다."
             ),
             font=ctk.CTkFont(size=11),
             anchor="w",
@@ -334,6 +376,7 @@ class SettingsDialog(ctk.CTkToplevel):
             "CAPTCHA_INPUT_TIMEOUT",
             "MAX_PARALLEL_LIMIT",
             "DEFAULT_MAX_PARALLEL",
+            "PROFILE_COUNT",
             "DEFAULT_MAX_RETRY",
             "DEFAULT_RETRY_DELAY",
             "GOOGLE_CALENDAR_ENABLED",
@@ -368,14 +411,21 @@ class SettingsDialog(ctk.CTkToplevel):
     def _apply_processing_to_app(self, data):
         """
         사건 조회 설정(IntVar)과 테마를 앱 런타임에 즉시 반영합니다.
-        주니어: 다음 조회 웨이브부터 max_parallel 등이 이 값을 씁니다.
+        주니어: 프로필 수와 병렬 처리 수를 같게 유지합니다 (레인=프로필 1:1).
         """
         if self.app is None:
             return
         max_limit = int(data.get("MAX_PARALLEL_LIMIT") or getattr(config, "MAX_PARALLEL_LIMIT", 20))
-        parallel = self._clamp_int(
-            data.get("DEFAULT_MAX_PARALLEL"), 1, max_limit, config.DEFAULT_MAX_PARALLEL
+        profile_count = self._clamp_int(
+            data.get("PROFILE_COUNT"),
+            1,
+            max_limit,
+            getattr(config, "PROFILE_COUNT", 4),
         )
+        # 병렬 = 프로필 (강제 동기화)
+        parallel = profile_count
+        data["PROFILE_COUNT"] = profile_count
+        data["DEFAULT_MAX_PARALLEL"] = parallel
         retry = self._clamp_int(data.get("DEFAULT_MAX_RETRY"), 1, 10, config.DEFAULT_MAX_RETRY)
         delay = self._clamp_int(data.get("DEFAULT_RETRY_DELAY"), 1, 10, config.DEFAULT_RETRY_DELAY)
         if getattr(self.app, "max_parallel", None) is not None:
@@ -468,9 +518,15 @@ class SettingsDialog(ctk.CTkToplevel):
                 getattr(config, "MAX_PARALLEL_LIMIT", 20),
             )
             data["MAX_PARALLEL_LIMIT"] = max_limit
-            data["DEFAULT_MAX_PARALLEL"] = self._clamp_int(
-                data.get("DEFAULT_MAX_PARALLEL"), 1, max_limit, config.DEFAULT_MAX_PARALLEL
+            profile_count = self._clamp_int(
+                data.get("PROFILE_COUNT"),
+                1,
+                max_limit,
+                getattr(config, "PROFILE_COUNT", 4),
             )
+            data["PROFILE_COUNT"] = profile_count
+            # 병렬 = 프로필 (1:1)
+            data["DEFAULT_MAX_PARALLEL"] = profile_count
             data["DEFAULT_MAX_RETRY"] = self._clamp_int(
                 data.get("DEFAULT_MAX_RETRY"), 1, 10, config.DEFAULT_MAX_RETRY
             )

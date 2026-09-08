@@ -647,6 +647,34 @@ class ResultHandlerMixin:
         elapsed_time = int(time.time() - case_start_time)
         hearing_info = self._extract_hearing_from_result(result_data) or ""
 
+        # 제출 성공 캡차 → 학습 데이터셋에 정답으로 기록
+        try:
+            from services import captcha_dataset as captcha_dataset_module
+
+            captcha_val = ""
+            try:
+                captcha_val = (self.app.get_captcha_input(original_index) or "").strip()
+            except Exception:
+                captcha_val = ""
+            if captcha_val and captcha_val != "CLICK" and len(captcha_val) == 6:
+                paths = getattr(self.app, "case_captcha_image_paths", {}) or {}
+                img = paths.get(original_index) or ""
+                meta = getattr(self.app, "_ocr_meta", {}).get(case_number) or {}
+                if not img:
+                    img = meta.get("image_path") or ""
+                source = "ocr" if meta.get("guess") == captcha_val else "manual"
+                captcha_dataset_module.record_sample(
+                    img,
+                    captcha_val,
+                    source=source,
+                    ocr_guess=meta.get("guess"),
+                    ocr_confidence=meta.get("confidence"),
+                    ocr_engine=meta.get("engine"),
+                    is_correct=True,
+                )
+        except Exception:
+            pass
+
         # --- 특정 기간 조회: 시트/이력에 쓰지 않고 기간 행만 메모리에 보관 ---
         if getattr(self.app, "is_period_mode", False):
             return self._finish_period_query_case(

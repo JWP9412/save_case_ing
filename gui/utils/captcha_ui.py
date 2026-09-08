@@ -78,6 +78,27 @@ def set_captcha_input(app, case_index, text, lock_after=True):
     )
 
 
+def release_captcha_image_memory(app, case_index):
+    """
+    사건 처리 완료 후 캡차 PhotoImage 참조를 해제합니다.
+
+    주니어: case_image_photos + label.image 이중 참조가 사건 수만큼 누적되므로,
+    성공/실패 확정 뒤 이미지를 텍스트로 바꾸고 메모리를 돌려줍니다.
+    """
+    try:
+        if case_index in getattr(app, "case_image_photos", {}):
+            del app.case_image_photos[case_index]
+        label = getattr(app, "case_images", {}).get(case_index)
+        if label is not None:
+            try:
+                label.config(image="", text="(완료)", fg="gray")
+                label.image = None
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def clear_captcha_input_for_manual(app, case_index):
     """수동 입력 폴백: 칸 비우고 잠금 해제."""
     app.ui_queue.put(

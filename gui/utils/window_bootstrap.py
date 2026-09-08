@@ -76,7 +76,9 @@ def create_root_and_services(app):
     app.root.geometry(f"{w}x{h}+{x}+{y}")
 
     app.header_select_all_var = tk.BooleanVar(value=False)
-    app.max_parallel = tk.IntVar(value=config.DEFAULT_MAX_PARALLEL)
+    # 병렬도 = PROFILE_COUNT (레인=프로필 1:1)
+    _profile_count = int(getattr(config, "PROFILE_COUNT", None) or config.DEFAULT_MAX_PARALLEL)
+    app.max_parallel = tk.IntVar(value=_profile_count)
     app.max_retry = tk.IntVar(value=config.DEFAULT_MAX_RETRY)
     app.retry_delay = tk.IntVar(value=config.DEFAULT_RETRY_DELAY)
 
@@ -88,7 +90,10 @@ def create_root_and_services(app):
     app.puppeteer_service = PuppeteerService()
     app.history_manager = update_history_service.HistoryManager()
     app.log_history_manager = HistoryManager(app)
-    max_profiles = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+    max_profiles = max(
+        getattr(config, "MAX_PARALLEL_LIMIT", 20),
+        int(getattr(config, "PROFILE_COUNT", 4) or 4),
+    )
     app.profile_locks = [threading.Lock() for _ in range(max_profiles)]
     app.process_controller = ProcessController(app)
 

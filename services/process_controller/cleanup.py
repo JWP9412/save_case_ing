@@ -27,21 +27,23 @@ class CleanupMixin:
     """Mixin - self.app 을 통해 GUI/서비스에 접근."""
 
     def cleanup_case_process(self, case_number):
-        """한 사건의 브라우저/Node 프로세스 정리."""
+        """
+        한 사건의 브라우저/Node 매핑 정리.
+
+        주니어: 레인 워커는 여러 사건이 공유합니다.
+        여기서 process.kill() 하면 같은 레인의 뒤 사건까지 죽습니다.
+        → app.browser_processes 에서 매핑만 제거하고, 실제 종료는
+          배치 끝의 shutdown_all_workers / _kill_chrome_debug_processes 에서 합니다.
+        """
         try:
+            # PuppeteerService 사건 매핑만 해제 (워커 유지)
+            svc = getattr(self.app, "puppeteer_service", None)
+            if svc is not None and hasattr(svc, "unbind_case"):
+                svc.unbind_case(case_number)
+            elif svc is not None and hasattr(svc, "cleanup_process"):
+                svc.cleanup_process(case_number)
+
             if case_number in self.app.browser_processes:
-                process = self.app.browser_processes[case_number]
-                try:
-                    if process.poll() is None:
-                        self.app.log_message(f"🔄 프로세스 종료 중: {case_number}")
-                        process.kill()
-                        try:
-                            process.wait(timeout=2)
-                        except Exception:
-                            pass
-                        self.app.log_message(f"✅ 프로세스 종료 완료: {case_number}")
-                except Exception as e:
-                    self.app.log_message(f"⚠️ 프로세스 종료 실패: {case_number} - {e}")
                 del self.app.browser_processes[case_number]
             if case_number in self.app.browser_ws_urls:
                 del self.app.browser_ws_urls[case_number]

@@ -41,7 +41,7 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "5.1.1"
+APP_VERSION = "5.1.2"
 # 창 제목 및 헤더 제목에 쓰는 이름 (제품명: 미어캣싱)
 APP_TITLE = "미어캣싱"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -216,6 +216,25 @@ OCR_DIGIT_COUNT = 6
 OCR_CONFIDENCE_THRESHOLD = 0.7
 # WRONG_CAPTCHA(캡차 불일치) 시 같은 사건 자동 재인식·재제출 최대 횟수.
 OCR_MAX_AUTO_RETRY = 3
+# 배치 종료 후 OCR 미사용이 이 초 이상이면 EasyOCR 모델을 메모리에서 해제
+OCR_IDLE_UNLOAD_SEC = 600
+
+# 캡차 학습 데이터 자동 수집 (성공/실패 라벨 → data/captcha_dataset/)
+CAPTCHA_DATASET_ENABLED = True
+CAPTCHA_DATASET_DIR = "data/captcha_dataset"
+
+# Chrome 프로필 수 (= 동시 레인 수, 1:1). 설정 창에서 변경 가능.
+# 대법원 최근 검색은 프로필당 약 50건까지 유지(실측). 안전하게 40건/프로필 권장.
+PROFILE_COUNT = 4
+# Chrome 1개당 대략적인 메모리(MB) — 설정 도움말·경고용
+CHROME_MEM_ESTIMATE_MB = 450
+# cookie_data_for_save 캐시 자동 정리
+PROFILE_CACHE_PRUNE_ENABLED = True
+PROFILE_CACHE_MAX_MB = 500
+# screenshots/ 자동 정리
+SCREENSHOT_KEEP_DAYS = 3
+SCREENSHOT_KEEP_MAX = 200
+SCREENSHOT_DEBUG_KEEP_DAYS = 7
 
 # ============================================================================
 # 파일 경로 설정
@@ -373,6 +392,7 @@ USER_SETTINGS_OVERRIDABLE = (
     "HEADER_BG_COLOR",
     "MAX_PARALLEL_LIMIT",
     "DEFAULT_MAX_PARALLEL",
+    "PROFILE_COUNT",
     "AUTO_PARALLEL_CAP",
     "DEFAULT_MAX_RETRY",
     "DEFAULT_RETRY_DELAY",
@@ -406,7 +426,9 @@ def load_user_settings():
         val = data[key]
         if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
                    "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT",
-                   "DEFAULT_MAX_PARALLEL", "DEFAULT_MAX_RETRY", "DEFAULT_RETRY_DELAY",
+                   "DEFAULT_MAX_PARALLEL", "PROFILE_COUNT", "AUTO_PARALLEL_CAP",
+                   "DEFAULT_MAX_RETRY", "DEFAULT_RETRY_DELAY",
+                   "NODE_GOTO_TIMEOUT_MS", "NODE_NAV_MAX_RETRY", "NODE_NAV_RETRY_DELAY_MS",
                    "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES",
                    "SHOW_FIRST_RUN_GUIDE"):
             try:

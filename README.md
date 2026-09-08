@@ -1,11 +1,11 @@
 # case-ing (미어캣싱)
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.1.1**  
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.1.2**  
 제품 UI 명칭: **미어캣싱** (저장소/폴더명 case-ing 유지)
 
 - 개발자 : 박지원 -
 
-공식 버전 순서: **v5.1.0 → v5.1.1**
+공식 버전 순서: **v5.1.1 → v5.1.2**
 
 ## 원본 출처
 
@@ -27,7 +27,7 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 ```
 case-ing/
 ├── auto_runner.py               CLI 실행기
-├── config.py                    설정 상수 (APP_VERSION = "5.1.1", APP_TITLE = "미어캣싱")
+├── config.py                    설정 상수 (APP_VERSION = "5.1.2", APP_TITLE = "미어캣싱")
 ├── main.py                      진입점 (GUI 또는 --auto)
 ├── requirements.txt             Python 패키지
 ├── data/                        설정·이력 JSON
@@ -156,17 +156,20 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 
 ---
 
-## 현재 버전 특징 (v5.1.1)
+## 현재 버전 특징 (v5.1.2)
 
-1. **시작 버튼 오류 수정** — 패키지 분리 후 「사건 기록 수집 실행」 클릭 시 `cases` 인자 오류 해결.
-2. **진행상황 스크롤바** — CTkScrollbar + pack 순서 수정으로 항상 보이게.
-3. **「전체 복사」** — 진행상황 로그 전체를 클립보드에 복사 (한 줄만 복사되던 버그 수정).
-4. **v5.1.0 기능 유지** — 메일 결과변경 분리, 시트 보호, 캡cha/OCR 안정화, ProcessController 패키지 등.
+1. **실패 집계 수정** — 여러 파도로 나뉜 배치에서도 실패 건수가 맞게 집계됩니다.
+2. **진행내용 탭/그리드 안정화** — 탭 전환을 검증하고, Node 종료 시 브라우저를 재기동해 재시도합니다.
+3. **OCR 신뢰도** — Tesseract 가짜 1.00 제거, 오독 자동 제출 감소.
+4. **Chrome 재사용** — 프로필(레인)당 브라우저 1개 상주. 설정에서 프로필 수 조절.
+5. **속도·메모리** — EasyOCR 워밍업, 리소스 차단, 캐시/스크린샷 정리, OCR 유휴 언로드.
+6. **캡차 학습 데이터** — 성공/실패 캡차를 `data/captcha_dataset/`에 자동 수집.
 
 ---
 
 ## 개발 히스토리
 
+- **v5.1.2**: 실패 집계·탭/그리드·OCR conf·Chrome 재사용·메모리/속도·캡차 데이터셋
 - **v5.1.1**: 시작 버튼 TypeError 수정, 진행상황 스크롤바·전체 복사 버그 수정
 - **v5.1.0**: 시트 보호·메일 결과변경 분리·캡차/OCR 안정화·ProcessController 패키지 분리
 - **v5.0.0**: 4.12.1 이후 누적 기능 통합 릴리스 (기일 달력·설정·OCR·진행상황·기간조회·시트 관리 등)
@@ -179,9 +182,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 - **v4.7.0**: 구글 캘린더·OAuth, 기록 초기화·재수집
 - **v4.6.x ~ v4.0.0**: 목록 캐시·관리 UI, 아키텍처, CLI, 알림메일 등
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.1.1.md](00.CHANGELOG/CHANGELOG_v5.1.1.md)  
-버전별 README: [00.README/README_v5.1.1.md](00.README/README_v5.1.1.md)  
-구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.1.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.1.md)
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.1.2.md](00.CHANGELOG/CHANGELOG_v5.1.2.md)  
+버전별 README: [00.README/README_v5.1.2.md](00.README/README_v5.1.2.md)  
+구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.2.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.2.md)
 
 ---
 

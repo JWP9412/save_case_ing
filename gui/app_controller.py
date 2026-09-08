@@ -167,7 +167,41 @@ class AppController:
         """Create main window. Delegated to window_bootstrap after theme application."""
         saved_theme = self._load_theme_setting()
         self._apply_theme(saved_theme)
-        return window_bootstrap_module.create_root_and_services(self)
+        root = window_bootstrap_module.create_root_and_services(self)
+        # EasyOCR 모델을 GUI 조작 중에 미리 로드 (첫 사건 19초 대기 제거)
+        try:
+            from services import captcha_ocr_service as captcha_ocr_service_module
+
+            captcha_ocr_service_module.warmup_easyocr_async()
+        except Exception:
+            pass
+        # 프로필 캐시·스크린샷 정리 (앱 시작 1회)
+        try:
+            from services import profile_maintenance as profile_maintenance_module
+
+            profile_maintenance_module.prune_on_app_start(self.log_message)
+        except Exception:
+            pass
+        # 가용 메모리 대비 프로필 수 경고
+        try:
+            self._warn_if_profile_count_heavy()
+        except Exception:
+            pass
+        return root
+
+    def _warn_if_profile_count_heavy(self):
+        """가용 메모리로 Chrome N개를 감당하기 어려우면 경고 로그만 남깁니다."""
+        import psutil
+
+        profile_count = int(getattr(config, "PROFILE_COUNT", 4) or 4)
+        estimate = int(getattr(config, "CHROME_MEM_ESTIMATE_MB", 450) or 450)
+        available_mb = psutil.virtual_memory().available / (1024 * 1024)
+        capacity = max(1, int((available_mb * 0.6) / max(estimate, 1)))
+        if profile_count > capacity:
+            self.log_message(
+                f"⚠️ 가용 메모리 {available_mb/1024:.1f}GB — 현재 프로필 수 {profile_count}는 "
+                f"부담될 수 있습니다. 설정에서 {capacity}개 이하로 낮추는 것을 권장합니다."
+            )
 
     def create_header(self, parent):
         """Create header. Delegated to HeaderPanel."""

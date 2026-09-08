@@ -31,15 +31,55 @@ from services import google_calendar as google_calendar_module
 class CaseRunnerMixin:
     """Mixin - self.app 을 통해 GUI/서비스에 접근."""
 
+    def _schedule_easyocr_idle_unload(self):
+        """
+        배치 종료 후 OCR_IDLE_UNLOAD_SEC 동안 OCR이 없으면 EasyOCR 언로드.
+        다음 배치 시작 시 warmup_easyocr_async 가 다시 로드합니다.
+        """
+        delay = int(getattr(config, "OCR_IDLE_UNLOAD_SEC", 600) or 600)
+        if delay <= 0:
+            return
+        token = time.time()
+        self.app._ocr_unload_token = token
+
+        def _later():
+            time.sleep(delay)
+            if getattr(self.app, "_ocr_unload_token", None) != token:
+                return  # 새 배치가 시작됨
+            if getattr(self.app, "processing", False):
+                return
+            try:
+                captcha_ocr_service.unload_easyocr_model()
+                self.app.log_message("ℹ️ EasyOCR 유휴 언로드 완료 (메모리 절약)")
+            except Exception:
+                pass
+
+        threading.Thread(target=_later, daemon=True, name="easyocr-idle-unload").start()
+
     def _lane_for_case(self, case_number, n_lanes):
-        """전용 차로: 사건번호 해시로 0 ~ n_lanes-1 인덱스 반환."""
-        h = int(hashlib.md5(case_number.encode("utf-8")).hexdigest(), 16)
-        return h % n_lanes
+        """
+        워커(레인) 분배용 인덱스 0 ~ n_lanes-1.
+
+        주니어 참고:
+        - Chrome 프로필은 get_case_profile_index(PROFILE_COUNT)로 정합니다.
+        - PROFILE_COUNT == n_lanes 이면 lane == profile (1:1) 이 되어
+          레인 하나가 프로필 하나를 전담 → Chrome 기동 1회/레인.
+        """
+        if n_lanes < 1:
+            return 0
+        return self.get_case_profile_index(case_number) % n_lanes
 
 
     def get_case_profile_index(self, case_number):
-        """사건번호에 따른 고정 프로필(인스턴스) 번호. 쿠키/스마트스킵 유지용."""
-        max_profiles = getattr(config, "MAX_PARALLEL_LIMIT", 20)
+        """
+        사건번호 → 고정 Chrome 프로필(instance_N). GUI·CLI 공통.
+
+        cookie_data_for_save/instance_N + 대법원 최근 검색(스마트 스킵)이
+        이 번호에 묶이므로, 병렬 수와 관계없이 항상 같아야 합니다.
+        """
+        max_profiles = int(getattr(config, "PROFILE_COUNT", None) or getattr(config, "MAX_PARALLEL_LIMIT", 20))
+        if max_profiles < 1:
+            max_profiles = 1
         h = int(hashlib.md5(case_number.encode("utf-8")).hexdigest(), 16)
         return h % max_profiles
 
@@ -57,6 +97,16 @@ class CaseRunnerMixin:
 
         self.app.processed_cases = set()
         self.app.processing = True
+        # 새 배치 시작 → EasyOCR 유휴 언로드 취소 + 워밍업
+        self.app._ocr_unload_token = time.time()
+        try:
+            captcha_ocr_service.warmup_easyocr_async()
+        except Exception:
+            pass
+        # 배치 전체(여러 파도)에 걸친 성공/실패 누적 — 파도마다 리셋되지 않음
+        self.app._batch_completed = 0
+        self.app._batch_failed = 0
+        self.app._batch_failed_cases = set()  # 사건번호 집합 (재실행 팝업용)
         self._init_ocr_wave_state(clear_manual_dialog=True)
         self.app.start_btn.configure(text=getattr(config, "BTN_TEXT_START_LOADING", "로딩 중..."))
         self.app._set_control_btn_state(self.app.start_btn, False)
@@ -74,15 +124,28 @@ class CaseRunnerMixin:
 
 
     def stop_processing(self):
-        """일괄 처리 중지: 플래그 해제, 레인 이벤트 신호, Puppeteer 프로세스 정리."""
+        """일괄 처리 중지: 플래그 해제, 레인 이벤트 신호, 워커 정리."""
         self.app.processing = False
         self.app._user_cancelled = True
         for ev in getattr(self.app, "lane_events", {}).values():
             ev.set()
-        if hasattr(self.app, "puppeteer_service") and getattr(self.app.puppeteer_service, "running_processes", None):
-            for case_number in list(self.app.puppeteer_service.running_processes.keys()):
-                self.app.puppeteer_service.cleanup_process(case_number)
-                self.app.log_message(f"🔄 프로세스 종료: {case_number}")
+        svc = getattr(self.app, "puppeteer_service", None)
+        if svc is not None:
+            if hasattr(svc, "shutdown_all_workers"):
+                try:
+                    svc.shutdown_all_workers()
+                except Exception:
+                    pass
+            elif getattr(svc, "running_processes", None):
+                for case_number in list(svc.running_processes.keys()):
+                    svc.cleanup_process(case_number)
+                    self.app.log_message(f"🔄 프로세스 종료: {case_number}")
+        try:
+            self._kill_chrome_debug_processes()
+        except Exception:
+            pass
+        self.app.browser_processes.clear()
+        self.app.browser_ws_urls.clear()
         self.app.start_btn.configure(
             text=getattr(config, "BTN_TEXT_START_COLLECT", "▶ 사건 기록 수집 실행")
         )
@@ -114,10 +177,29 @@ class CaseRunnerMixin:
         self._init_ocr_wave_state(clear_manual_dialog=False)
         self.app.log_message("🔄 병렬 처리 시작 (전용 차로제)")
 
+        # 레인 수 = PROFILE_COUNT (프로필과 1:1). 사용자 max_parallel 도 동일하게 맞춤.
+        profile_count = int(getattr(config, "PROFILE_COUNT", 4) or 4)
         max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
-        n_lanes = min(self.app.max_parallel.get(), len(cases), max_limit)
+        profile_count = max(1, min(profile_count, max_limit))
+        # 앱 IntVar 가 있으면 프로필 수에 동기화
+        if getattr(self.app, "max_parallel", None) is not None:
+            try:
+                self.app.max_parallel.set(profile_count)
+            except Exception:
+                pass
+        n_lanes = min(profile_count, len(cases), max_limit)
         if n_lanes < 1:
             n_lanes = 1
+
+        per_profile = max(1, (len(cases) + n_lanes - 1) // n_lanes)
+        if per_profile > 40:
+            self.app.log_message(
+                f"⚠️ 프로필당 사건 약 {per_profile}건 — 대법원 기록 한도(50)에 근접합니다. "
+                f"설정에서 프로필 수를 올리세요."
+            )
+        self.app.log_message(
+            f"ℹ️ 레인/프로필 {n_lanes}개 (PROFILE_COUNT={profile_count}, 사건 {len(cases)}건)"
+        )
 
         lanes = [[] for _ in range(n_lanes)]
         queued_cases = []
@@ -135,7 +217,7 @@ class CaseRunnerMixin:
         def run_lane(lane_index, queue):
             # 레인마다 시작 시점을 어긋내 동시 Chrome launch 폭주를 줄입니다.
             # 4레인이면 최대 약 3초 지연이라 체감은 거의 없습니다.
-            time.sleep(1.0 * lane_index)
+            time.sleep(0.3 * lane_index)
             for case, case_index in queue:
                 if not self.app.processing:
                     return
@@ -248,25 +330,58 @@ class CaseRunnerMixin:
         email_manager_module.record_run_results(results)
 
 
+    def _record_batch_failure(self, case_number):
+        """배치 실패 집합에 사건번호를 기록합니다 (재실행 팝업·집계용)."""
+        if not case_number:
+            return
+        failed_set = getattr(self.app, "_batch_failed_cases", None)
+        if failed_set is None:
+            self.app._batch_failed_cases = set()
+            failed_set = self.app._batch_failed_cases
+        # 이미 집계된 건은 중복 증가하지 않음
+        if case_number in failed_set:
+            return
+        failed_set.add(case_number)
+        self.app._batch_failed = getattr(self.app, "_batch_failed", 0) + 1
+
     def _check_and_prompt_failed_cases(self, processed_cases):
         """
         처리된 사건 중 실패/오류/재입력대기 상태인 사건들을 찾아 재실행 여부를 묻습니다.
 
         주니어 참고:
+        - 우선 app._batch_failed_cases(사건번호 집합)를 씁니다.
+          위젯 텍스트를 백그라운드에서 읽으면 UI 큐 반영 전이라 누락될 수 있습니다.
+        - 집합이 비어 있으면 상태 라벨 키워드 스캔으로 폴백합니다.
         - 기간/대조 모드에서도 호출됩니다. '예'면 is_period_mode 등을 유지한 채
           실패 건만 다시 start_batch_processing 합니다.
         - '아니오'이거나 실패가 없으면 특수 모드 플래그를 해제합니다.
         """
         failed_cases = []
+        batch_failed = getattr(self.app, "_batch_failed_cases", None) or set()
+        fail_keywords = [
+            "실패",
+            "오류",
+            "취소",
+            "재입력대기",
+            "타임아웃",
+            "입력없음",
+            "형식오류",
+            "수동입력",
+        ]
+
         for case in processed_cases:
             case_number = case.get("사건번호", "")
             case_index = self.app.find_case_index(case_number)
-            if case_index != -1 and case_index in getattr(self.app, "case_status", {}):
+            if case_index == -1:
+                continue
+            # 1순위: 배치에서 명시적으로 기록한 실패
+            if case_number in batch_failed:
+                failed_cases.append((case_index, case_number))
+                continue
+            # 2순위(폴백): 상태 라벨 키워드 (캡차 로드 단계 실패 등)
+            if case_index in getattr(self.app, "case_status", {}):
                 status_text = self.app.get_case_status_text(case_index) or ""
-                if any(
-                    keyword in status_text
-                    for keyword in ["실패", "오류", "취소", "재입력대기", "타임아웃"]
-                ):
+                if any(keyword in status_text for keyword in fail_keywords):
                     failed_cases.append((case_index, case_number))
 
         was_period = getattr(self.app, "is_period_mode", False)
@@ -403,6 +518,7 @@ class CaseRunnerMixin:
                 else:
                     self.app.update_case_status(case_index, f"실패 ({elapsed_time}초)", "red", "❌")
                     self.app.log_message(f"❌ 캡차 이미지 로딩 실패: {case_number}")
+                    self._record_batch_failure(case_number)
                     self.cleanup_case_process(case_number)
                     return "fail"
             finally:
@@ -424,14 +540,14 @@ class CaseRunnerMixin:
         병렬 처리용 단일 사건: 캡차 캡처 후 대기 또는 자동 처리.
 
         주니어 참고:
-        - instance_index(레인)를 userDataDir(instance_N)와 동일하게 씁니다.
-          예전처럼 사건번호 해시 % 20 이면 다른 레인이 같은 폴더를 열어 Code 21이 납니다.
+        - Chrome userDataDir(instance_N)는 get_case_profile_index로 고정합니다 (CLI와 동일).
+        - instance_index는 워커(레인) 번호일 뿐, 프로필 선택에는 쓰지 않습니다.
+        - 같은 instance를 두 워커가 쓰려 하면 profile_locks[N]이 막아 Code 21을 방지합니다.
         - 프로필 락은 브라우저 cleanup 까지 유지합니다(CLICK/캡차대기 포함).
         """
         case_number = case.get("사건번호", "")
-        max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
-        # 레인 인덱스 = Chromium userDataDir 인덱스
-        profile_index = int(instance_index) % max(1, max_limit)
+        # GUI·CLI 공통: 사건번호 해시 % MAX_PARALLEL_LIMIT
+        profile_index = self.get_case_profile_index(case_number)
         locks = getattr(self.app, "profile_locks", None)
         lock = None
         if locks and 0 <= profile_index < len(locks):
@@ -479,6 +595,7 @@ class CaseRunnerMixin:
                             self.app.update_case_status(
                                 case_index, f"실패 ({elapsed_time}초)", "red", "❌"
                             )
+                            self._record_batch_failure(case_number)
                             self.cleanup_case_process(case_number)
                             self._drop_case_from_wave(case_number)
                             return False
@@ -521,7 +638,9 @@ class CaseRunnerMixin:
                     ev = threading.Event()
                     self.app.lane_events[case_number] = ev
                     # 주니어: join() 뒤에 auto-submit을 두면 ev.wait()와 교착남.
-                    # lane 등록 직후(wait 전)에 전원 입력됐는지 확인하고 자동 제출.
+                    # lane 등록 직후(wait 전)에 자동 제출 시도.
+                    # 자동 제출은 lane 등록된 건만 대상(미등록 웨이브 전체를 기다리지 않음).
+                    # 같은 레인 뒤 사건이 시작되려면, 등록된 건이 먼저 제출·ev.set 되어야 함.
                     wave = getattr(self, "_wave_cases", None) or []
                     if wave:
                         self._try_auto_submit_captcha_wave(wave)
@@ -531,6 +650,7 @@ class CaseRunnerMixin:
                     self.app.update_case_status(
                         case_index, f"실패 ({elapsed_time}초)", "red", "❌"
                     )
+                    self._record_batch_failure(case_number)
                     self.cleanup_case_process(case_number)
                     # 캡차 로드 실패 건은 웨이브에서 빼서 자동 제출이 막히지 않게 함
                     self._drop_case_from_wave(case_number)
@@ -548,6 +668,7 @@ class CaseRunnerMixin:
             )
             self.app.log_message(f"❌ 처리 오류: {case_number} - {e}")
             self.app.update_case_status(case_index, f"오류 ({elapsed_time}초)", "red", "⚠️")
+            self._record_batch_failure(case_number)
             try:
                 self.cleanup_case_process(case_number)
             except Exception:
@@ -666,6 +787,26 @@ class CaseRunnerMixin:
                         retry_n = self.app.ocr_retry_counts.get(case_number, 0) + 1
                         self.app.ocr_retry_counts[case_number] = retry_n
 
+                        # 틀린 캡차 값을 오답 샘플로 기록
+                        try:
+                            from services import captcha_dataset as captcha_dataset_module
+
+                            meta = getattr(self.app, "_ocr_meta", {}).get(case_number) or {}
+                            wrong_label = (captcha_input or "").strip()
+                            wrong_img = meta.get("image_path") or ""
+                            if wrong_label and len(wrong_label) == 6:
+                                captcha_dataset_module.record_sample(
+                                    wrong_img,
+                                    wrong_label,
+                                    source="wrong",
+                                    ocr_guess=meta.get("guess"),
+                                    ocr_confidence=meta.get("confidence"),
+                                    ocr_engine=meta.get("engine"),
+                                    is_correct=False,
+                                )
+                        except Exception:
+                            pass
+
                         if new_path:
                             self.app.ui_queue.put(
                                 (
@@ -710,7 +851,51 @@ class CaseRunnerMixin:
                         self.app.log_message(
                             f"⚠️ 그리드/결과 수신 실패로 1회 재시도: {case_number}"
                         )
-                        time.sleep(3)
+
+                        # Node 프로세스가 이미 죽었으면 같은 캡차 재전송은 의미 없음
+                        # → 브라우저를 다시 띄우고 새 캡차 + OCR 후 continue
+                        svc = getattr(self.app, "puppeteer_service", None)
+                        proc = None
+                        if svc is not None:
+                            proc = getattr(svc, "running_processes", {}).get(case_number)
+                        process_alive = bool(proc is not None and proc.poll() is None)
+
+                        if not process_alive:
+                            self.app.log_message(
+                                f"🔄 프로세스 종료됨 → 브라우저 재기동 후 재시도: {case_number}"
+                            )
+                            profile_index = self.get_case_profile_index(case_number)
+                            new_image = self.execute_case_processing_with_captcha(
+                                case,
+                                original_index,
+                                profile_index,
+                                smart_skip_enabled=False,
+                            )
+                            if not new_image or new_image == "__CLICK__":
+                                self.app.log_message(
+                                    f"❌ 브라우저 재기동 실패 — 즉시 실패 처리: {case_number}"
+                                )
+                                self.app.update_case_status(
+                                    original_index,
+                                    f"실패 ({elapsed_time}초)",
+                                    "red",
+                                    "❌",
+                                )
+                                return (0, 1)
+                            # 새 캡차로 OCR (실패해도 수동 입력이 채워져 있으면 진행)
+                            if isinstance(new_image, str) and os.path.isfile(new_image):
+                                self._run_ocr_fill_case(
+                                    case, original_index, new_image, sync_apply=True
+                                )
+                            # lane_events 재등록 (재기동 시 해제됐을 수 있음)
+                            if case_number not in getattr(self.app, "lane_events", {}):
+                                if not hasattr(self.app, "lane_events"):
+                                    self.app.lane_events = {}
+                                self.app.lane_events[case_number] = threading.Event()
+                            continue
+
+                        # 프로세스가 살아 있으면 짧게 대기 후 같은 세션으로 재전송
+                        time.sleep(1)
                         continue
 
                     self.app.update_case_status(
@@ -734,6 +919,14 @@ class CaseRunnerMixin:
                 ev = getattr(self.app, "lane_events", {}).pop(case_number, None)
                 if ev:
                     ev.set()
+                # 캡차 PhotoImage 메모리 해제
+                self.app.ui_queue.put(
+                    (
+                        "function",
+                        (captcha_ui_module.release_captcha_image_memory, self.app, original_index),
+                        {},
+                    )
+                )
                 # 수동 모아보기 창에서 해당 행 제거
                 self.app.ui_queue.put(
                     ("function", (self._remove_manual_captcha_row, original_index), {})
@@ -763,8 +956,13 @@ class CaseRunnerMixin:
             selected_cases = self.app.get_selected_cases()
             total_cases = len(selected_cases)
             self.app.update_progress(0, f"⏳ 처리 준비 중... (0/{total_cases})")
-            completed = 0
-            failed = 0
+            # 파도마다 0으로 리셋하지 않음 — 배치 전체 누적
+            if not hasattr(self.app, "_batch_completed"):
+                self.app._batch_completed = 0
+            if not hasattr(self.app, "_batch_failed"):
+                self.app._batch_failed = 0
+            wave_completed = 0
+            wave_failed = 0
 
             self.app.log_message(f"🔄 [DEBUG] 처리할 사건 목록: {len(selected_cases)}개")
             for idx, (original_index, case) in enumerate(selected_cases):
@@ -779,14 +977,27 @@ class CaseRunnerMixin:
                 c_delta, f_delta = self._process_one_case(
                     original_index, case, total_cases, total_start_time, selected_cases
                 )
-                completed += c_delta
-                failed += f_delta
+                wave_completed += c_delta
+                wave_failed += f_delta
+                self.app._batch_completed = getattr(self.app, "_batch_completed", 0) + c_delta
+                self.app._batch_failed = getattr(self.app, "_batch_failed", 0) + f_delta
+                if f_delta > 0:
+                    # _record_batch_failure는 집합 추가 + 카운터+1 이므로,
+                    # 위에서 이미 +f_delta 한 뒤엔 집합만 직접 추가
+                    failed_set = getattr(self.app, "_batch_failed_cases", None)
+                    if failed_set is None:
+                        self.app._batch_failed_cases = set()
+                        failed_set = self.app._batch_failed_cases
+                    failed_set.add(case_number)
                 self.app.log_message(
                     f"🔄 [DEBUG] 루프 끝: {idx+1}/{len(selected_cases)} - 인덱스={original_index}"
                 )
 
+            completed = getattr(self.app, "_batch_completed", wave_completed)
+            failed = getattr(self.app, "_batch_failed", wave_failed)
             self.app.log_message(
-                f"🔄 [DEBUG] 현재 파도 처리 완료 - 성공: {completed}, 실패: {failed}"
+                f"🔄 [DEBUG] 현재 파도 처리 완료 - 이번파도 성공:{wave_completed}/실패:{wave_failed}"
+                f" | 배치누적 성공:{completed}/실패:{failed}"
             )
 
             pending_count = len(selected_cases) - len(
@@ -797,7 +1008,9 @@ class CaseRunnerMixin:
                 self.app.log_message(
                     f"⏳ 다음 파도 대기 중... (남은 사건: {pending_count}건)"
                 )
-                # 자동 제출 스레드 중복 기동을 막기 위해 배치 중에는 플래그를 유지합니다.
+                # 다음 파도 OCR 자동 제출을 허용하려면 플래그를 풀어야 합니다.
+                # (안 풀면 뒤 레인 사건이 lane 등록·OCR 해도 자동 제출이 한 번만 됨)
+                self.app._ocr_wave_auto_submit_started = False
                 self.app.ui_queue.put(("function", (self.app._set_control_btn_state, self.app.complete_btn, True), {}))
             else:
                 self.app.log_message("🎉 모든 사건 처리 완료!")
@@ -805,10 +1018,29 @@ class CaseRunnerMixin:
                 self.app.ui_queue.put(
                     ("function", (self._close_manual_captcha_dialog_safe,), {})
                 )
+                # 레인 워커 종료 (Chrome 재사용 세션 정리)
+                try:
+                    svc = getattr(self.app, "puppeteer_service", None)
+                    if svc is not None and hasattr(svc, "shutdown_all_workers"):
+                        svc.shutdown_all_workers()
+                except Exception as e:
+                    self.app.log_message(f"⚠️ 워커 종료 중 오류: {e}")
                 self._kill_chrome_debug_processes()
                 self.app.browser_processes.clear()
                 self.app.browser_ws_urls.clear()
                 self.app.log_message("✅ 모든 브라우저 프로세스 종료 완료")
+                # 프로필 캐시·스크린샷 정리
+                try:
+                    from services import profile_maintenance as profile_maintenance_module
+
+                    profile_maintenance_module.prune_after_batch(self.app.log_message)
+                except Exception:
+                    pass
+                # EasyOCR 유휴 언로드 타이머
+                try:
+                    self._schedule_easyocr_idle_unload()
+                except Exception:
+                    pass
                 total_elapsed = int(time.time() - total_start_time)
                 self._finish_captcha_batch_ui(
                     completed, failed, total_cases, total_elapsed, selected_cases
@@ -822,3 +1054,8 @@ class CaseRunnerMixin:
             self.app.processing = False
         finally:
             self.app._captcha_batch_running = False
+            # 배치 종료 직후: 이미 lane 등록된 OCR 완료 건이 있으면 다음 파도 자동 제출
+            if getattr(self.app, "processing", False):
+                wave = getattr(self, "_wave_cases", None) or []
+                if wave and getattr(self.app, "lane_events", None):
+                    self._try_auto_submit_captcha_wave(wave)

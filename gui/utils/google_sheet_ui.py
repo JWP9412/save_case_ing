@@ -100,25 +100,27 @@ def _apply_loaded_data_to_app(app, google_data):
         app.case_list = list(google_data)
     app.sort_case_list()
 
-    # 자동 병렬도 = min(사건수//2, AUTO_PARALLEL_CAP, MAX_PARALLEL_LIMIT)
-    # Chrome을 너무 많이 동시에 띄우면 대법원 접속 타임아웃·메모리 고갈이 납니다.
+    # 병렬도 = PROFILE_COUNT (설정값). 시트 로드 시 자동으로 바꾸지 않습니다.
+    # (레인=프로필 1:1 전제. 바꾸면 스마트 스킵 대응이 어긋남)
+    profile_count = int(getattr(config, "PROFILE_COUNT", 4) or 4)
     max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
-    auto_cap = getattr(config, "AUTO_PARALLEL_CAP", 4)
-    n_cases = len(app.case_list)
-    smart_parallel = max(1, min(n_cases // 2, auto_cap, max_limit))
-    app.max_parallel.set(smart_parallel)
+    profile_count = max(1, min(profile_count, max_limit))
+    app.max_parallel.set(profile_count)
     if (
         hasattr(app, "_settings_parallel_entry")
         and app._settings_parallel_entry.winfo_exists()
     ):
         app._settings_parallel_entry.delete(0, tk.END)
-        app._settings_parallel_entry.insert(0, str(smart_parallel))
+        app._settings_parallel_entry.insert(0, str(profile_count))
+    n_cases = len(app.case_list)
+    per = max(1, (n_cases + profile_count - 1) // profile_count) if n_cases else 0
     app.log_message(
-        f"ℹ️ 자동 병렬도: {smart_parallel} (사건 {n_cases}건, 상한 {auto_cap})"
+        f"ℹ️ 프로필/병렬도: {profile_count} "
+        f"(사건 {n_cases}건, 프로필당 약 {per}건, 한도 50건)"
     )
-    if smart_parallel > 10:
+    if per > 40:
         app.log_message(
-            "⚠️ 고성능 모드: 인스턴스 폴더가 10개 이상 사용됩니다. 디스크/RAM 사용량이 늘어날 수 있습니다."
+            "⚠️ 프로필당 사건이 40건을 넘습니다. 설정에서 프로필 수를 올리세요."
         )
     app.update_case_list_ui()
     dlg = getattr(app, "_case_list_manage_dialog", None)

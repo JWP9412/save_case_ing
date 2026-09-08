@@ -2,14 +2,15 @@
 Puppeteer 서비스 모듈 (Interactive Mode)
 =====================================
 
-Node.js 단일 프로세스를 유지하며 캡차 입력과 검색을 수행합니다.
-브라우저 재연결 방식을 폐기하고, stdin/stdout 통신을 사용합니다.
+Node.js 레인 워커를 유지하며 캡차 입력과 검색을 수행합니다.
+같은 프로필(레인)의 사건은 Chrome을 재사용해 기동 횟수를 줄입니다.
 """
 
-import subprocess
 import json
 import os
+import subprocess
 import time
+
 import config
 from services.logger_service import get_logger
 
@@ -22,7 +23,6 @@ def _resolve_node_executable():
 
     주니어 개발자 참고:
     - 포터블 배포: CaseIng.exe 옆 runtime/node/node.exe 를 우선 사용
-      (다른 PC에 Node를 따로 설치하지 않아도 됨)
     - 개발 환경: PATH의 `node` 명령 사용
     """
     bundled = config.path_from_base("runtime", "node", "node.exe")
@@ -38,18 +38,115 @@ def _node_script_path():
 
 class PuppeteerService:
     """
-    Puppeteer 서비스 클래스 (Interactive)
+    Puppeteer 서비스 클래스 (Interactive + 레인 워커)
     """
 
     def __init__(self, log_callback=None, processing_flag=None):
         self.processing_flag = processing_flag
-        self.running_processes = {}  # {case_number: process}
-        # Node JSON의 generalInfo를 사건번호별로 임시 보관 (반환값을 바꾸지 않기 위함)
+        # 사건번호 → Node 프로세스 (실행 중 사건 매핑)
+        self.running_processes = {}
+        # 프로필(레인) → 상주 워커 프로세스
+        self.lane_workers = {}
+        # 사건번호 → 프로필 인덱스 (cleanup 시 워커를 죽이지 않기 위함)
+        self._case_to_profile = {}
+        # Node JSON의 generalInfo를 사건번호별로 임시 보관
         self.last_general_info = {}
+        # Chrome 기동 횟수 (검증/로그용)
+        self.chrome_launch_count = 0
 
     def _log(self, message):
-        """로그 메시지 출력 (표준 로거 사용)"""
         logger.info(message)
+
+    def _build_env(self, smart_skip_enabled=True):
+        env = os.environ.copy()
+        env["CASEING_GOTO_TIMEOUT_MS"] = str(
+            getattr(config, "NODE_GOTO_TIMEOUT_MS", 45000)
+        )
+        env["CASEING_NAV_MAX_RETRY"] = str(getattr(config, "NODE_NAV_MAX_RETRY", 2))
+        env["CASEING_NAV_RETRY_DELAY_MS"] = str(
+            getattr(config, "NODE_NAV_RETRY_DELAY_MS", 3000)
+        )
+        env["CASEING_SMART_SKIP_ENABLED"] = "1" if smart_skip_enabled else "0"
+        return env
+
+    def _popen_kwargs(self, env):
+        base_dir = config.get_base_dir()
+        popen_kwargs = dict(
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            bufsize=1,
+            cwd=base_dir,
+            env=env,
+        )
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        return popen_kwargs
+
+    def _ensure_lane_worker(self, instance_index, smart_skip_enabled=True):
+        """
+        프로필(레인)용 워커가 없으면 기동하고, 있으면 재사용합니다.
+
+        주니어: PROFILE_COUNT == 레인 수 이면 레인당 Chrome 1개만 뜹니다.
+        """
+        proc = self.lane_workers.get(instance_index)
+        if proc is not None and proc.poll() is None:
+            return proc
+
+        node_exe = _resolve_node_executable()
+        script = _node_script_path()
+        if not os.path.isfile(script):
+            self._log(f"❌ Node 스크립트 없음: {script}")
+            return None
+
+        cmd = [node_exe, script, "--worker", str(instance_index)]
+        env = self._build_env(smart_skip_enabled=smart_skip_enabled)
+        process = subprocess.Popen(cmd, **self._popen_kwargs(env))
+        self.lane_workers[instance_index] = process
+        self.chrome_launch_count += 1
+        self._log(
+            f"🚀 [Worker] 레인 워커 기동 instance_{instance_index} "
+            f"(누적 Chrome 기동: {self.chrome_launch_count})"
+        )
+
+        # WORKER_READY 대기
+        start = time.time()
+        timeout = min(30, getattr(config, "PUPPETEER_CAPTCHA_TIMEOUT", 90))
+        while time.time() - start < timeout:
+            if process.poll() is not None:
+                err = process.stderr.read() if process.stderr else ""
+                self._log(f"❌ 워커 기동 실패: {err}")
+                self.lane_workers.pop(instance_index, None)
+                return None
+            line = process.stdout.readline()
+            if not line:
+                time.sleep(0.05)
+                continue
+            line = line.strip()
+            if line.startswith("WORKER_READY"):
+                return process
+            if line:
+                self._log(f"[Node] {line}")
+        self._log(f"⏰ 워커 READY 타임아웃: instance_{instance_index}")
+        self._kill_process(process)
+        self.lane_workers.pop(instance_index, None)
+        return None
+
+    def _kill_process(self, process):
+        if not process:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        except Exception as e:
+            logger.debug("Kill error: %s", e)
 
     def capture_captcha_image(
         self,
@@ -60,87 +157,58 @@ class PuppeteerService:
         smart_skip_enabled=True,
     ):
         """
-        1단계: 프로세스 시작 및 캡차 캡처 (또는 스마트 스킵 확인).
-        instance_index: 전용 차로제용. cookie_data_for_save/instance_N 사용.
+        1단계: 레인 워커에 CASE 명령을 보내고 캡차(또는 스마트 스킵)를 받습니다.
         """
         try:
-            self._log(f"🚀 [Interactive] 프로세스 시작: {case_number} ({court}) [instance_{instance_index}]")
+            self._log(
+                f"🚀 [Interactive] 프로세스 시작: {case_number} ({court}) "
+                f"[instance_{instance_index}]"
+            )
 
-            # 기존 프로세스 정리
-            self.cleanup_process(case_number)
+            # 이전 사건 매핑만 정리 (워커는 유지)
+            self.running_processes.pop(case_number, None)
 
-            node_exe = _resolve_node_executable()
-            script = _node_script_path()
-            if not os.path.isfile(script):
-                self._log(f"❌ Node 스크립트 없음: {script}")
+            process = self._ensure_lane_worker(
+                instance_index, smart_skip_enabled=smart_skip_enabled
+            )
+            if process is None:
                 return None, None, None
 
-            # cwd=BASE_DIR: cookie_data_for_save, screenshots 등 상대경로가 exe 옆에서 동작
-            cmd = [
-                node_exe,
-                script,
-                case_number,
-                defendant,
-                court,
-                str(instance_index),
-            ]
-            base_dir = config.get_base_dir()
+            # CASE 명령 전송
+            payload = {
+                "cmd": "CASE",
+                "caseNumber": case_number,
+                "defendant": defendant,
+                "court": court,
+                "instanceIndex": int(instance_index),
+                "smartSkip": bool(smart_skip_enabled),
+            }
+            try:
+                process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except Exception as e:
+                self._log(f"❌ 워커 CASE 전송 실패: {e}")
+                self.lane_workers.pop(instance_index, None)
+                return None, None, None
 
-            # 프로세스 실행 (stdin 파이프 연결 필수)
-            # 주니어 참고:
-            # Windows에서 node.exe를 띄우면 기본적으로 검은 콘솔 창이 열립니다.
-            # CREATE_NO_WINDOW 를 주면 창 없이 백그라운드로만 실행됩니다.
-            # stdin/stdout 파이프는 그대로라서 CaseIng과의 통신은 변하지 않습니다.
-            #
-            # Node 쪽 page.goto / 재시도 설정은 argv가 아니라 환경변수로 넘깁니다.
-            # (CLI 인자 순서를 바꾸면 기존 호출부가 깨지기 때문입니다.)
-            env = os.environ.copy()
-            env["CASEING_GOTO_TIMEOUT_MS"] = str(
-                getattr(config, "NODE_GOTO_TIMEOUT_MS", 45000)
-            )
-            env["CASEING_NAV_MAX_RETRY"] = str(
-                getattr(config, "NODE_NAV_MAX_RETRY", 2)
-            )
-            env["CASEING_NAV_RETRY_DELAY_MS"] = str(
-                getattr(config, "NODE_NAV_RETRY_DELAY_MS", 3000)
-            )
-            env["CASEING_SMART_SKIP_ENABLED"] = "1" if smart_skip_enabled else "0"
-            popen_kwargs = dict(
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                bufsize=1,  # 라인 버퍼링
-                cwd=base_dir,
-                env=env,
-            )
-            if os.name == "nt":
-                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-            process = subprocess.Popen(cmd, **popen_kwargs)
-
-            # 프로세스 관리 목록에 등록
             self.running_processes[case_number] = process
+            self._case_to_profile[case_number] = instance_index
 
             start_time = time.time()
             timeout = config.PUPPETEER_CAPTCHA_TIMEOUT
 
-            image_path = None
-
-            # 출력 모니터링 루프 (처리 중지 시 즉시 중단)
             while time.time() - start_time < timeout:
                 if callable(self.processing_flag) and not self.processing_flag():
                     self._log(f"⏹️ 처리 중지로 캡차 로드 중단: {case_number}")
-                    self.cleanup_process(case_number)
+                    self.unbind_case(case_number)
                     return None, None, None
                 line = process.stdout.readline()
                 if not line:
                     if process.poll() is not None:
-                        # 프로세스가 종료됨
-                        stderr = process.stderr.read()
+                        stderr = process.stderr.read() if process.stderr else ""
                         self._log(f"❌ 프로세스 비정상 종료: {stderr}")
+                        self.lane_workers.pop(instance_index, None)
+                        self.unbind_case(case_number)
                         break
                     time.sleep(0.1)
                     continue
@@ -149,44 +217,28 @@ class PuppeteerService:
                 if not line:
                     continue
 
-                # 중요 로그 표시
                 if any(
                     keyword in line
-                    for keyword in [
-                        "GUI_IMAGE_PATH",
-                        "CAPTCHA_STATUS",
-                        "Smart Skip",
-                        "오류",
-                        "Error",
-                    ]
+                    for keyword in ["🚀", "🔍", "✅", "🖼️", "ℹ️", "WORKER"]
                 ):
-                    pass  # 아래 로직에서 처리하거나 별도 로그
-                elif any(keyword in line for keyword in ["🚀", "🔍", "✅", "🖼️", "ℹ️"]):
                     self._log(f"[Node] {line}")
 
-                # 1. 캡차 이미지 경로 수신
                 if "GUI_IMAGE_PATH:" in line:
-                    image_path = line.split("GUI_IMAGE_PATH: ")[1].strip()
+                    image_path = line.split("GUI_IMAGE_PATH:")[1].strip()
                     self._log(f"🖼️ 캡차 이미지 획득: {image_path}")
-                    # 프로세스는 계속 살아있음 (입력 대기 상태)
-                    return image_path, None, process  # 호환성을 위해 튜플 반환
+                    return image_path, None, process
 
-                # 2. 스마트 스킵 신호 수신
-                elif "CAPTCHA_STATUS: SKIP_AND_CLICK" in line:
+                if "CAPTCHA_STATUS: SKIP_AND_CLICK" in line:
                     self._log(f"⚡ 스마트 스킵 활성화: {case_number}")
                     return "__CLICK__", None, process
 
-                # 3. 입력 대기 신호 (혹시 이미지 경로보다 늦게 뜨더라도 무시)
-                elif "입력 대기 중" in line:
-                    pass
-
             self._log(f"⏰ 초기화 타임아웃: {case_number}")
-            self.cleanup_process(case_number)
+            self.unbind_case(case_number)
             return None, None, None
 
         except Exception as e:
             self._log(f"❌ 프로세스 실행 오류: {e}")
-            self.cleanup_process(case_number)
+            self.unbind_case(case_number)
             return None, None, None
 
     def execute_case_processing(self, case, captcha_input, browser_ws_url=None):
@@ -204,7 +256,6 @@ class PuppeteerService:
         try:
             self._log(f"📤 Node.js로 입력 전송: {captcha_input}")
 
-            # 입력값 전송 (줄바꿈 필수)
             if process.poll() is None:
                 process.stdin.write(captcha_input + "\n")
                 process.stdin.flush()
@@ -212,7 +263,6 @@ class PuppeteerService:
                 self._log("❌ 프로세스가 이미 종료되어 있습니다.")
                 return False
 
-            # 결과 JSON 수신 대기 (WRONG_CAPTCHA_IMAGE 선처리)
             json_lines = []
             capture_json = False
             result_found = False
@@ -223,105 +273,117 @@ class PuppeteerService:
             while time.time() - start_time < timeout:
                 if callable(self.processing_flag) and not self.processing_flag():
                     self._log(f"⏹️ 처리 중지로 실행 중단: {case_number}")
-                    self.cleanup_process(case_number)
+                    self.unbind_case(case_number)
                     return False
                 line = process.stdout.readline()
                 if not line:
                     if process.poll() is not None:
                         break
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     continue
 
                 line = line.strip()
+                if not line:
+                    continue
 
-                # 캡차 불일치 재시도: 새 이미지 경로 수신 시 즉시 반환 (프로세스 유지)
+                if any(
+                    k in line
+                    for k in [
+                        "💬",
+                        "⚠️",
+                        "✅",
+                        "❌",
+                        "📊",
+                        "📋",
+                        "WRONG_CAPTCHA",
+                        "Interactive",
+                        "전략",
+                        "그리드",
+                        "일반내용",
+                    ]
+                ):
+                    self._log(f"[Node] {line}")
+
                 if "WRONG_CAPTCHA_IMAGE:" in line:
                     wrong_captcha_path = line.split("WRONG_CAPTCHA_IMAGE:")[1].strip()
                     self._log(f"⚠️ 캡차 불일치 - 재입력용 이미지: {wrong_captcha_path}")
                     skip_cleanup = True
                     return {"status": "WRONG_CAPTCHA", "image_path": wrong_captcha_path}
 
-                # 결과 JSON 블록 캡처
                 if line == "JSON_RESULT_START":
                     capture_json = True
+                    json_lines = []
                     continue
-                elif line == "JSON_RESULT_END":
+                if line == "JSON_RESULT_END":
                     capture_json = False
                     result_found = True
                     break
 
                 if capture_json:
                     json_lines.append(line)
-                else:
-                    # 진행 상황 로그 출력
-                    if any(k in line for k in ["✅", "❌", "📊", "⚠️", "Interactive"]):
-                        self._log(f"[Node] {line}")
 
-            # 결과 처리
             if result_found and json_lines:
-                json_str = "".join(json_lines)
+                json_str = "\n".join(json_lines)
                 try:
                     result = json.loads(json_str)
-                    if result.get("success"):
-                        progress_data = result.get("progressData")
-                        # 주니어 참고 (2026-08-12 사고):
-                        # success=true 라도 progressData가 없거나 리스트가 아니면
-                        # "0건 성공"으로 오인하지 않고 실패로 올립니다.
-                        if progress_data is None:
-                            self._log("❌ 처리 실패 (Node): 진행내용 데이터가 없습니다")
-                            return False
-                        if not isinstance(progress_data, list):
-                            self._log(
-                                f"❌ 처리 실패 (Node): 진행내용 타입 오류 ({type(progress_data).__name__})"
-                            )
-                            return False
-                        # 일반내용은 반환값에 넣지 않고 별도 보관함으로
-                        # (호출부가 list를 기대하므로 반환 타입을 깨뜨리지 않음)
-                        general_info = result.get("generalInfo")
-                        if general_info is not None:
-                            self.last_general_info[case_number] = general_info
-                            self._log(
-                                f"📋 일반내용 수신: {case_number} "
-                                f"(basic={len((general_info or {}).get('basic') or {})}키)"
-                            )
-                        if len(progress_data) == 0:
-                            # 진짜 0건(화면에 '내용 없음')일 때만 여기 옵니다.
-                            # 실패를 빈 배열로 위장하던 경로는 더 이상 성공 로그를 찍지 않습니다.
-                            self._log("ℹ️ 처리 완료: 진행내용 0건 (정상 빈 결과)")
-                        else:
-                            self._log(f"✅ 처리 완료: {len(progress_data)}건 데이터 추출")
-                        return progress_data
-                    else:
-                        error_msg = result.get("error", "Unknown error")
+                    if not result.get("success", False):
+                        error_msg = result.get("error", "알 수 없는 오류")
                         self._log(f"❌ 처리 실패 (Node): {error_msg}")
                         if "WRONG_CAPTCHA" in str(error_msg):
                             return {"status": "WRONG_CAPTCHA", "image_path": None}
                         return False
+
+                    progress_data = result.get("progressData")
+                    general_info = result.get("generalInfo")
+                    if general_info is not None:
+                        self.last_general_info[case_number] = general_info
+                    if progress_data is None:
+                        progress_data = []
+                    self._log(f"✅ 처리 완료: {len(progress_data)}건 데이터 추출")
+                    return progress_data
                 except json.JSONDecodeError:
                     self._log(f"❌ JSON 파싱 실패: {json_str[:100]}...")
                     return False
-            else:
-                self._log(f"❌ 결과 수신 실패 (타임아웃 또는 프로세스 종료)")
-                return False
+
+            self._log("❌ 결과 수신 실패 (타임아웃 또는 프로세스 종료)")
+            return False
 
         except Exception as e:
             self._log(f"❌ 실행 오류: {e}")
             return False
         finally:
-            # WRONG_CAPTCHA 시 프로세스 유지(재입력 대기), 그 외에는 정리
+            # WRONG_CAPTCHA 시 매핑 유지(재입력 대기). 그 외에는 사건 매핑만 해제(워커 유지).
             if not skip_cleanup:
-                self.cleanup_process(case_number)
+                self.unbind_case(case_number)
+
+    def unbind_case(self, case_number):
+        """사건↔프로세스 매핑만 제거하고 워커는 죽이지 않습니다."""
+        self.running_processes.pop(case_number, None)
+        self._case_to_profile.pop(case_number, None)
 
     def cleanup_process(self, case_number):
-        """프로세스 안전하게 종료"""
-        process = self.running_processes.pop(case_number, None)
-        if process:
+        """
+        사건 매핑 해제. 워커 모드에서는 레인 워커를 종료하지 않습니다.
+        (배치 종료 시 shutdown_all_workers 사용)
+        """
+        self.unbind_case(case_number)
+
+    def shutdown_all_workers(self):
+        """모든 레인 워커에 QUIT을 보내고 종료합니다."""
+        for idx, process in list(self.lane_workers.items()):
             try:
-                if process.poll() is None:
-                    process.terminate()
+                if process and process.poll() is None:
                     try:
-                        process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-            except Exception as e:
-                logger.debug("Cleanup error: %s", e)
+                        process.stdin.write(json.dumps({"cmd": "QUIT"}) + "\n")
+                        process.stdin.flush()
+                        process.wait(timeout=5)
+                    except Exception:
+                        self._kill_process(process)
+            finally:
+                self.lane_workers.pop(idx, None)
+        self.running_processes.clear()
+        self._case_to_profile.clear()
+        self._log(
+            f"✅ 모든 레인 워커 종료 완료 (이번 배치 Chrome 기동 횟수: {self.chrome_launch_count})"
+        )
+        self.chrome_launch_count = 0

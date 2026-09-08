@@ -33,10 +33,18 @@ class PageController {
     const totalAttempts = 1 + Math.max(0, maxRetry);
     let lastError = null;
 
+    // 폰트/미디어/스타일시트·광고 차단 (캡차 image 는 유지)
+    try {
+      await this._enableLightRequestBlocking();
+    } catch (e) {
+      console.log(`⚠️ 리소스 차단 설정 실패(무시): ${e.message}`);
+    }
+
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
       try {
-        // 1차: networkidle2 / 재시도: domcontentloaded (부하 시 idle 대기 완화)
-        const waitUntil = attempt === 1 ? 'networkidle2' : 'domcontentloaded';
+        // 주니어: networkidle2 는 광고/분석 요청 때문에 자주 타임아웃남.
+        // select 대기만으로 충분하므로 domcontentloaded 사용.
+        const waitUntil = 'domcontentloaded';
         if (attempt === 1) {
           console.log(`🌐 대법원 사이트 접속 중... (${this.browserId})`);
         } else {
@@ -67,6 +75,40 @@ class PageController {
 
     console.error(`❌ 사이트 접속 실패 (${this.browserId}):`, lastError && lastError.message);
     throw lastError;
+  }
+
+  /**
+   * 불필요 리소스 차단으로 메모리·속도를 줄입니다.
+   * 캡차는 <img> 이므로 image 타입은 절대 막지 않습니다.
+   */
+  async _enableLightRequestBlocking() {
+    if (this._requestBlockingEnabled) return;
+    this._requestBlockingEnabled = true;
+    await this.page.setRequestInterception(true);
+    const blockedTypes = new Set(['font', 'media', 'stylesheet']);
+    const blockedHostHints = [
+      'google-analytics',
+      'googletagmanager',
+      'doubleclick',
+      'facebook',
+      'hotjar',
+      'clarity.ms'
+    ];
+    this.page.on('request', (req) => {
+      try {
+        const type = req.resourceType();
+        const url = req.url().toLowerCase();
+        if (blockedTypes.has(type)) {
+          return req.abort();
+        }
+        if (blockedHostHints.some((h) => url.includes(h))) {
+          return req.abort();
+        }
+        return req.continue();
+      } catch (e) {
+        try { req.continue(); } catch (_) { /* ignore */ }
+      }
+    });
   }
 
   /**
@@ -954,35 +996,62 @@ class PageController {
         this.lastGeneralInfo = null;
       }
 
-      // 1. "진행내용" 탭 클릭 (듀얼 전략)
+      // 1. "진행내용" 탭 클릭
+      // 주니어: click()이 예외 없이 끝나도 탭이 실제로 전환되지 않을 수 있음.
+      // → 클릭 후 탭 바디가 보이는지 확인하고, 실패하면 JS click → 텍스트 전략 순으로 시도.
       console.log(`🔍 [DEBUG] "진행내용" 탭 찾는 중... (ID/텍스트 방식 병행) (${this.browserId})`);
-      
-      let tabClicked = false;
 
-      // [전략 1] ID 기반 검색 (강화된 병행 방식)
+      // progressTabSelector 는 위에서 이미 선언됨
+      const tabBodySelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body';
+
+      // 탭 바디가 화면에 보이는지 확인 (클릭 성공 판정용)
+      const isTabBodyVisible = async (timeoutMs = 2000) => {
+        try {
+          await this.page.waitForFunction((sel) => {
+            const tabBody = document.querySelector(sel);
+            if (!tabBody) return false;
+            const style = window.getComputedStyle(tabBody);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+          }, { timeout: timeoutMs }, tabBodySelector);
+          return true;
+        } catch (e) {
+          return false;
+        }
+      };
+
+      let tabActivated = false;
+
+      // [전략 1-1] Puppeteer click
       try {
-        const progressTabSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_tab_ssgoTab2';
         const progressTab = await this.page.$(progressTabSelector);
         if (progressTab) {
-          console.log(`📋 [전략 1] ID로 탭 발견! 클릭 시도... (${this.browserId})`);
-          
-          // 1단계: Puppeteer click 시도
+          console.log(`📋 [전략 1] ID로 탭 발견! Puppeteer click 시도... (${this.browserId})`);
           try {
             await progressTab.click();
-            console.log(`✅ [전략 1-1] Puppeteer click 성공!`);
-            tabClicked = true;
+            console.log(`✅ [전략 1-1] Puppeteer click 호출 완료 — 전환 확인 중...`);
+            tabActivated = await isTabBodyVisible(2000);
+            if (tabActivated) {
+              console.log(`✅ [전략 1-1] 탭 전환 확인됨`);
+            } else {
+              console.log(`⚠️ [전략 1-1] 클릭은 됐지만 탭 바디가 안 보임 → JS click 폴백`);
+            }
           } catch (clickError) {
-            console.log(`⚠️ [전략 1-1] Puppeteer click 실패: ${clickError.message}. JS click으로 재시도.`);
+            console.log(`⚠️ [전략 1-1] Puppeteer click 실패: ${clickError.message}`);
           }
 
-          // 2단계: JS click 시도 (1단계 실패 시 또는 보강용)
-          if (!tabClicked) {
+          // [전략 1-2] JS click (1-1 미확인 시 항상 시도)
+          if (!tabActivated) {
             await this.page.evaluate((selector) => {
               const el = document.querySelector(selector);
               if (el) el.click();
             }, progressTabSelector);
-            tabClicked = true;
-            console.log(`✅ [전략 1-2] JS click 성공!`);
+            console.log(`✅ [전략 1-2] JS click 호출 완료 — 전환 확인 중...`);
+            tabActivated = await isTabBodyVisible(2000);
+            if (tabActivated) {
+              console.log(`✅ [전략 1-2] 탭 전환 확인됨`);
+            } else {
+              console.log(`⚠️ [전략 1-2] JS click 후에도 탭 바디 미표시`);
+            }
           }
         }
       } catch (e) {
@@ -990,58 +1059,54 @@ class PageController {
       }
 
       // [전략 2] 텍스트 기반 검색 (실패 시 폴백)
-      if (!tabClicked) {
+      if (!tabActivated) {
         console.log(`🔄 [전략 2] 텍스트 기반 검색 시도...`);
-        tabClicked = await this.page.evaluate(() => {
-          // li, a, span 태그 중에서 "진행내용" 텍스트를 포함한 요소 찾기
+        const textClicked = await this.page.evaluate(() => {
           const elements = document.querySelectorAll('li, a, span');
           for (const el of elements) {
-            if (el.textContent.trim() === '진행내용' && el.offsetParent !== null) { // 보이는 요소만
+            if (el.textContent.trim() === '진행내용' && el.offsetParent !== null) {
               el.click();
               return true;
             }
           }
           return false;
         });
-        
-        if (tabClicked) {
-          console.log(`✅ [전략 2] 텍스트로 탭 클릭 성공!`);
+        if (textClicked) {
+          tabActivated = await isTabBodyVisible(2000);
+          if (tabActivated) {
+            console.log(`✅ [전략 2] 텍스트로 탭 전환 확인됨`);
+          } else {
+            console.log(`⚠️ [전략 2] 텍스트 클릭 후에도 탭 바디 미표시`);
+          }
         }
       }
 
-      if (tabClicked) {
-        // 탭 전환 후 그리드가 나타나면 즉시 진행 (아래 waitForSelector에서 대기)
-      }
-      if (!tabClicked) {
+      if (!tabActivated) {
         const errorMsg = `"진행내용" 탭을 찾을 수 없습니다. (ID/텍스트 전략 모두 실패)`;
         console.log(`❌ ${errorMsg} (${this.browserId})`);
-        
-        // 디버그: 스크린샷
-        const debugPath = `screenshots/tab_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
-        await this.page.screenshot({ path: debugPath, fullPage: true });
-        console.log(`📸 [DEBUG] 탭 미발견 스크린샷: ${debugPath}`);
-        
-        throw new Error(errorMsg);
-      }
 
-      // 탭 클릭 후 컨텐츠 영역이 열릴 때까지 짧게 대기
-      try {
-        await this.page.waitForFunction(() => {
-          const tabBody = document.querySelector('#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body');
-          if (!tabBody) return false;
-          const style = window.getComputedStyle(tabBody);
-          return style.display !== 'none' && style.visibility !== 'hidden';
-        }, { timeout: 2000 });
-      } catch (e) {
-        // 보조 대기 실패는 치명적이지 않음. 아래 그리드 대기로 이어집니다.
+        // 디버그 스크린샷 — 절대 경로 + 디렉터리 보장
+        try {
+          await fs.mkdir(this.screenshotsDir, { recursive: true });
+          const debugPath = path.join(
+            this.screenshotsDir,
+            `tab_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`
+          );
+          await this.page.screenshot({ path: debugPath, fullPage: true });
+          console.log(`📸 [DEBUG] 탭 미발견 스크린샷: ${debugPath}`);
+        } catch (ssErr) {
+          console.log(`⚠️ [DEBUG] 탭 미발견 스크린샷 저장 실패: ${ssErr.message}`);
+        }
+
+        throw new Error(errorMsg);
       }
 
       // 2. 진행내용 그리드 대기 및 추출
       const gridSelector = '#mf_ssgoTopMainTab_contents_content1_body_wfSsgoDetail_ssgoCsDetailTab_contents_ssgoTab2_body_grd_csProgLst_main_div';
-      console.log(`🔍 [DEBUG] 진행내용 그리드(#${gridSelector}) 대기 중... (최대 18초)`);
+      console.log(`🔍 [DEBUG] 진행내용 그리드(#${gridSelector}) 대기 중... (최대 8초)`);
 
       try {
-        await this.page.waitForSelector(gridSelector, { timeout: 18000 });
+        await this.page.waitForSelector(gridSelector, { timeout: 8000 });
         console.log(`✅ 진행내용 그리드 발견! (${this.browserId})`);
       } catch (error) {
         console.log(`⚠️ 기본 그리드 선택자 실패. 대체 선택자 시도... (${this.browserId})`);
@@ -1058,9 +1123,37 @@ class PageController {
         } else {
              const errorMsg = `진행내용 그리드를 찾을 수 없습니다: ${error.message}`;
              console.log(`❌ ${errorMsg} (${this.browserId})`);
-             
-             // 혹시 "조회된 내용이 없습니다" 같은 메시지가 있는지 확인
-             const bodyText = await this.page.$eval('body', el => el.innerText);
+
+             // 스크린샷을 먼저 남긴 뒤 body 텍스트 판정 (판정 예외로 스크린샷이 날아가지 않게)
+             try {
+               await fs.mkdir(this.screenshotsDir, { recursive: true });
+               const debugPath = path.join(
+                 this.screenshotsDir,
+                 `grid_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`
+               );
+               await this.page.screenshot({ path: debugPath, fullPage: true });
+               console.log(`📸 [DEBUG] 그리드 미발견 스크린샷: ${debugPath}`);
+             } catch (ssErr) {
+               console.log(`⚠️ [DEBUG] 그리드 미발견 스크린샷 저장 실패: ${ssErr.message}`);
+             }
+
+             // 탭 컨텐츠 DOM 일부 로그 (사후 분석용)
+             try {
+               const htmlSnippet = await this.page.evaluate((sel) => {
+                 const el = document.querySelector(sel);
+                 return el ? (el.outerHTML || '').slice(0, 500) : '(탭 컨텐츠 없음)';
+               }, tabContentSelector);
+               console.log(`📋 [DEBUG] 탭 컨텐츠 HTML 앞부분: ${htmlSnippet}`);
+             } catch (domErr) {
+               console.log(`⚠️ [DEBUG] 탭 컨텐츠 HTML 읽기 실패: ${domErr.message}`);
+             }
+
+             let bodyText = '';
+             try {
+               bodyText = await this.page.$eval('body', el => el.innerText);
+             } catch (bodyErr) {
+               console.log(`⚠️ [DEBUG] body 텍스트 읽기 실패: ${bodyErr.message}`);
+             }
              if (bodyText.includes('자동입력방지') || bodyText.includes('일치하지')) {
                  throw new Error(`WRONG_CAPTCHA: ${error.message}`);
              }
@@ -1068,9 +1161,6 @@ class PageController {
                  console.log(`ℹ️ [DEBUG] 화면에 '내용 없음' 메시지 감지됨 -> 정상 결과(0건)로 처리`);
                  return [];
              }
-             const debugPath = `screenshots/grid_not_found_${caseNumber || 'unknown'}_${Date.now()}.png`;
-             await this.page.screenshot({ path: debugPath, fullPage: true });
-             console.log(`📸 [DEBUG] 그리드 미발견 스크린샷: ${debugPath}`);
              
              throw new Error(errorMsg);
         }

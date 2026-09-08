@@ -7,10 +7,12 @@
 - 조건이 맞으면 「캡차 입력 완료」와 동일하게 자동 제출
 
 주의 (주니어용):
-- `_ocr_wave_auto_submit_started`: 한 파도에서 자동 제출 스레드를 두 번 띄우지 않기 위한 플래그
+- `_ocr_wave_auto_submit_started`: 현재 제출 스레드 중복 방지.
+  파도(process_all_captcha_inputs)가 끝나면 False로 풀어 다음 파도 OCR 자동 제출을 허용합니다.
 - `_captcha_batch_running`: process_all_captcha_inputs 중복 진입 방지
 - `processing=False`이면 자동 제출 금지 (중지 후에도 제출되던 버그 방지)
 - 수동 캡차 창은 반드시 메인 스레드(ui_queue)에서만 열어야 합니다
+- lane 미등록 사건을 기다리면 같은 레인 순차+ev.wait 교착이 납니다 → 스킵하고 등록된 건만 제출
 
 """
 
@@ -142,6 +144,16 @@ class CaptchaOcrMixin:
         )
         self.app.ocr_manual_required[case_number] = False
 
+        # 학습 데이터셋용 OCR 추정값 보관 (성공/실패 시 record_sample 에 사용)
+        if not hasattr(self.app, "_ocr_meta"):
+            self.app._ocr_meta = {}
+        self.app._ocr_meta[case_number] = {
+            "guess": text,
+            "confidence": float(result.confidence),
+            "engine": str(result.engine),
+            "image_path": image_path,
+        }
+
         # 경로 보관 (WRONG_CAPTCHA 후 수동 폴백 시 창에 표시)
         paths = getattr(self.app, "case_captcha_image_paths", None)
         if paths is None:
@@ -191,9 +203,13 @@ class CaptchaOcrMixin:
 
     def _try_auto_submit_captcha_wave(self, cases):
         """
-        비수동(OCR) 사건이 모두 6자리면 「캡차 입력 완료」와 동일하게 자동 제출.
+        lane_events에 등록된 비수동(OCR) 사건이 모두 6자리면 자동 제출.
 
-        수동 필요 건이 섞여 있어도 OCR 완료 건은 진행합니다.
+        주니어 참고:
+        - process_all_captcha_inputs 는 lane_events 에 있는 사건만 처리합니다.
+        - 아직 lane 미등록(레인 순번 전) 사건을 기다리면, 같은 레인의 앞 사건이
+          ev.wait()에 묶여 뒤 사건이 시작되지 못하는 교착이 납니다 → continue 로 스킵.
+        - 수동 필요 건이 섞여 있어도 OCR 완료 건은 진행합니다.
         반환: True면 start_processing_thread를 호출함.
         """
         if not getattr(config, "OCR_ENABLED", False):
@@ -214,6 +230,7 @@ class CaptchaOcrMixin:
 
             ready_count = 0
             manual_pending = 0
+            pending_load = 0
 
             for case in cases:
                 case_number = case.get("사건번호", "")
@@ -224,17 +241,9 @@ class CaptchaOcrMixin:
                 if captcha_val == "CLICK":
                     continue
                 if case_number not in lane_events:
-                    # 아직 캡차 로드/OCR 중인 비완료 사건 → 대기
-                    ts_now = time.time()
-                    ts_map = getattr(self.app, "_lane_wait_log_ts", {})
-                    ts_last = ts_map.get(case_number, 0)
-                    if ts_now - ts_last >= 10.0:
-                        self.app.log_message(
-                            f"ℹ️ OCR 자동 제출 대기: {case_number} 아직 lane 미등록"
-                        )
-                        ts_map[case_number] = ts_now
-                        self.app._lane_wait_log_ts = ts_map
-                    return False
+                    # 미등록 = 아직 레인 순번 안 옴. 기다리면 교착 → 이번 파도에서 제외
+                    pending_load += 1
+                    continue
                 if manual.get(case_number, False):
                     # 수동 필요: 자동 제출을 막지 않고 개수만 센다
                     if self._lane_waiting_has_valid_captcha(case_number):
@@ -243,9 +252,21 @@ class CaptchaOcrMixin:
                         manual_pending += 1
                     continue
                 if not self._lane_waiting_has_valid_captcha(case_number):
-                    # OCR 결과가 아직 안 들어온 비수동 건 → 대기
+                    # 이미 lane 등록됐는데 OCR 결과가 아직 안 들어온 건만 대기
                     return False
                 ready_count += 1
+
+            if pending_load > 0:
+                # 교착 오해 방지: 제출을 막지 않음. 다음 파도용 안내만 (30초마다 1회)
+                ts_now = time.time()
+                ts_map = getattr(self.app, "_lane_wait_log_ts", {})
+                ts_last = ts_map.get("_pending_load", 0)
+                if ts_now - ts_last >= 30.0:
+                    self.app.log_message(
+                        f"ℹ️ 다음 파도 대기(아직 캡차 미로드 {pending_load}건) — 등록된 건부터 제출"
+                    )
+                    ts_map["_pending_load"] = ts_now
+                    self.app._lane_wait_log_ts = ts_map
 
             if ready_count == 0:
                 # 채울 OCR 건이 없고 수동만 남음 → 버튼/창으로 유도, 제출은 보류
@@ -261,7 +282,8 @@ class CaptchaOcrMixin:
 
             self.app._ocr_wave_auto_submit_started = True
             self.app.log_message(
-                f"⚡ OCR 자동 제출 시작 (OCR완료 {ready_count}건, 수동대기 {manual_pending}건)"
+                f"⚡ OCR 자동 제출 시작 (OCR완료 {ready_count}건, 수동대기 {manual_pending}건"
+                f"{f', 다음파도 {pending_load}건' if pending_load else ''})"
             )
             self.app.start_processing_thread()
             if manual_pending > 0:
