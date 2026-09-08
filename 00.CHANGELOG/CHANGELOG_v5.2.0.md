@@ -1,8 +1,8 @@
-# CHANGELOG v5.1.2
+# CHANGELOG v5.2.0
 
-## v5.1.2 주요 변경 (2026-09-08)
+## v5.2.0 주요 변경 (2026-09-08)
 
-공식 버전 흐름: **v5.1.1 → v5.1.2**
+공식 버전 흐름: **v5.1.1 → v5.2.0**
 
 ### Bug Fixes
 
@@ -51,7 +51,7 @@
 
 ### Technical
 
-- `config.py`: `APP_VERSION = "5.1.2"`, `PROFILE_COUNT`, OCR/캐시/스크린샷 관련 상수.
+- `config.py`: `APP_VERSION = "5.2.0"`, `PROFILE_COUNT`, OCR/캐시/스크린샷 관련 상수.
 - `src/interactive_runner.js`: `--worker` 모드.
 - `services/puppeteer.py`: `lane_workers` / `shutdown_all_workers`.
 - `services/profile_maintenance.py`, `services/captcha_dataset.py` 신설.

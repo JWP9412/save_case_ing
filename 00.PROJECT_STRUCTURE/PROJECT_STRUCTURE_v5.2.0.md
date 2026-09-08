@@ -1,8 +1,8 @@
-# 프로젝트 구조 (Project Structure) - v5.1.2
+# 프로젝트 구조 (Project Structure) - v5.2.0
 
 ## Root Directory
 
-- **`config.py`**: `APP_VERSION = "5.1.2"`, `PROFILE_COUNT`, OCR·캐시·스크린샷 상수.
+- **`config.py`**: `APP_VERSION = "5.2.0"`, `PROFILE_COUNT`, OCR·캐시·스크린샷 상수.
 - **`main.py`**: GUI / `--auto` 진입점.
 - **`auto_runner.py`**: CLI 일괄 자동 조회.
 - **`requirements.txt`**: Python 의존성.
@@ -35,15 +35,15 @@
 
 ## 문서
 
-- `00.CHANGELOG/CHANGELOG_v5.1.2.md`
-- `00.README/README_v5.1.2.md`
-- `00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.1.2.md`
+- `00.CHANGELOG/CHANGELOG_v5.2.0.md`
+- `00.README/README_v5.2.0.md`
+- `00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.2.0.md`
 
 ## 트리 형식 (요약)
 
 ```
 case-ing/
-├── config.py                         # 5.1.2, PROFILE_COUNT
+├── config.py                         # 5.2.0, PROFILE_COUNT
 ├── services/
 │   ├── puppeteer.py                  # lane_workers
 │   ├── captcha_dataset.py
