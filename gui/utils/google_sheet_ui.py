@@ -165,6 +165,13 @@ def _on_load_google_sheet_done(app, google_data, spreadsheet, error):
     app.log_message(
         f"✅ {len(google_data)}개 사건 로드 완료 (병렬 처리: {smart_parallel}개)"
     )
+    # 네트워크 로드 경로에서도 CLI 종국 시작 안내 (캐시 경로와 중복 방지 플래그 있음)
+    try:
+        from services import finalized_case as finalized_case_module
+
+        finalized_case_module.schedule_persisted_finalized_prompt(app, delay_ms=500)
+    except Exception:
+        pass
 
 
 def load_google_sheet(app, force_network=False):

@@ -31,4 +31,8 @@ ERROR_YYYYMMDD_짧은영문키워드.md
 
 | 날짜 | 문서 | 한 줄 요약 | 심각도 |
 | --- | --- | --- | --- |
+| 2026-09-09 | [ERROR_20260909_worker_idle_false_fail.md](ERROR_20260909_worker_idle_false_fail.md) | 이전 사건 WORKER_IDLE 잔여분을 다음 사건 실패로 오판 → 레인 kill·Chrome 재기동 폭주 | 높음 |
+| 2026-09-09 | [ERROR_20260909_smart_skip_miss.md](ERROR_20260909_smart_skip_miss.md) | 검색 UI 전 스캔·엄격 매칭·about:blank로 스마트 스킵 상시 실패 → 매번 캡차 | 높음 |
+| 2026-09-09 | [ERROR_20260909_jongguk_name_false_positive.md](ERROR_20260909_jongguk_name_false_positive.md) | 진행내용 본문「박종국」·라벨「종국결과」를 종국으로 오탐 (정답은 기본내용 종국결과 칸) | 중간 |
+| 2026-09-09 | [ERROR_20260909_cli_settings_not_loaded.md](ERROR_20260909_cli_settings_not_loaded.md) | CLI(auto_runner)가 load_user_settings 미호출 → 「수신 메일 주소 없음」 | 중간 |
 | 2026-08-12 | [ERROR_20260812_sheet_progress_wipe.md](ERROR_20260812_sheet_progress_wipe.md) | 조회 실패를 "0건 정상"으로 오인해 구글시트 진행내용 20건(총 3,000행 이상) 삭제 | 치명 (데이터 손실) |

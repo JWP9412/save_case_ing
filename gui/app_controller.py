@@ -920,6 +920,18 @@ class AppController:
         """Show yes/no dialog. Returns True/False. Called from ProcessController (main or via ui_queue)."""
         return messagebox.askyesno(title, message)
 
+    def prompt_hide_finalized_cases(self):
+        """종국 사건 숨김 확인 (배치 종료 후 UI 스레드). services.finalized_case 위임."""
+        from services import finalized_case as finalized_case_module
+
+        finalized_case_module.prompt_hide_finalized_cases(self)
+
+    def prompt_persisted_finalized_on_startup(self):
+        """CLI가 남겨 둔 종국 후보 시작 안내. services.finalized_case 위임."""
+        from services import finalized_case as finalized_case_module
+
+        finalized_case_module.prompt_persisted_finalized_on_startup(self)
+
     def get_case_status_text(self, case_index):
         """Return current status label text for case. Used by ProcessController for email result grouping."""
         if case_index not in getattr(self, "case_status", {}):
@@ -940,9 +952,14 @@ class AppController:
         lbl = labels[case_index]
         if lbl and getattr(lbl, "winfo_exists", lambda: False)() and lbl.winfo_exists():
             try:
-                lbl.configure(text="자동 가능", text_color=self.get_theme_color("success"))
+                lbl.configure(text="자동 가능", fg=self.get_theme_color("success"))
             except Exception:
-                pass
+                try:
+                    lbl.configure(
+                        text="자동 가능", text_color=self.get_theme_color("success")
+                    )
+                except Exception:
+                    pass
 
     def _process_ui_queue(self):
         """Process UI update queue. Delegated to ui_queue_manager."""
@@ -963,6 +980,13 @@ class AppController:
             sheet_loader_module._apply_loaded_data_to_app(self, cached)
             self.log_message(f"캐시에서 {len(cached)}개 사건 로드")
             self.root.deiconify()
+            # CLI가 남겨 둔 종국 후보 → 시작 안내 (첫 실행 가이드 이후)
+            try:
+                from services import finalized_case as finalized_case_module
+
+                finalized_case_module.schedule_persisted_finalized_prompt(self, delay_ms=900)
+            except Exception:
+                pass
         else:
             self.root.after(100, self.load_google_sheet)
 

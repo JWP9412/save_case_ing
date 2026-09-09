@@ -307,6 +307,17 @@ def _esc_html(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# 메일 HTML 공통 스타일 (인라인만 사용 — Gmail/Outlook 호환)
+_MAIL_FONT = "'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif"
+_TH_STYLE = (
+    "text-align:left; padding:8px 6px; font-size:12px; color:#6B7280; "
+    f"font-family:Arial,sans-serif; border-bottom:1px solid #EEEEEE;"
+)
+_TD_BASE = (
+    f"padding:10px 6px; font-family:{_MAIL_FONT}; font-size:13px;"
+)
+
+
 def _case_lists_from_run_results(run_results, all_cases=None):
     """
     run_results + (선택) 전체 사건 목록 → 상태별 리스트.
@@ -350,6 +361,130 @@ def _case_lists_from_run_results(run_results, all_cases=None):
     return success, no_update, failed, captcha, result_changed, not_queried
 
 
+def _mail_section_title(title, padding="18px 0 12px 0"):
+    """섹션 제목 HTML (최신 업데이트 / 결과 변경 / 조회 요약)."""
+    return (
+        f'<div style="padding:{padding}; font-family:{_MAIL_FONT}; '
+        f'font-size:18px; font-weight:700; color:#111827;">{_esc_html(title)}</div>'
+    )
+
+
+def _mail_card(header_html, body_html):
+    """
+    사건(또는 상태 그룹) 1개를 흰 카드로 감쌉니다.
+    주니어: 메일 클라이언트는 border-radius를 무시할 수 있어도, 테두리·여백은 유지됩니다.
+    """
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background-color:#FFFFFF; border:1px solid #E5E7EB; border-radius:10px; '
+        'overflow:hidden; margin:0 0 14px 0;">'
+        f'<tr><td style="padding:16px 18px 12px 18px; border-bottom:1px solid #EEF0F3;">{header_html}</td></tr>'
+        f'<tr><td style="padding:8px 12px 12px 12px;">{body_html}</td></tr>'
+        "</table>"
+    )
+
+
+def _mail_shortcut_link(sheet_url):
+    """시트 바로가기 링크. URL 없으면 빈 문자열."""
+    rep_url = _normalize_sheet_url(sheet_url) if sheet_url else ""
+    if not rep_url:
+        return ""
+    return (
+        f'<div style="margin-top:8px;">'
+        f'<a href="{_esc_html(rep_url)}" target="_blank" '
+        f'style="color:#1a73e8; text-decoration:none; font-size:13px; font-family:Arial,sans-serif;">'
+        f"바로가기 &rarr;</a></div>"
+    )
+
+
+def _mail_card_header(title, sheet_url=""):
+    """카드 상단: 시트명 + 바로가기."""
+    return (
+        f'<div style="font-family:{_MAIL_FONT}; font-size:14px; font-weight:700; '
+        f'color:#111827; line-height:1.45;">{_esc_html(title)}</div>'
+        f"{_mail_shortcut_link(sheet_url)}"
+    )
+
+
+def _mail_td(text, color=None, with_border=False):
+    """표 셀. color는 시트에서 온 글자색을 그대로 씁니다."""
+    css_color = _rgb_to_css(color) if color is not None else "#222222"
+    border = " border-bottom:1px solid #F3F4F6;" if with_border else ""
+    return (
+        f'<td style="{_TD_BASE} color:{css_color};{border}">{_esc_html(text)}</td>'
+    )
+
+
+def _build_update_cards(updates_by_sheet):
+    """최신 업데이트: 시트(사건)별 카드 HTML 목록."""
+    cards = []
+    for s_name, sheet_updates in updates_by_sheet.items():
+        rep_url = next(
+            (u.get("sheet_url") for u in sheet_updates if u.get("sheet_url")),
+            "",
+        )
+        header = _mail_card_header(s_name, rep_url)
+        rows = [
+            "<tr>"
+            f'<th style="{_TH_STYLE} width:18%;">일자</th>'
+            f'<th style="{_TH_STYLE} width:52%;">내용</th>'
+            f'<th style="{_TH_STYLE} width:30%;">결과</th>'
+            "</tr>"
+        ]
+        last_i = len(sheet_updates) - 1
+        for i, u in enumerate(sheet_updates):
+            border = i < last_i
+            rows.append(
+                "<tr>"
+                f"{_mail_td(u.get('date', ''), u.get('dateColor'), border)}"
+                f"{_mail_td(u.get('content', ''), u.get('contentColor'), border)}"
+                f"{_mail_td(u.get('result', ''), u.get('resultColor'), border)}"
+                "</tr>"
+            )
+        body = (
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
+        )
+        cards.append(_mail_card(header, body))
+    return "".join(cards)
+
+
+def _build_result_change_cards(changes_by_sheet):
+    """결과 변경: 시트(사건)별 카드 HTML 목록."""
+    cards = []
+    for s_name, sheet_changes in changes_by_sheet.items():
+        rep_url = next(
+            (ch.get("sheet_url") for ch in sheet_changes if ch.get("sheet_url")),
+            "",
+        )
+        header = _mail_card_header(s_name, rep_url)
+        rows = [
+            "<tr>"
+            f'<th style="{_TH_STYLE}">일자</th>'
+            f'<th style="{_TH_STYLE}">내용</th>'
+            f'<th style="{_TH_STYLE}">이전 결과</th>'
+            f'<th style="{_TH_STYLE}">변경 결과</th>'
+            "</tr>"
+        ]
+        last_i = len(sheet_changes) - 1
+        for i, ch in enumerate(sheet_changes):
+            border = i < last_i
+            rows.append(
+                "<tr>"
+                f"{_mail_td(ch.get('date', ''), ch.get('dateColor'), border)}"
+                f"{_mail_td(ch.get('content', ''), ch.get('contentColor'), border)}"
+                f"{_mail_td(ch.get('old_result', ''), None, border)}"
+                f"{_mail_td(ch.get('result', ''), ch.get('resultColor'), border)}"
+                "</tr>"
+            )
+        body = (
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
+        )
+        cards.append(_mail_card(header, body))
+    return "".join(cards)
+
+
 def _build_run_result_footer(
     success_cases=None,
     failed_cases=None,
@@ -359,7 +494,7 @@ def _build_run_result_footer(
     not_queried_cases=None,
     total_count=None,
 ):
-    """이번 조회 결과 푸터 HTML 조각."""
+    """이번 조회 결과 요약 — 상태별 카드 HTML."""
     success_cases = success_cases or []
     failed_cases = failed_cases or []
     no_update_cases = no_update_cases or []
@@ -376,24 +511,22 @@ def _build_run_result_footer(
     ):
         return ""
 
-    def _render_case_table(title, case_list):
+    def _render_status_card(title, case_list):
         if not case_list:
             return ""
-
-        table_style = (
-            'border="1" cellpadding="4" cellspacing="0" '
-            'style="border-collapse:collapse; width: 100%; max-width: 800px; margin-bottom: 20px;"'
+        header = (
+            f'<div style="font-family:{_MAIL_FONT}; font-size:14px; font-weight:700; '
+            f'color:#111827;">{_esc_html(title)} ({len(case_list)}건)</div>'
         )
-        th_style = 'style="background-color: #f2f2f2; text-align: left;"'
-
         rows = [
-            f"<h4>{title} ({len(case_list)}건)</h4>",
-            f"<table {table_style}>",
-            f'<tr><th {th_style} width="40%">사건번호</th>'
-            f'<th {th_style} width="60%">피고/사건명</th></tr>',
+            "<tr>"
+            f'<th style="{_TH_STYLE} width:40%;">사건번호</th>'
+            f'<th style="{_TH_STYLE} width:60%;">피고/사건명</th>'
+            "</tr>"
         ]
-
-        for case in case_list:
+        last_i = len(case_list) - 1
+        for i, case in enumerate(case_list):
+            border = i < last_i
             if isinstance(case, dict):
                 case_num = case.get("사건번호", "")
                 defendant = case.get("피고", "")
@@ -404,22 +537,20 @@ def _build_run_result_footer(
                 if case_name:
                     details.append(case_name)
                 detail_str = " / ".join(details)
-                rows.append(
-                    f"<tr>"
-                    f"<td>{_esc_html(case_num)}</td>"
-                    f"<td>{_esc_html(detail_str)}</td>"
-                    f"</tr>"
-                )
             else:
-                rows.append(
-                    f"<tr>"
-                    f"<td>{_esc_html(str(case))}</td>"
-                    f"<td>-</td>"
-                    f"</tr>"
-                )
-
-        rows.append("</table>")
-        return "\n".join(rows)
+                case_num = str(case)
+                detail_str = "-"
+            rows.append(
+                "<tr>"
+                f"{_mail_td(case_num, None, border)}"
+                f"{_mail_td(detail_str, None, border)}"
+                "</tr>"
+            )
+        body = (
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
+        )
+        return _mail_card(header, body)
 
     if total_count is None:
         total_count = (
@@ -430,15 +561,28 @@ def _build_run_result_footer(
             + len(result_changed_cases)
             + len(not_queried_cases)
         )
-    parts = [f"<h3>이번 조회 결과 요약 (전체 {total_count}건)</h3>"]
-    parts.append(_render_case_table("성공", success_cases))
-    parts.append(_render_case_table("성공(결과 변경)", result_changed_cases))
-    parts.append(_render_case_table("성공(변경없음)", no_update_cases))
-    parts.append(_render_case_table("실패", failed_cases))
-    parts.append(_render_case_table("캡차(재시도 안 함)", captcha_cases))
-    parts.append(_render_case_table("미조회", not_queried_cases))
+    parts = [_mail_section_title(f"이번 조회 결과 요약 (전체 {total_count}건)")]
+    parts.append(_render_status_card("성공", success_cases))
+    parts.append(_render_status_card("성공(결과 변경)", result_changed_cases))
+    parts.append(_render_status_card("성공(변경없음)", no_update_cases))
+    parts.append(_render_status_card("실패", failed_cases))
+    parts.append(_render_status_card("캡차(재시도 안 함)", captcha_cases))
+    parts.append(_render_status_card("미조회", not_queried_cases))
+    return "".join(parts)
 
-    return "\n".join(parts)
+
+def _wrap_mail_body(inner_html):
+    """회색 배경 + 680px 컨테이너로 본문을 감쌉니다."""
+    return (
+        '<div style="margin:0; padding:0; background-color:#F3F4F6;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background-color:#F3F4F6; padding:24px 12px;">'
+        "<tr><td align=\"center\">"
+        '<table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" '
+        'style="width:680px; max-width:680px;">'
+        f"<tr><td>{inner_html}</td></tr>"
+        "</table></td></tr></table></div>"
+    )
 
 
 def get_summary_html(
@@ -449,7 +593,8 @@ def get_summary_html(
     all_cases=None,
 ):
     """
-    미발송 내역을 구글 시트 색상을 반영한 HTML 표로 조합하여 반환.
+    미발송 내역을 사건별 카드형 HTML로 조합하여 반환.
+    일자/내용/결과 글자색은 시트에서 온 색상을 그대로 유지합니다.
 
     all_cases: 사건 목록 전체(list of dict). 있으면 run_results에 없는 건을 '미조회'로 표시.
     인자로 success/... 를 넘기면 그 값을 우선 쓰고, 없으면 파일의 run_results를 사용합니다.
@@ -505,101 +650,29 @@ def get_summary_html(
         return "", last_sent
 
     body_parts = []
+
+    # 상단 라벨 (업데이트가 있을 때만)
     if updates:
+        body_parts.append(
+            '<div style="padding:0 0 4px 0;">'
+            '<div style="font-family:Arial,sans-serif; font-size:11px; letter-spacing:0.12em; '
+            'color:#6B7280; margin-bottom:6px;">CASE-ING NOTIFICATION</div>'
+            f"{_mail_section_title('최신 업데이트 내역', padding='0 0 12px 0')}"
+            "</div>"
+        )
         updates_by_sheet = {}
         for u in updates:
             s_name = u.get("sheet_name") or "기타"
-            if s_name not in updates_by_sheet:
-                updates_by_sheet[s_name] = []
-            updates_by_sheet[s_name].append(u)
-        sections = []
-        for s_name, sheet_updates in updates_by_sheet.items():
-            sections.append(f"<h4>{_esc_html(s_name)}</h4>")
-            rep_url = next(
-                (
-                    _normalize_sheet_url(u.get("sheet_url"))
-                    for u in sheet_updates
-                    if u.get("sheet_url")
-                ),
-                "",
-            )
-            if rep_url:
-                sections.append(
-                    f'<div style="margin:-6px 0 8px 0;">'
-                    f'<a href="{_esc_html(rep_url)}" target="_blank" '
-                    f'style="color:#1a73e8; text-decoration:none; font-size:13px;">'
-                    f"바로가기 &rarr;</a></div>"
-                )
-            rows = ["<tr><th>일자</th><th>내용</th><th>결과</th></tr>"]
-            for u in sheet_updates:
-                date = u.get("date", "")
-                content = u.get("content", "")
-                result = u.get("result", "")
-                dc = _rgb_to_css(u.get("dateColor"))
-                cc = _rgb_to_css(u.get("contentColor"))
-                rc = _rgb_to_css(u.get("resultColor"))
-                rows.append(
-                    f"<tr>"
-                    f'<td style="color:{dc}">{_esc_html(date)}</td>'
-                    f'<td style="color:{cc}">{_esc_html(content)}</td>'
-                    f'<td style="color:{rc}">{_esc_html(result)}</td>'
-                    f"</tr>"
-                )
-            table = (
-                '<table border="1" cellpadding="4" cellspacing="0" '
-                f'style="border-collapse:collapse;">{"".join(rows)}</table>'
-            )
-            sections.append(table)
-        body_parts.append(f"<h3>최신 업데이트 내역</h3>{'<br>'.join(sections)}")
+            updates_by_sheet.setdefault(s_name, []).append(u)
+        body_parts.append(_build_update_cards(updates_by_sheet))
 
     if result_changes:
+        body_parts.append(_mail_section_title("결과 변경 내역"))
         changes_by_sheet = {}
         for ch in result_changes:
             s_name = ch.get("sheet_name") or "기타"
-            if s_name not in changes_by_sheet:
-                changes_by_sheet[s_name] = []
-            changes_by_sheet[s_name].append(ch)
-        ch_sections = []
-        for s_name, sheet_changes in changes_by_sheet.items():
-            ch_sections.append(f"<h4>{_esc_html(s_name)}</h4>")
-            rep_url = next(
-                (
-                    _normalize_sheet_url(ch.get("sheet_url"))
-                    for ch in sheet_changes
-                    if ch.get("sheet_url")
-                ),
-                "",
-            )
-            if rep_url:
-                ch_sections.append(
-                    f'<div style="margin:-6px 0 8px 0;">'
-                    f'<a href="{_esc_html(rep_url)}" target="_blank" '
-                    f'style="color:#1a73e8; text-decoration:none; font-size:13px;">'
-                    f"바로가기 &rarr;</a></div>"
-                )
-            rows = ["<tr><th>일자</th><th>내용</th><th>이전 결과</th><th>변경 결과</th></tr>"]
-            for ch in sheet_changes:
-                date = ch.get("date", "")
-                content = ch.get("content", "")
-                old_result = ch.get("old_result", "")
-                result = ch.get("result", "")
-                dc = _rgb_to_css(ch.get("dateColor"))
-                cc = _rgb_to_css(ch.get("contentColor"))
-                rc = _rgb_to_css(ch.get("resultColor"))
-                rows.append(
-                    f"<tr>"
-                    f'<td style="color:{dc}">{_esc_html(date)}</td>'
-                    f'<td style="color:{cc}">{_esc_html(content)}</td>'
-                    f'<td>{_esc_html(old_result)}</td>'
-                    f'<td style="color:{rc}">{_esc_html(result)}</td>'
-                    f"</tr>"
-                )
-            table = (
-                '<table border="1" cellpadding="4" cellspacing="0" '
-                f'style="border-collapse:collapse;">{"".join(rows)}</table>'
-            )
-            ch_sections.append(table)
-        body_parts.append(f"<h3>결과 변경 내역</h3>{'<br>'.join(ch_sections)}")
+            changes_by_sheet.setdefault(s_name, []).append(ch)
+        body_parts.append(_build_result_change_cards(changes_by_sheet))
 
     if has_footer:
         total = None
@@ -617,5 +690,6 @@ def get_summary_html(
             )
         )
 
-    html = f"<html><body>{'<br>'.join(body_parts)}</body></html>"
+    inner = "".join(body_parts)
+    html = f"<html><body>{_wrap_mail_body(inner)}</body></html>"
     return html, last_sent

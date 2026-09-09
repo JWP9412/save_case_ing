@@ -33,6 +33,7 @@ import config
 from gui.utils import captcha_ui as captcha_ui_module
 from services import captcha_ocr_service
 from services import email_manager as email_manager_module
+from services import finalized_case as finalized_case_module
 from services import google_calendar as google_calendar_module
 
 class ResultHandlerMixin:
@@ -252,7 +253,7 @@ class ResultHandlerMixin:
     ):
         """변경없음 처리: 상태·타임스탬프·기일 캐시 갱신."""
         self.app.log_message(f"📭 변경없음: {case_number}")
-        self.app.update_case_status(original_index, "완료 (변경없음)", "#7F8C8D", "✅")
+        self.app.update_case_status(original_index, "완료 (변경없음)", "#3498DB", "✅")
         self.app.log_history_manager.add_to_search_log(case_number)
         self.app.ui_queue.put(("function", (self.app.update_auto_search_label, case_number), {}))
         history = self.app.load_update_history()
@@ -274,6 +275,10 @@ class ResultHandlerMixin:
         except Exception as e:
             self.app.log_message(f"⚠️ 최근 조회 일시 갱신 생략: {e}")
         self.app.log_message(f"✅ 처리 완료: {case_number} (소요 시간: {elapsed_time}초)")
+        # 종국이면 배치 끝 숨김 확인용으로 모아 둠 (바로 묻지 않음)
+        finalized_case_module.queue_finalized_for_hide(
+            self.app, case, case_number, result_data
+        )
         return self._as_process_result(1, 0, tuple_return=tuple_return)
 
 
@@ -299,7 +304,7 @@ class ResultHandlerMixin:
         """
         changed_count = len(changed_data) if changed_data else 0
         status_label = f"완료 (결과변경 {changed_count}건)"
-        self.app.update_case_status(original_index, status_label, "green", "🔁")
+        self.app.update_case_status(original_index, status_label, "#3498DB", "🔁")
 
         hearing_events = self._extract_hearing_events_from_result(result_data)
         history = self.app.load_update_history()
@@ -362,6 +367,9 @@ class ResultHandlerMixin:
         self.app.log_message(
             f"처리 완료: {case_number} (결과변경 {changed_count}건, 소요 시간: {elapsed_time}초)"
         )
+        finalized_case_module.queue_finalized_for_hide(
+            self.app, case, case_number, result_data
+        )
         return self._as_process_result(1, 0, tuple_return=tuple_return)
 
 
@@ -398,7 +406,7 @@ class ResultHandlerMixin:
             remark_count = len(result_data) if reset_mode and isinstance(result_data, list) else row_count
             self.app.google_sheets_service.update_main_remark(case_number, remark_count)
             status_label = f"재수집 완료 (+{row_count}건)" if reset_mode else f"완료 (+{row_count}건)"
-            self.app.update_case_status(original_index, status_label, "green", "✅")
+            self.app.update_case_status(original_index, status_label, "#3498DB", "✅")
         history = self.app.load_update_history()
         old_total = history.get(case_number, {}).get("row_count", 0) if isinstance(history.get(case_number), dict) else 0
         if reset_mode and row_count:
@@ -468,6 +476,11 @@ class ResultHandlerMixin:
             )
         log_label = "재수집 완료" if reset_mode else "처리 완료"
         self.app.log_message(f"{log_label}: {case_number} (소요 시간: {elapsed_time}초)")
+        # 저장 실패로 위에서 이미 return 한 경우는 여기 안 옴. 조회 성공분만 종국 후보.
+        if row_count is not False and row_count is not None:
+            finalized_case_module.queue_finalized_for_hide(
+                self.app, case, case_number, result_data
+            )
         return self._as_process_result(1, 0, tuple_return=tuple_return)
 
 
@@ -563,7 +576,7 @@ class ResultHandlerMixin:
             "sheet_url": sheet_url,
         }
         verdict = diff.get("verdict", "")
-        self.app.update_case_status(original_index, f"대조 {verdict}", "green", "")
+        self.app.update_case_status(original_index, f"대조 {verdict}", "#3498DB", "")
         try:
             self.app.google_sheets_service.touch_last_query_time(case)
         except Exception as e:
@@ -710,7 +723,7 @@ class ResultHandlerMixin:
 
             if not isinstance(result_data, list) or len(result_data) == 0:
                 self.app.log_message(f"📭 수집 데이터 없음(초기화만 완료): {case_number}")
-                self.app.update_case_status(original_index, "초기화 완료(데이터 없음)", "#7F8C8D", "📭")
+                self.app.update_case_status(original_index, "초기화 완료(데이터 없음)", "#3498DB", "📭")
                 self.app.update_case_timestamp(
                     case,
                     original_index,
@@ -887,7 +900,7 @@ class ResultHandlerMixin:
             self._verify_sheet_matches_court(
                 case, result_data, case_number, sheet_count=overwrite_result
             )
-            self.app.update_case_status(original_index, "중복 정리 완료", "green", "✅")
+            self.app.update_case_status(original_index, "중복 정리 완료", "#3498DB", "✅")
             self.app.update_case_timestamp(
                 case,
                 original_index,

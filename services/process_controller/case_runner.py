@@ -107,6 +107,14 @@ class CaseRunnerMixin:
         self.app._batch_completed = 0
         self.app._batch_failed = 0
         self.app._batch_failed_cases = set()  # 사건번호 집합 (재실행 팝업용)
+        # 종국 숨김 확인용 후보 — 배치마다 새로 모음
+        try:
+            from services import finalized_case as finalized_case_module
+
+            finalized_case_module.clear_pending_finalized(self.app)
+        except Exception:
+            self.app._pending_finalized_for_hide = []
+            self.app._pending_finalized_case_numbers = set()
         self._init_ocr_wave_state(clear_manual_dialog=True)
         self.app.start_btn.configure(text=getattr(config, "BTN_TEXT_START_LOADING", "로딩 중..."))
         self.app._set_control_btn_state(self.app.start_btn, False)
@@ -177,6 +185,15 @@ class CaseRunnerMixin:
         self._init_ocr_wave_state(clear_manual_dialog=False)
         self.app.log_message("🔄 병렬 처리 시작 (전용 차로제)")
 
+        # AUTO/이전 실행에서 남은 interactive_runner·Chrome 이 프로필을 잠그면
+        # 첫 워커 READY 가 타임아웃 납니다. 배치 시작 전에 한 번 청소합니다.
+        try:
+            from services.puppeteer import kill_orphan_interactive_runners
+
+            kill_orphan_interactive_runners(log_fn=self.app.log_message)
+        except Exception:
+            pass
+
         # 레인 수 = PROFILE_COUNT (프로필과 1:1). 사용자 max_parallel 도 동일하게 맞춤.
         profile_count = int(getattr(config, "PROFILE_COUNT", 4) or 4)
         max_limit = getattr(config, "MAX_PARALLEL_LIMIT", 20)
@@ -246,16 +263,41 @@ class CaseRunnerMixin:
         is_period = getattr(self.app, "is_period_mode", False)
         is_compare = getattr(self.app, "is_compare_mode", False)
 
+        # 수동 캡차가 lane_events 에서 아직 대기 중이면 processing 을 끄지 않음
+        # (끄면 「입력된 건 제출」의 자동 제출 경로가 processing=False 로 막힘)
+        manual_waiting = False
+        try:
+            manual = getattr(self.app, "ocr_manual_required", {}) or {}
+            lane_events = getattr(self.app, "lane_events", {}) or {}
+            for c in getattr(self, "_wave_cases", None) or cases or []:
+                cn = c.get("사건번호", "")
+                if cn and manual.get(cn, False) and cn in lane_events:
+                    manual_waiting = True
+                    break
+        except Exception:
+            manual_waiting = False
+
         # CLICK 스마트 스킵으로 이미 처리가 끝난 경우(기간/대조) 미리보기
         if (is_period or is_compare) and not auto_started:
             # 선택 사건 대부분이 CLICK으로 이미 _process_auto_case 를 탄 상태
             self._show_special_mode_report()
-        elif not is_period and not is_compare:
+        elif not is_period and not is_compare and not manual_waiting:
             self.app.ui_queue.put(
                 ("function", (self.app.show_info, "선택한 모든 작업 조회 완료!"), {})
             )
+        elif manual_waiting:
+            self.app.log_message(
+                "⏳ 수동 캡차 입력 대기 중 — 입력 후 「입력된 건 제출」을 누르세요"
+            )
+            self.app.ui_queue.put(
+                (
+                    "function",
+                    (self.app._set_control_btn_state, self.app.complete_btn, True),
+                    {},
+                )
+            )
 
-        if not auto_started:
+        if not auto_started and not manual_waiting:
             self.app.processing = False
 
         def _restore_start_btn():
@@ -482,7 +524,7 @@ class CaseRunnerMixin:
                 ev.set()
 
 
-    def process_cli_auto_case(self, case, case_index):
+    def process_cli_auto_case(self, case, case_index, attempt=1, max_attempts=3):
         """CLI 전용: 브라우저 기동 후 바로 'CLICK' 명령을 전송합니다."""
         case_number = case.get("사건번호", "")
         profile_index = self.get_case_profile_index(case_number)
@@ -493,33 +535,56 @@ class CaseRunnerMixin:
 
         try:
             self.app.case_start_times[case_index] = time.time()
+            self.app.log_message(
+                f"▶ CLI 처리 시작: {case_number} "
+                f"(프로필 instance_{profile_index}, 시도 {attempt}/{max_attempts})"
+            )
             self.app.update_case_status(case_index, "처리중(캡차로딩)", "orange", "🔄")
 
             if lock is not None:
                 lock.acquire()
             try:
                 # 브라우저 기동 및 캡차 캡처 (스마트 스킵 시 '__CLICK__' 반환)
+                captcha_t0 = time.time()
+                self.app.log_message(f"▶ 캡차 로드 호출: {case_number}")
                 result_data = self.execute_case_processing_with_captcha(
                     case, case_index, profile_index
                 )
+                captcha_elapsed = int(time.time() - captcha_t0)
 
                 elapsed_time = int(time.time() - self.app.case_start_times[case_index])
 
                 if result_data == "__CLICK__":
+                    self.app.log_message(
+                        f"◀ 캡차 로드 결과: CLICK (소요 {captcha_elapsed}s) — 스마트 스킵 진행"
+                    )
                     self.app.update_case_status(case_index, "입력완료", "green", "⚡")
                     self.app.log_message(f"⚡ 캡차 스킵: {case_number} (자동 클릭 준비 완료)")
                     # 브라우저가 살아있는 동안 같은 프로필 락을 유지합니다.
                     return self._process_auto_case(case, case_index)
                 elif result_data:
                     # 일반 캡차 이미지가 반환된 경우 (CLI 모드는 CLICK 전용이므로 실패 처리)
+                    path_hint = str(result_data)
+                    if len(path_hint) > 80:
+                        path_hint = "..." + path_hint[-60:]
+                    self.app.log_message(
+                        f"◀ 캡차 로드 결과: 이미지 ({path_hint}, 소요 {captcha_elapsed}s) "
+                        f"— 일반 캡차 → captcha 분류"
+                    )
                     self.app.log_message(f"⚠️ 스마트 스킵 불가 (일반 캡차 발생): {case_number}")
-                    self.cleanup_case_process(case_number)
+                    # 주니어: cleanup 만 하면 Node 가 캡차 입력 대기에 남아
+                    # 다음 CASE 를 무시하고 30초 타임아웃이 납니다 → 레인 워커까지 kill
+                    self._reset_cli_lane_worker(profile_index, case_number)
                     return "captcha"
                 else:
+                    self.app.log_message(
+                        f"◀ 캡차 로드 결과: 실패 (소요 {captcha_elapsed}s) "
+                        f"— 워커 READY/응답 타임아웃·크래시 가능"
+                    )
                     self.app.update_case_status(case_index, f"실패 ({elapsed_time}초)", "red", "❌")
                     self.app.log_message(f"❌ 캡차 이미지 로딩 실패: {case_number}")
                     self._record_batch_failure(case_number)
-                    self.cleanup_case_process(case_number)
+                    self._reset_cli_lane_worker(profile_index, case_number)
                     return "fail"
             finally:
                 if lock is not None:
@@ -532,8 +597,36 @@ class CaseRunnerMixin:
             elapsed_time = int(time.time() - self.app.case_start_times.get(case_index, time.time()))
             self.app.log_message(f"❌ CLI 처리 오류: {case_number} - {e}")
             self.app.update_case_status(case_index, f"오류 ({elapsed_time}초)", "red", "⚠️")
+            try:
+                self._reset_cli_lane_worker(profile_index, case_number)
+            except Exception:
+                pass
             return "fail"
 
+    def _reset_cli_lane_worker(self, profile_index, case_number):
+        """
+        CLI 캡차 포기/실패 후 레인 워커를 강제 종료합니다.
+
+        주니어: cleanup_case_process 는 사건↔프로세스 매핑만 지우고
+        Node 는 캡차 입력 대기(waitForInput)에 남을 수 있습니다.
+        같은 프로필로 다음 CASE 를 보내면 '무시' 후 타임아웃이 납니다.
+        """
+        self.cleanup_case_process(case_number)
+        svc = getattr(self.app, "puppeteer_service", None)
+        if svc is None:
+            return
+        try:
+            if hasattr(svc, "_kill_lane_worker"):
+                svc._kill_lane_worker(profile_index)
+            elif hasattr(svc, "shutdown_all_workers"):
+                svc.shutdown_all_workers()
+        except Exception as e:
+            try:
+                self.app.log_message(
+                    f"⚠️ CLI 레인 워커 정리 실패 instance_{profile_index}: {e}"
+                )
+            except Exception:
+                pass
 
     def process_single_case_parallel(self, case, case_index, instance_index=0):
         """

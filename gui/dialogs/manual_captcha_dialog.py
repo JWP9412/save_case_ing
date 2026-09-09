@@ -17,7 +17,11 @@ import tkinter as tk
 
 import customtkinter as ctk
 
-from gui.utils.bind_utils import bind_entry_return
+from gui.utils.bind_utils import (
+    bind_entry_return,
+    bind_mousewheel_to_scrollable,
+    rebind_scrollable_mousewheel,
+)
 
 
 def ensure_manual_captcha_dialog(app):
@@ -76,6 +80,8 @@ class ManualCaptchaDialog(ctk.CTkToplevel):
 
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.scroll.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        # 창 기본 UX: 휠 스크롤 (입력칸·이미지 위에서도 동작)
+        bind_mousewheel_to_scrollable(self.scroll, window=self)
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(fill=tk.X, padx=12, pady=(0, 12))
@@ -195,6 +201,9 @@ class ManualCaptchaDialog(ctk.CTkToplevel):
         if image_path:
             self.update_image(case_index, image_path)
 
+        # 새 행 위젯에도 휠이 먹도록 바인딩 갱신
+        rebind_scrollable_mousewheel(self.scroll)
+
         try:
             entry.focus_set()
             entry.icursor("end")
@@ -307,36 +316,124 @@ class ManualCaptchaDialog(ctk.CTkToplevel):
         self._submit_if_ready()
 
     def _submit_if_ready(self):
-        """채워진 수동 건이 있으면 웨이브 자동 제출을 재시도합니다."""
+        """
+        수동 입력된 캡차를 제출합니다.
+
+        주니어 참고:
+        - 버튼만 누르고 Enter 를 안 쳐도 동작해야 합니다.
+        - CTkEntry 는 StringVar 동기화가 늦을 수 있어 entry.get() 로 강제 반영합니다.
+        - 예전에 _captcha_batch_running 이면 아무 로그 없이 return 해서
+          「제출 눌러도 반응 없음」처럼 보였습니다 → 항상 안내를 남깁니다.
+        """
+        from tkinter import messagebox
+
+        from gui.utils import captcha_ui as captcha_ui_module
+
         try:
-            pc = getattr(self.app, "process_controller", None)
-            if pc is None:
+            filled = []
+            for idx, info in list(self._rows.items()):
+                raw = ""
+                entry = info.get("entry")
+                try:
+                    if entry is not None and entry.winfo_exists():
+                        raw = entry.get() or ""
+                except Exception:
+                    raw = ""
+                if not raw:
+                    raw = captcha_ui_module.get_captcha_input(self.app, idx) or ""
+                cleaned = "".join(c for c in str(raw) if c.isdigit())[:6]
+                if len(cleaned) != 6:
+                    continue
+                # StringVar / 메인 목록 입력칸과 동기화
+                if not hasattr(self.app, "case_inputs"):
+                    self.app.case_inputs = {}
+                if idx not in self.app.case_inputs:
+                    self.app.case_inputs[idx] = tk.StringVar()
+                try:
+                    self.app.case_inputs[idx].set(cleaned)
+                except Exception:
+                    pass
+                try:
+                    captcha_ui_module.validate_captcha_entry(self.app, idx)
+                except Exception:
+                    pass
+                try:
+                    self.app.update_case_status(idx, "입력완료", "blue")
+                except Exception:
+                    pass
+                filled.append(idx)
+
+            if not filled:
+                msg = "6자리 숫자를 입력한 뒤 「입력된 건 제출」을 눌러주세요."
+                try:
+                    self.app.log_message(f"⚠️ {msg}")
+                except Exception:
+                    pass
+                try:
+                    messagebox.showwarning("수동 캡차", msg, parent=self)
+                except Exception:
+                    pass
                 return
-            wave = getattr(pc, "_wave_cases", None) or []
-            if not wave:
-                # 웨이브 정보가 없어도 완료 버튼과 동일하게 처리
+
+            if getattr(self.app, "_captcha_batch_running", False):
+                # 이미 process_all 이 도는 중이면 값만 반영된 상태.
+                # 스킵된 수동 건은 배치가 끝난 뒤 다시 제출해야 함.
+                msg = (
+                    f"입력값 {len(filled)}건은 반영했습니다. "
+                    "지금 다른 제출이 진행 중입니다. "
+                    "끝나면 「입력된 건 제출」또는 「캡차 입력 완료」를 다시 눌러주세요."
+                )
+                try:
+                    self.app.log_message(f"ℹ️ {msg}")
+                except Exception:
+                    pass
+                try:
+                    messagebox.showinfo("수동 캡차", msg, parent=self)
+                except Exception:
+                    pass
+                return
+
+            # 로드 종료 후 processing=False 인 상태에서도 제출 가능하도록
+            self.app.processing = True
+            self.app._ocr_wave_auto_submit_started = False
+            try:
+                self.app.log_message(f"📤 수동 캡차 제출 시작 ({len(filled)}건)")
+            except Exception:
+                pass
+
+            pc = getattr(self.app, "process_controller", None)
+            started = False
+            if pc is not None:
+                wave = getattr(pc, "_wave_cases", None) or []
+                if wave:
+                    try:
+                        started = bool(pc._try_auto_submit_captcha_wave(wave))
+                    except Exception as e:
+                        try:
+                            self.app.log_message(f"⚠️ 자동 제출 시도 실패: {e}")
+                        except Exception:
+                            pass
+                        started = False
+
+            if not started:
                 if hasattr(self.app, "start_processing_thread"):
                     self.app.start_processing_thread()
-                return
-            started = pc._try_auto_submit_captcha_wave(wave)
-            if not started and hasattr(self.app, "start_processing_thread"):
-                # 자동 제출 조건 미충족(플래그 등)이면 보조로 직접 제출
-                # (수동만 남은 경우 ready_count>0 이면 위에서 True)
-                filled = 0
-                for idx in self._rows:
-                    v = (self.app.get_captcha_input(idx) or "").strip()
-                    if len(v) == 6 and v.isdigit():
-                        filled += 1
-                if filled > 0:
-                    # 주니어 참고:
-                    # 배치가 이미 돌고 있을 때 플래그를 강제로 내리면 중복 제출 스레드가 생깁니다.
-                    if getattr(self.app, "_captcha_batch_running", False):
-                        return
-                    if not pc._try_auto_submit_captcha_wave(wave):
-                        self.app.start_processing_thread()
+                else:
+                    try:
+                        messagebox.showerror(
+                            "수동 캡차",
+                            "제출을 시작할 수 없습니다. 앱을 다시 실행해 주세요.",
+                            parent=self,
+                        )
+                    except Exception:
+                        pass
         except Exception as e:
             try:
                 self.app.log_message(f"⚠️ 수동 캡차 제출 실패: {e}")
+            except Exception:
+                pass
+            try:
+                messagebox.showerror("수동 캡차", f"제출 실패: {e}", parent=self)
             except Exception:
                 pass
 

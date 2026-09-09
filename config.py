@@ -41,7 +41,7 @@ BASE_DIR = get_base_dir()
 # 앱 표시 정보 (창 제목·헤더용, 버전은 여기서만 수정)
 # ============================================================================
 # 앱 버전 번호 (한 곳만 수정하면 창 제목·부제목에 반영됨)
-APP_VERSION = "5.2.0"
+APP_VERSION = "5.3.0"
 # 창 제목 및 헤더 제목에 쓰는 이름 (제품명: 미어캣싱)
 APP_TITLE = "미어캣싱"
 # 부제목에 쓰는 이름 (버전은 코드에서 f-string으로 붙임)
@@ -142,8 +142,12 @@ SHOW_FIRST_RUN_GUIDE = 1
 # Puppeteer 설정
 # ============================================================================
 # Puppeteer 실행 타임아웃 (초)
-# 캡차 이미지 캡처: 90초
-PUPPETEER_CAPTCHA_TIMEOUT = 90
+# 캡차 이미지 캡처(초기화): 30초 — 넘으면 실패 후 다음 사건
+PUPPETEER_CAPTCHA_TIMEOUT = 30
+
+# Node 워커 WORKER_READY 대기 (초). 첫 기동은 puppeteer 로드·프로필 잠금으로 더 길 수 있음
+PUPPETEER_WORKER_READY_TIMEOUT_FIRST = 60
+PUPPETEER_WORKER_READY_TIMEOUT = 30
 
 # 실제 크롤링 처리: 180초 (3분)
 PUPPETEER_PROCESSING_TIMEOUT = 180
@@ -228,6 +232,10 @@ CAPTCHA_DATASET_DIR = "data/captcha_dataset"
 PROFILE_COUNT = 4
 # Chrome 1개당 대략적인 메모리(MB) — 설정 도움말·경고용
 CHROME_MEM_ESTIMATE_MB = 450
+# Puppeteer userDataDir 루트 (instance_1, instance_2, ...)
+COOKIE_DATA_DIR = "cookie_data_for_save"
+# 프로필 zip 백업 기본 저장 폴더
+PROFILE_BACKUP_DIR = "data/profile_backups"
 # cookie_data_for_save 캐시 자동 정리
 PROFILE_CACHE_PRUNE_ENABLED = True
 PROFILE_CACHE_MAX_MB = 500
@@ -265,6 +273,9 @@ COLUMN_ORDER_FILE = "data/column_order.json"
 
 # 숨긴 사건번호 목록 (사건목록 관리 - 숨기기/숨김 해제)
 HIDDEN_CASES_FILE = "data/hidden_cases.json"
+
+# CLI(자동 조회)에서 감지한 종국 사건 — GUI 실행 시 숨김 안내용
+PENDING_FINALIZED_CASES_FILE = "data/pending_finalized_cases.json"
 
 # 사건 목록 캐시 (시작 시 빠른 로딩용, 새로고침 시 구글 시트에서 갱신)
 CASE_LIST_CACHE_FILE = "data/case_list_cache.json"
@@ -314,6 +325,9 @@ RIGHT_PANEL_MIN_WIDTH = 280
 
 # 사건 목록 행 높이
 CASE_ROW_HEIGHT = 60
+
+# 사건 목록 본문 글씨 크기(pt). 맑은 고딕. 설정에서 변경 가능.
+CASE_LIST_FONT_SIZE = 9
 
 # 헤더 높이
 HEADER_HEIGHT = 40
@@ -393,6 +407,7 @@ USER_SETTINGS_OVERRIDABLE = (
     "MAX_PARALLEL_LIMIT",
     "DEFAULT_MAX_PARALLEL",
     "PROFILE_COUNT",
+    "CASE_LIST_FONT_SIZE",
     "AUTO_PARALLEL_CAP",
     "DEFAULT_MAX_RETRY",
     "DEFAULT_RETRY_DELAY",
@@ -427,6 +442,7 @@ def load_user_settings():
         if key in ("PUPPETEER_CAPTCHA_TIMEOUT", "PUPPETEER_PROCESSING_TIMEOUT",
                    "CAPTCHA_INPUT_TIMEOUT", "MAX_PARALLEL_LIMIT",
                    "DEFAULT_MAX_PARALLEL", "PROFILE_COUNT", "AUTO_PARALLEL_CAP",
+                   "CASE_LIST_FONT_SIZE",
                    "DEFAULT_MAX_RETRY", "DEFAULT_RETRY_DELAY",
                    "NODE_GOTO_TIMEOUT_MS", "NODE_NAV_MAX_RETRY", "NODE_NAV_RETRY_DELAY_MS",
                    "GOOGLE_CALENDAR_ENABLED", "GOOGLE_CALENDAR_EVENT_DURATION_MINUTES",

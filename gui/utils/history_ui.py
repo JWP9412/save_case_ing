@@ -11,6 +11,7 @@ from datetime import datetime
 
 import config
 import customtkinter as ctk
+import tkinter as tk
 
 from services import update_history as update_history_service
 
@@ -65,9 +66,14 @@ def update_case_timestamp(
 
             def update_labels():
                 if original_index in app.case_update_labels:
-                    app.case_update_labels[original_index].configure(
-                        text=display_text, text_color=color
-                    )
+                    lbl = app.case_update_labels[original_index]
+                    try:
+                        lbl.configure(text=display_text, fg=color)
+                    except Exception:
+                        try:
+                            lbl.configure(text=display_text, text_color=color)
+                        except Exception:
+                            pass
                 if original_index in app.case_update_date_labels:
                     if app.case_update_date_labels[original_index]:
                         app.case_update_date_labels[original_index].configure(
@@ -77,18 +83,15 @@ def update_case_timestamp(
                         if original_index in app.case_update_labels:
                             parent = app.case_update_labels[original_index].master
                             try:
-                                parent_fg = (
-                                    parent.cget("fg_color")
-                                    if hasattr(parent, "cget")
-                                    else "#2B2B2B"
-                                )
+                                parent_bg = parent.cget("bg")
                             except Exception:
-                                parent_fg = "#2B2B2B"
-                            new_date_label = ctk.CTkLabel(
+                                parent_bg = "#2B2B2B"
+                            new_date_label = tk.Label(
                                 parent,
                                 text=date_str,
-                                font=ctk.CTkFont(family="맑은 고딕", size=12),
-                                text_color="#6C757D",
+                                font=("맑은 고딕", 12),
+                                fg="#6C757D",
+                                bg=parent_bg,
                             )
                             new_date_label.pack(
                                 before=app.case_update_labels[original_index]

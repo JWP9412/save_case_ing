@@ -6,6 +6,12 @@ import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
+
+# GUI(main.py)와 동일: user_settings.json 을 메모리에 올립니다.
+# 주니어: 이 호출이 없으면 NOTIFICATION_EMAIL_ADDRESS 등이 config.py 기본값("")로 남습니다.
+# CLI 자동조회는 설정 창에 저장해 둔 수신 메일을 못 읽고 "주소 없음" 경고가 납니다.
+config.load_user_settings()
+
 from services.logger_service import setup_logger, get_logger
 from services.google_sheets import GoogleSheetsService
 from services.puppeteer import PuppeteerService
@@ -44,7 +50,11 @@ class MockApp:
         
         # 서비스 인스턴스 초기화
         self.google_sheets_service = GoogleSheetsService()
-        self.puppeteer_service = PuppeteerService()
+        # Puppeteer 진행 로그가 CLI 콘솔에 바로 보이도록 콜백 연결
+        self.puppeteer_service = PuppeteerService(
+            log_callback=self.log_message,
+            processing_flag=lambda: self.processing,
+        )
         self.log_history_manager = LogHistoryManager(self)
         self.history_manager = UpdateHistoryManager()
         
@@ -193,6 +203,24 @@ def run_auto_batch():
         return
         
     app.log_message(f"📋 총 {len(cases)}개의 사건을 로드했습니다. 스마트 스킵 조회를 시작합니다.")
+
+    # GUI와 동일 Chrome 프로필(쿠키) 경로 — Node CASEING_COOKIE_DIR 과 같아야 함
+    cookie_rel = getattr(config, "COOKIE_DATA_DIR", "cookie_data_for_save")
+    cookie_abs = config.path_from_base(cookie_rel)
+    profile_count = int(getattr(config, "PROFILE_COUNT", 4) or 4)
+    app.log_message(
+        f"📂 COOKIE_DIR={cookie_abs} | PROFILE_COUNT={profile_count} "
+        f"(GUI와 동일 프로필 · 스마트 스킵)"
+    )
+
+    # 종국 후보 목록 초기화 (CLI는 질문 없이 감지만 로그)
+    try:
+        from services import finalized_case as finalized_case_module
+
+        finalized_case_module.clear_pending_finalized(app)
+    except Exception:
+        app._pending_finalized_for_hide = []
+        app._pending_finalized_case_numbers = set()
     
     # 2. ProcessController를 이용한 병렬 처리 (CLICK 방식 강제)
     controller = ProcessController(app)
@@ -219,7 +247,9 @@ def run_auto_batch():
         for attempt in range(1, max_attempts + 1):
             app.case_start_times[case_number] = time.time()
             try:
-                result = controller.process_cli_auto_case(case, case_number)
+                result = controller.process_cli_auto_case(
+                    case, case_number, attempt=attempt, max_attempts=max_attempts
+                )
                 if result is True:
                     # 변경없음인지 상태 텍스트로 판별
                     status_text = app.get_case_status_text(case_number) or ""
@@ -277,16 +307,30 @@ def run_auto_batch():
         f"캡차(재시도 안 함) {results['captcha']}건, 3회 시도 후 실패 {results['fail']}건"
     )
 
+    # 종국 감지 요약만 (CLI — 숨김 대화상자 없음)
+    try:
+        from services import finalized_case as finalized_case_module
+
+        finalized_case_module.prompt_hide_finalized_cases(app)
+    except Exception:
+        pass
+
     # 누적 파일에 기록 → GUI와 공유
     email_manager_module.record_run_results(run_results_map)
 
-    # 3. 브라우저 프로세스 정리
+    # 3. 브라우저·Node 워커 정리 (고아 interactive_runner 포함)
     try:
         for case_num in list(app.browser_processes.keys()):
             app.puppeteer_service.cleanup_process(case_num)
-        app.puppeteer_service.terminate_node_server()
+        app.puppeteer_service.shutdown_all_workers()
     except Exception as e:
         app.log_message(f"프로세스 정리 중 오류: {e}")
+        try:
+            from services.puppeteer import kill_orphan_interactive_runners
+
+            kill_orphan_interactive_runners(log_fn=app.log_message)
+        except Exception:
+            pass
 
     # 4. 결과 메일 발송 (전체 사건 기준 요약)
     app.log_message("이메일 발송을 준비합니다.")

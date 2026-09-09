@@ -21,6 +21,7 @@ import customtkinter as ctk
 import config
 from services import google_oauth
 from services import sheet_setup
+from gui.utils.bind_utils import bind_mousewheel_to_scrollable
 
 
 class FirstRunDialog(ctk.CTkToplevel):
@@ -64,6 +65,7 @@ class FirstRunDialog(ctk.CTkToplevel):
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        bind_mousewheel_to_scrollable(body, window=self)
 
         # ---- 1. 인증 파일 ----
         self._step_frames[1] = self._make_step_frame(

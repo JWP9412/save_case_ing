@@ -63,6 +63,8 @@ class PageController {
         await this.page.waitForSelector('body', { timeout: 10000 });
 
         console.log(`✅ 사이트 접속 완료 (${this.browserId})`);
+        // body 직후엔 WebSquare 검색 폼·최근검색이 아직 없을 수 있습니다.
+        // 스마트 스킵은 waitForSearchForm + scanRecentCase 에서 한 번 더 기다립니다.
         return true;
       } catch (error) {
         lastError = error;
@@ -70,20 +72,39 @@ class PageController {
           `⚠️ 사이트 접속 시도 ${attempt}/${totalAttempts} 실패 (${this.browserId}):`,
           error.message
         );
+        // Python stderr 파일/필터와 무관하게 보이게 stdout에도 남김
+        console.log(
+          `⚠️ 사이트 접속 시도 ${attempt}/${totalAttempts} 실패 (${this.browserId}): ${error.message}`
+        );
       }
     }
 
     console.error(`❌ 사이트 접속 실패 (${this.browserId}):`, lastError && lastError.message);
+    console.log(
+      `❌ 사이트 접속 실패 (${this.browserId}): ${(lastError && lastError.message) || ''}`
+    );
     throw lastError;
   }
 
   /**
    * 불필요 리소스 차단으로 메모리·속도를 줄입니다.
    * 캡차는 <img> 이므로 image 타입은 절대 막지 않습니다.
+   *
+   * 주니어 참고:
+   * - 플래그는 컨트롤러가 아니라 page 에 둡니다.
+   *   워커가 같은 page 를 재사용할 때 리스너가 중복 등록되면
+   *   한 요청에 continue 가 두 번 불려 "Request is already handled!" 로
+   *   Node 프로세스가 죽습니다.
+   * - req.continue()/abort() 는 Promise 를 반환합니다.
+   *   try/catch 는 동기 예외만 잡으므로 .catch(() => {}) 로
+   *   unhandled rejection 을 반드시 막아야 합니다 (Node 22는 그걸로 종료).
    */
   async _enableLightRequestBlocking() {
-    if (this._requestBlockingEnabled) return;
+    // page 단위 중복 등록 방지 (컨트롤러 인스턴스가 바뀌어도 한 번만)
+    if (this.page.__caseIngBlockingEnabled) return;
+    this.page.__caseIngBlockingEnabled = true;
     this._requestBlockingEnabled = true;
+
     await this.page.setRequestInterception(true);
     const blockedTypes = new Set(['font', 'media', 'stylesheet']);
     const blockedHostHints = [
@@ -94,19 +115,41 @@ class PageController {
       'hotjar',
       'clarity.ms'
     ];
+
+    // Promise rejection 이 프로세스를 죽이지 않도록 삼킴
+    const safeAbort = (req) => {
+      try {
+        const p = req.abort();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) { /* ignore */ }
+    };
+    const safeContinue = (req) => {
+      try {
+        const p = req.continue();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) { /* ignore */ }
+    };
+
     this.page.on('request', (req) => {
       try {
+        // 다른 리스너가 이미 처리했으면 절대 다시 continue/abort 하지 않음
+        if (typeof req.isInterceptResolutionHandled === 'function'
+            && req.isInterceptResolutionHandled()) {
+          return;
+        }
         const type = req.resourceType();
         const url = req.url().toLowerCase();
         if (blockedTypes.has(type)) {
-          return req.abort();
+          safeAbort(req);
+          return;
         }
         if (blockedHostHints.some((h) => url.includes(h))) {
-          return req.abort();
+          safeAbort(req);
+          return;
         }
-        return req.continue();
+        safeContinue(req);
       } catch (e) {
-        try { req.continue(); } catch (_) { /* ignore */ }
+        safeContinue(req);
       }
     });
   }
@@ -237,7 +280,8 @@ class PageController {
   /**
    * 법원 선택
    * 주니어 참고:
-   * - select 요소가 안 보이면(페이지가 덜 뜬 경우) reload 후 1회만 재시도합니다.
+   * - select 태그만 있고 option 이 비어 있으면(WebSquare 로딩 중) 인덱스 -1 로 바로 죽습니다.
+   * - 그래서 option 이 채워질 때까지 기다린 뒤 매칭하고, 그래도 없으면 reload 후 1회 재시도합니다.
    * - 대기 시간은 CASEING_GOTO_TIMEOUT_MS 의 절반(최소 15초)을 씁니다.
    */
   async selectCourt(courtName) {
@@ -245,83 +289,114 @@ class PageController {
       console.log(`🏛️ 법원 선택 중: ${courtName} (${this.browserId})`);
 
       const gotoTimeout = parseInt(process.env.CASEING_GOTO_TIMEOUT_MS, 10) || 30000;
-      // select 대기는 goto 타임아웃의 절반, 최소 15초
+      // select·옵션 대기는 goto 타임아웃의 절반, 최소 15초
       const selectTimeout = Math.max(15000, Math.floor(gotoTimeout / 2));
 
-      // select 요소가 로드될 때까지 대기 (실패 시 reload 후 1회 재시도)
-      try {
+      const waitForCourtSelectReady = async () => {
         await this.page.waitForSelector('select', { timeout: selectTimeout });
+        // option 이 충분히 생기거나, 목표 법원 텍스트가 보일 때까지 대기
+        await this.page.waitForFunction(
+          (expected) => {
+            const sel = document.querySelector('select');
+            if (!sel || !sel.options || sel.options.length < 5) return false;
+            if (!expected) return sel.options.length >= 20;
+            for (let i = 0; i < sel.options.length; i++) {
+              const t = (sel.options[i].text || '').trim();
+              if (t === expected || t.includes(expected)) return true;
+            }
+            // 아직 목표 법원은 없지만 옵션이 많이 채워졌으면 매칭 단계로 진행
+            return sel.options.length >= 50;
+          },
+          { timeout: selectTimeout },
+          courtName
+        );
+      };
+
+      try {
+        await waitForCourtSelectReady();
       } catch (waitErr) {
         console.log(
-          `⚠️ select 미발견 → 페이지 새로고침 후 재시도 (${this.browserId}): ${waitErr.message}`
+          `⚠️ select/옵션 미준비 → 페이지 새로고침 후 재시도 (${this.browserId}): ${waitErr.message}`
         );
         try {
           await this.page.reload({ waitUntil: 'domcontentloaded', timeout: gotoTimeout });
         } catch (reloadErr) {
           console.error(`⚠️ 페이지 reload 실패 (${this.browserId}):`, reloadErr.message);
         }
-        await this.page.waitForSelector('select', { timeout: selectTimeout });
+        await waitForCourtSelectReady();
       }
 
-      // 모든 select 요소 찾기
-      const selects = await this.page.$$('select');
-      console.log(`🔍 발견된 select 요소 수: ${selects.length} (${this.browserId})`);
+      const tryMatchAndSelect = async () => {
+        const selects = await this.page.$$('select');
+        console.log(`🔍 발견된 select 요소 수: ${selects.length} (${this.browserId})`);
 
-      // 각 select 요소의 정보 출력
-      for (let i = 0; i < selects.length; i++) {
-        const select = selects[i];
-        const id = await select.evaluate(el => el.id);
-        const className = await select.evaluate(el => el.className);
-        const options = await select.$$eval('option', options =>
-          options.map(option => option.text).slice(0, 5) // 처음 5개만
+        const select = selects[0];
+        if (!select) {
+          throw new Error('select 요소를 찾을 수 없습니다');
+        }
+
+        const options = await select.$$eval('option', (opts) =>
+          opts.map((option) => option.text)
         );
-        console.log(`select ${i}: id="${id}", class="${className}", options=${JSON.stringify(options)}`);
+        console.log(`📋 법원 옵션들:`, options.slice(0, 10), `... (총 ${options.length})`);
+
+        let courtIndex = options.findIndex((opt) => opt === courtName);
+        if (courtIndex === -1) {
+          courtIndex = options.findIndex((opt) => opt.includes(courtName));
+        }
+        console.log(`🔍 ${courtName} 검색 결과: 인덱스 ${courtIndex} (${this.browserId})`);
+        return { select, options, courtIndex };
+      };
+
+      let { select, options, courtIndex } = await tryMatchAndSelect();
+
+      // 옵션은 있는데 매칭 실패 → 한 번 더 reload 후 재검색 (레이스 완화)
+      if (courtIndex < 0) {
+        console.log(
+          `⚠️ 법원 미매칭(옵션 ${options.length}개) → reload 후 재검색 (${this.browserId})`
+        );
+        try {
+          await this.page.reload({ waitUntil: 'domcontentloaded', timeout: gotoTimeout });
+        } catch (reloadErr) {
+          console.error(`⚠️ 페이지 reload 실패 (${this.browserId}):`, reloadErr.message);
+        }
+        try {
+          await waitForCourtSelectReady();
+        } catch (_) {
+          // 아래에서 최종 에러
+        }
+        ({ select, options, courtIndex } = await tryMatchAndSelect());
       }
-
-      // 첫 번째 select 요소 사용 (법원 선택)
-      const select = selects[0];
-      if (!select) {
-        throw new Error('select 요소를 찾을 수 없습니다');
-      }
-
-      // select의 모든 옵션 텍스트를 배열로 수집
-      const options = await select.$$eval('option', options =>
-        options.map(option => option.text)
-      );
-
-      console.log(`📋 법원 옵션들:`, options.slice(0, 10), '...'); // 처음 10개만 출력
-
-      // 법원명이 포함된 옵션의 인덱스 찾기 (정확한 매칭 우선)
-      let courtIndex = options.findIndex(opt => opt === courtName);
-
-      // 정확한 매칭이 없으면 부분 매칭 시도
-      if (courtIndex === -1) {
-        courtIndex = options.findIndex(opt => opt.includes(courtName));
-      }
-
-      console.log(`🔍 ${courtName} 검색 결과: 인덱스 ${courtIndex} (${this.browserId})`);
 
       if (courtIndex >= 0) {
         console.log(`✅ ${courtName} 발견! 선택 중... (${this.browserId})`);
 
-        // 선택 전 현재 값 확인
-        const currentValue = await select.evaluate(el => el.value);
-        const currentText = await select.evaluate(el => el.options[el.selectedIndex]?.text || '');
+        const currentValue = await select.evaluate((el) => el.value);
+        const currentText = await select.evaluate(
+          (el) => el.options[el.selectedIndex]?.text || ''
+        );
         console.log(`현재 선택된 값: ${currentValue}, 텍스트: ${currentText} (${this.browserId})`);
 
-        // JavaScript로 직접 선택 (WebSquare 프레임워크 대응)
-        await select.evaluate((element, index) => {
-          element.selectedIndex = index;
-          element.dispatchEvent(new Event('change', { bubbles: true }));
-          element.dispatchEvent(new Event('input', { bubbles: true }));
-        }, courtIndex);
+        await Promise.race([
+          select.evaluate((element, index) => {
+            element.selectedIndex = index;
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+          }, courtIndex),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('법원 선택 evaluate 타임아웃(15초)')), 15000)
+          ),
+        ]);
 
-        // 선택된 값이 반영될 때까지 스마트 대기 (최대 5초)
         try {
           await this.page.waitForFunction(
             (expectedText) => {
               const sel = document.querySelector('select');
-              return sel && sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text === expectedText;
+              return (
+                sel &&
+                sel.options[sel.selectedIndex] &&
+                sel.options[sel.selectedIndex].text === expectedText
+              );
             },
             { timeout: 5000 },
             courtName
@@ -330,23 +405,27 @@ class PageController {
           // 타임아웃 시 아래 검증으로 진행
         }
 
-        // 선택 후 값 확인
-        const newValue = await select.evaluate(el => el.value);
-        const newText = await select.evaluate(el => el.options[el.selectedIndex]?.text || '');
+        const newValue = await select.evaluate((el) => el.value);
+        const newText = await select.evaluate(
+          (el) => el.options[el.selectedIndex]?.text || ''
+        );
         console.log(`선택 후 값: ${newValue}, 텍스트: ${newText} (${this.browserId})`);
 
-        if (newText === courtName) {
+        // 정확 일치 또는 부분 일치(매칭에 includes 를 쓴 경우) 모두 허용
+        if (newText === courtName || (newText && newText.includes(courtName))) {
           console.log(`✅ ${courtName} 선택 성공! (${this.browserId})`);
           return true;
-        } else {
-          console.log(`❌ 선택 실패: 예상=${courtName}, 실제=${newText} (${this.browserId})`);
-          throw new Error(`법원 선택 실패: ${courtName}`);
         }
-      } else {
-        console.log(`❌ ${courtName}를 찾을 수 없습니다. (${this.browserId})`);
-        console.log(`사용 가능한 법원들:`, options.filter(opt => !opt.includes('---')));
-        throw new Error(`${courtName}를 찾을 수 없습니다`);
+        console.log(`❌ 선택 실패: 예상=${courtName}, 실제=${newText} (${this.browserId})`);
+        throw new Error(`법원 선택 실패: ${courtName}`);
       }
+
+      console.log(`❌ ${courtName}를 찾을 수 없습니다. (${this.browserId})`);
+      console.log(
+        `사용 가능한 법원들:`,
+        options.filter((opt) => !opt.includes('---')).slice(0, 30)
+      );
+      throw new Error(`${courtName}를 찾을 수 없습니다`);
     } catch (error) {
       console.error(`❌ 법원 선택 실패 (${this.browserId}):`, error.message);
       throw error;
@@ -566,17 +645,91 @@ class PageController {
   }
 
   /**
+   * 검색 화면(사건번호 입력칸)이 뜰 때까지 기다립니다.
+   *
+   * 주니어: navigateToSite() 는 body 만 봅니다.
+   * 대법원 WebSquare 는 최근 검색 목록을 그 다음 AJAX 로 붙입니다.
+   * 접속 직후 스캔하면 항상 "최근 검색 내역 없음" 이 됩니다.
+   */
+  async waitForSearchForm(timeoutMs = 10000) {
+    const selector = '#mf_ssgoTopMainTab_contents_content1_body_ibx_fullCsNo';
+    try {
+      await this.page.waitForSelector(selector, { timeout: timeoutMs });
+      console.log(`✅ [Smart Skip] 검색 폼 준비됨 (${this.browserId})`);
+      return true;
+    } catch (_) {
+      console.log(`⚠️ [Smart Skip] 검색 폼 대기 타임아웃 (${this.browserId})`);
+      return false;
+    }
+  }
+
+  /**
+   * 최근 검색 목록에서 사건번호가 보이는지 확인합니다.
+   *
+   * 주니어:
+   * - 공백/하이픈을 빼고 비교합니다. (2026가합7478 vs 2026 가합 7478)
+   * - a/td 정확 일치만 보면 span 안 번호나 칸 안 여분 글자에 실패합니다.
+   * - 짧은 칸만 보고, 페이지 전체 텍스트는 제외합니다.
+   * - waitMs 동안 0.4초 간격으로 다시 봅니다 (목록이 늦게 그려짐).
+   */
+  async scanRecentCase(caseNumber, waitMs = 8000) {
+    const target = String(caseNumber || '').replace(/[\s\-]/g, '');
+    const started = Date.now();
+    let lastSample = '';
+
+    while (Date.now() - started < waitMs) {
+      const result = await this.page.evaluate((targetNorm) => {
+        const norm = (s) => String(s || '').replace(/[\s\-]/g, '');
+        const samples = [];
+        let foundHint = '';
+        const nodes = document.querySelectorAll('a, td, span, li');
+        for (const el of nodes) {
+          const raw = (el.innerText || el.textContent || '').trim();
+          if (!raw || raw.length > 60) continue;
+          const n = norm(raw);
+          // 사건번호처럼 보이는 짧은 칸만 샘플로 남김 (진단 로그용)
+          if (n && n.length >= 6 && n.length <= 30 && /[0-9]/.test(n) && /[가-힣]/.test(n)) {
+            if (samples.length < 8 && samples.indexOf(raw) === -1) {
+              samples.push(raw);
+            }
+          }
+          if (!targetNorm) continue;
+          if (n === targetNorm || (targetNorm.length >= 8 && n.includes(targetNorm))) {
+            foundHint = raw;
+            break;
+          }
+        }
+        return { foundHint, samples };
+      }, target);
+
+      lastSample = (result.samples || []).join(', ');
+      if (result.foundHint) {
+        return { found: true, hint: result.foundHint, sample: lastSample };
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return { found: false, hint: '', sample: lastSample };
+  }
+
+  /**
    * 최근 검색 결과 클릭 (캡차 스킵용)
    */
   async clickRecentCase(caseNumber) {
     try {
       console.log(`🖱️ [SMART SKIP] 최근 검색 결과 클릭 시도: ${caseNumber} (${this.browserId})`);
 
+      // scan 과 같은 정규화·느슨 매칭. a 가 아니면 가장 가까운 링크를 클릭합니다.
       const clicked = await this.page.evaluate((targetNo) => {
-        const elements = document.querySelectorAll('a');
-        for (const el of elements) {
-          if (el.textContent.trim() === targetNo) {
-            el.click();
+        const norm = (s) => String(s || '').replace(/[\s\-]/g, '');
+        const target = norm(targetNo);
+        const nodes = document.querySelectorAll('a, td, span, li');
+        for (const el of nodes) {
+          const raw = (el.innerText || el.textContent || '').trim();
+          if (!raw || raw.length > 60) continue;
+          const n = norm(raw);
+          if (n === target || (target.length >= 8 && n.includes(target))) {
+            const clickable = (typeof el.closest === 'function' && el.closest('a')) || el;
+            clickable.click();
             return true;
           }
         }

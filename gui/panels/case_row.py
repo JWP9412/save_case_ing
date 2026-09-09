@@ -1,9 +1,184 @@
+# -*- coding: utf-8 -*-
+"""
+사건 목록 한 행(CaseRow)
+========================
+행 생성 + 배경색 재귀 적용.
+
+주니어 참고:
+- 표시용 글자는 CTkTextbox 대신 tk.Text 를 씁니다 (스크롤 가볍게).
+- 버튼·캡차 입력(CTkEntry)은 그대로 둡니다.
+- 상태 색(처리중 노랑 등)은 apply_row_background 로 칸까지 채웁니다.
+"""
 import re
 from datetime import datetime
 import tkinter as tk
 import customtkinter as ctk
+import config
 from config import COL_NAMES
 from gui.utils.bind_utils import bind_entry_return
+
+
+def _list_font_size():
+    """설정(CASE_LIST_FONT_SIZE) 기준 pt. 기본 9."""
+    try:
+        return max(8, min(16, int(getattr(config, "CASE_LIST_FONT_SIZE", 9) or 9)))
+    except (TypeError, ValueError):
+        return 9
+
+
+# 완료 계열 상태 글씨색 (행 연두 배경과 구분)
+STATUS_COMPLETE_FG = "#3498DB"
+# accent 버튼(보기/시트) 글씨 — 파란 배경과 대비
+BUTTON_TEXT_FG = "#FFFFFF"
+
+
+def _is_complete_status(status):
+    """완료·입력완료·기간조회 완료 등 성공 계열 상태인지."""
+    if not status:
+        return False
+    return (
+        status.startswith("완료")
+        or status.startswith("기간조회 완료")
+        or status.startswith("재수집 완료")
+        or status.startswith("중복 정리 완료")
+        or status.startswith("입력완료")
+        or status.startswith("대조")
+    )
+
+
+def apply_row_background(root, color, text_color=None, skip_buttons=True):
+    """
+    행 루트부터 자손까지 배경색을 채웁니다.
+
+    - tk 위젯: bg
+    - CTk 위젯: fg_color (버튼은 파란 accent 유지 → 건너뜀)
+    - 밝은 상태색(처리중/완료/실패)이면 글자는 검은색으로 (가독성)
+    - text_color 를 넘기면 Label/Text 기본 글자색을 그걸로 맞춤
+    - CTkButton 은 자식 재귀를 하지 않고 text_color 를 흰색으로 고정
+    """
+    if root is None or color is None:
+        return
+    try:
+        if not root.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    # 밝은 행 배경 → 기본 글자 검정 (테마 흰색이 안 보이게)
+    _LIGHT_BGS = {
+        "#FFF3CD",  # 처리중
+        "#D4EDDA",  # 완료
+        "#F8D7DA",  # 실패
+        "#B3D9FF",  # 검색 하이라이트
+    }
+    if text_color is None and isinstance(color, str) and color.upper() in {
+        c.upper() for c in _LIGHT_BGS
+    }:
+        text_color = "#000000"
+
+    # 시트/보기 버튼: 배경은 유지, 글씨만 흰색. 자식 재귀 금지(내부 라벨이 검게 됨)
+    if skip_buttons and isinstance(root, ctk.CTkButton):
+        try:
+            root.configure(text_color=BUTTON_TEXT_FG)
+        except (tk.TclError, AttributeError, ValueError):
+            pass
+        return
+
+    if isinstance(root, ctk.CTkCheckBox):
+        try:
+            root.configure(bg_color=color)
+        except (tk.TclError, AttributeError, ValueError):
+            pass
+    elif isinstance(root, ctk.CTkEntry):
+        # 입력창 배경은 행색에 맞추되, 글자는 검정(밝은 행) 또는 기본
+        try:
+            cfg = {"fg_color": color}
+            if text_color is not None:
+                cfg["text_color"] = text_color
+            root.configure(**cfg)
+        except (tk.TclError, AttributeError, ValueError):
+            try:
+                root.configure(fg_color=color)
+            except Exception:
+                pass
+    elif isinstance(root, (ctk.CTkFrame, ctk.CTkLabel, ctk.CTkTextbox)):
+        try:
+            root.configure(fg_color=color)
+        except (tk.TclError, AttributeError, ValueError):
+            pass
+    elif isinstance(root, tk.Text):
+        try:
+            root.configure(bg=color)
+            if text_color is not None:
+                root.configure(fg=text_color)
+        except (tk.TclError, AttributeError):
+            pass
+    elif isinstance(root, tk.Label):
+        try:
+            cfg = {"bg": color}
+            # 상태 라벨은 완료 파란 글씨를 유지 (검정 강제 덮어쓰기 금지)
+            is_status = getattr(root, "_case_ing_status_label", False)
+            if text_color is not None and not is_status:
+                cfg["fg"] = text_color
+            root.configure(**cfg)
+        except (tk.TclError, AttributeError):
+            pass
+    else:
+        # tk.Frame / Canvas 등
+        try:
+            root.configure(bg=color)
+        except (tk.TclError, AttributeError):
+            try:
+                root.config(bg=color)
+            except Exception:
+                pass
+
+    try:
+        children = root.winfo_children()
+    except tk.TclError:
+        return
+    for child in children:
+        apply_row_background(
+            child, color, text_color=text_color, skip_buttons=skip_buttons
+        )
+
+
+def _status_bg_from_text(status):
+    """상태 문자열 → 행 배경색 (ui_queue_manager 와 동일 규칙)."""
+    if not status:
+        return None
+    if status.startswith("처리중"):
+        return "#FFF3CD"
+    if _is_complete_status(status):
+        return "#D4EDDA"
+    if status.startswith("실패") or status.startswith("오류"):
+        return "#F8D7DA"
+    return None
+
+
+def _make_plain_text(parent, bg_color, text_color, width, height, font_size=None, wrap=True):
+    """가벼운 표시용 tk.Text (복사·태그 가능). 글씨체=맑은 고딕."""
+    if font_size is None:
+        font_size = _list_font_size()
+    t = tk.Text(
+        parent,
+        font=("맑은 고딕", font_size),
+        bg=bg_color,
+        fg=text_color,
+        width=1,
+        height=1,
+        bd=0,
+        highlightthickness=0,
+        relief=tk.FLAT,
+        # 한글 긴 사건명은 공백이 없어 CHAR 줄바꿈이 잘림을 막습니다
+        wrap=tk.CHAR if wrap else tk.NONE,
+        cursor="arrow",
+        selectbackground="#5DADE2",
+        selectforeground="#FFFFFF",
+        insertwidth=0,
+    )
+    t.configure(width=max(8, width // 8), height=max(2, height // 16))
+    return t
 
 
 class CaseRow:
@@ -11,42 +186,29 @@ class CaseRow:
     단일 사건 행(Row) 생성을 전담하는 클래스.
     CaseListPanel의 create_case_row 메서드에서 분리됨.
     """
+
     @staticmethod
     def create(app, parent, case, index, total_width, initial_status=None):
         """
         단일 사건 행 위젯을 생성하고 반환합니다.
 
-        Parameters
-        ----------
-        app : BatchProcessingGUI
-            메인 윈도우 인스턴스 (테마 색상, 콜백 등 사용).
-        parent : tk.Widget
-            부모 위젯 (CaseListPanel의 case_frame).
-        case : dict
-            사건 데이터.
-        index : int
-            사건 인덱스.
-        total_width : int
-            행 전체 너비.
-        initial_status : dict, optional
-            초기 상태 정보 (status, color, emoji 등).
-
         Returns
         -------
         tuple
             (row_container, components, cell_frames)
-            - row_container: 행 전체를 감싸는 컨테이너 프레임
-            - components: 행 내부의 주요 위젯들 (체크박스, 텍스트박스, 버튼 등)을 담은 딕셔너리
-            - cell_frames: 각 열(Column)의 프레임 리스트
         """
         bg_color = (
             app.get_theme_color("row_odd")
             if index % 2 == 0
             else app.get_theme_color("row_even")
         )
+        text_main = app.get_theme_color("text_main")
+        text_sub = app.get_theme_color("text_sub")
+        fs = _list_font_size()
+
         row_container = ctk.CTkFrame(parent, fg_color="transparent")
         row_container.pack(fill=tk.X, pady=0, padx=0)
-        
+
         case_frame = ctk.CTkFrame(
             row_container,
             fg_color=bg_color,
@@ -56,7 +218,7 @@ class CaseRow:
         )
         case_frame.pack(fill=tk.X)
         case_frame.pack_propagate(False)
-        
+
         separator = tk.Frame(
             row_container,
             bg=app.get_theme_color("border"),
@@ -68,7 +230,7 @@ class CaseRow:
         separator.pack(fill=tk.X)
         separator.pack_propagate(False)
         app.case_separators[index] = separator
-        
+
         components = {}
         extra_last = getattr(app, "_extra_width_last_col", 0)
         last_internal = app.col_order[-1] if app.col_order else None
@@ -79,7 +241,7 @@ class CaseRow:
             )
 
         frames_by_internal = [None] * len(COL_NAMES)
-        
+
         # 0. 체크박스
         f0 = tk.Frame(
             case_frame,
@@ -96,19 +258,30 @@ class CaseRow:
             f0,
             variable=var,
             text="",
-            fg_color=bg_color,
             width=24,
             command=lambda idx=index: app.on_checkbox_change(idx),
         ).place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         components["checkbox_var"] = var
-        
-        # 1,2,4. 사건 정보 (법원/사건번호 줄바꿈+가운데, 피고/사건명 줄바꿈+가운데, 비고)
+
+        # 1,2,4. 법원/사건번호, 피고/사건명, 비고 — tk.Text
         info_indices = [1, 2, 4]
         court_and_num = "\n".join(
-            filter(None, [str(case.get("법원", "") or "").strip(), str(case.get("사건번호", "") or "").strip()])
+            filter(
+                None,
+                [
+                    str(case.get("법원", "") or "").strip(),
+                    str(case.get("사건번호", "") or "").strip(),
+                ],
+            )
         ) or " "
         defendant_and_name = "\n".join(
-            filter(None, [str(case.get("피고", "") or "").strip(), str(case.get("사건명", "") or "").strip()])
+            filter(
+                None,
+                [
+                    str(case.get("피고", "") or "").strip(),
+                    str(case.get("사건명", "") or "").strip(),
+                ],
+            )
         ) or " "
         info_texts = [
             court_and_num,
@@ -125,68 +298,50 @@ class CaseRow:
                 highlightthickness=0,
             )
             fi.pack_propagate(False)
-            fi.grid_propagate(False)
             frames_by_internal[internal_idx] = fi
-            # 수직 가운데 정렬: grid로 상·하 공간 균등 배분 후 텍스트박스를 중간 행에 배치
-            fi.grid_rowconfigure(0, weight=1)
-            fi.grid_rowconfigure(1, weight=0)
-            fi.grid_rowconfigure(2, weight=1)
-            fi.grid_columnconfigure(0, weight=1)
-            _spacer_top = tk.Frame(fi, height=1, bg=bg_color)
-            _spacer_top.grid(row=0, column=0, sticky="nsew")
-            _spacer_bot = tk.Frame(fi, height=1, bg=bg_color)
-            _spacer_bot.grid(row=2, column=0, sticky="nsew")
-            tb = ctk.CTkTextbox(
-                fi,
-                font=ctk.CTkFont(family="맑은 고딕", size=13),
-                fg_color=bg_color,
-                text_color=app.get_theme_color("text_main"),
-                width=_cell_width(internal_idx) - 8,
-                height=52,
-                activate_scrollbars=False,
-                wrap=tk.NONE,
-                border_width=0,
+            cw = _cell_width(internal_idx) - 8
+            # 피고 칸은 아래 「보기」 버튼 자리 확보 → 텍스트를 약간 위, 버튼은 아래
+            text_h = 40 if internal_idx == 2 else 48
+            tb = _make_plain_text(fi, bg_color, text_main, cw, text_h, font_size=fs)
+            # relwidth=1 로 칸이 넓어지면 Text 도 같이 넓어짐 (고정 width 금지)
+            tb.place(
+                relx=0.5,
+                rely=0.42 if internal_idx == 2 else 0.5,
+                anchor=tk.CENTER,
+                relwidth=1.0,
+                width=-8,
+                height=text_h,
             )
-            tb.grid(row=1, column=0, sticky="nsew", padx=4, pady=2)
             tb.insert("1.0", text)
-            # 수평 가운데 정렬: 법원/사건번호, 피고/사건명만. 비고는 좌측 정렬
-            try:
-                tbox = tb._textbox
-                if internal_idx != 4:
-                    tbox.tag_configure("center", justify=tk.CENTER)
-                    tbox.tag_add("center", "1.0", tk.END)
-                else:
-                    tbox.tag_configure("left", justify="left")
-                    tbox.tag_add("left", "1.0", tk.END)
-            except Exception:
-                pass
-            tb.configure(state="disabled")
+            if internal_idx != 4:
+                tb.tag_configure("center", justify=tk.CENTER)
+                tb.tag_add("center", "1.0", tk.END)
+            else:
+                tb.tag_configure("left", justify="left")
+                tb.tag_add("left", "1.0", tk.END)
+            tb.configure(state=tk.DISABLED)
             components[f"label_info_{internal_idx}"] = tb
 
-            # 피고/사건명(내부 인덱스 2) 칸 아래쪽에 일반내용 돋보기 버튼
-            # place()로 기존 grid 배치 위에 겹쳐 올려 레이아웃을 깨지 않음
             if internal_idx == 2:
                 from gui.utils.glyphs import sanitize as _sanitize_glyph
 
-                # 🔍 이모지는 glyphs에서 제거될 수 있으므로 안전한 대체문자 사용
                 mag_text = _sanitize_glyph("🔍") or "보기"
                 if not mag_text.strip():
                     mag_text = "보기"
                 ctk.CTkButton(
                     fi,
                     text=mag_text,
-                    font=ctk.CTkFont(family="맑은 고딕", size=11),
+                    font=ctk.CTkFont(family="맑은 고딕", size=max(9, fs)),
                     fg_color=app.get_theme_color("accent"),
                     hover_color=app.get_theme_color("accent"),
+                    text_color=BUTTON_TEXT_FG,
                     width=40,
                     height=20,
                     cursor="hand2",
                     command=lambda idx=index: app._open_general_info(idx),
-                ).place(relx=0.5, rely=0.90, anchor=tk.CENTER)
-            
-        # 3. 기일 (update_history.json 캐시에서 읽음)
-        # 기일 정보가 없을 경우 '기일 미정'으로 표기. 드래그 선택 후 복사 가능.
-        # 표기: 첫 줄에 '변론기일' 또는 '판결선고기일'(민트색), 그 다음 줄에 일시, 마지막에 디데이.
+                ).place(relx=0.5, rely=0.82, anchor=tk.CENTER)
+
+        # 3. 기일
         f3 = tk.Frame(
             case_frame,
             bg=bg_color,
@@ -196,23 +351,15 @@ class CaseRow:
             highlightthickness=0,
         )
         f3.pack_propagate(False)
-        f3.grid_propagate(False)
-        f3.grid_rowconfigure(0, weight=1)
-        f3.grid_rowconfigure(1, weight=0)
-        f3.grid_rowconfigure(2, weight=1)
-        f3.grid_columnconfigure(0, weight=1)
-        _s3_top = tk.Frame(f3, height=1, bg=bg_color)
-        _s3_top.grid(row=0, column=0, sticky="nsew")
-        _s3_bot = tk.Frame(f3, height=1, bg=bg_color)
-        _s3_bot.grid(row=2, column=0, sticky="nsew")
         frames_by_internal[3] = f3
         cn = case.get("사건번호", "")
         history = app.load_update_history()
         c_data = history.get(cn, {}) if isinstance(history.get(cn), dict) else {}
         hearing_info_raw = (c_data.get("hearing_info") or "").strip()
         hearing_text = hearing_info_raw or "기일 미정"
-        # 디데이: 최근 업데이트 열과 동일 양식. "-" 또는 "D+숫자"(당일 D+0, 과거 D+n, 미래 D-n), 색상 0~2 success·3+ error
-        days_until = app.get_days_until_hearing(hearing_info_raw) if hearing_info_raw else None
+        days_until = (
+            app.get_days_until_hearing(hearing_info_raw) if hearing_info_raw else None
+        )
         if days_until is not None:
             if days_until > 0:
                 d_day_str = f"D-{days_until}"
@@ -220,30 +367,31 @@ class CaseRow:
                 d_day_str = "D+0"
             else:
                 d_day_str = f"D+{abs(days_until)}"
-            # 색상: D+ (과거)는 초록색, D- (미래/오늘)는 빨간색
             if days_until < 0:
                 d_day_fg = app.get_theme_color("success")
             else:
                 d_day_fg = app.get_theme_color("error")
         else:
             d_day_str = "-"
-            d_day_fg = app.get_theme_color("text_sub")
-        # '변론기일' / '감정기일' / '판결선고기일' 뒤로 줄바꿈하여 일시 표기.
+            d_day_fg = text_sub
+
         if hearing_text.startswith("변론기일"):
             kind_line = "변론기일\n"
-            rest_line = hearing_text[len("변론기일"):].strip()
+            rest_line = hearing_text[len("변론기일") :].strip()
         elif hearing_text.startswith("감정기일"):
-            # 변론기일과 동일: 민트색 종류명 + 다음 줄 일시
             kind_line = "감정기일\n"
-            rest_line = hearing_text[len("감정기일"):].strip()
+            rest_line = hearing_text[len("감정기일") :].strip()
         elif hearing_text.startswith("판결선고기일"):
             kind_line = "판결선고기일\n"
-            rest_line = hearing_text[len("판결선고기일"):].strip()
+            rest_line = hearing_text[len("판결선고기일") :].strip()
         else:
             kind_line = None
             rest_line = hearing_text
-        # 로우 데이터 정제: 연도 해석은 D-day와 동일하게. 06/6→2026, 26→2026, 2025→2025. 표기는 2자리(YY).
-        date_time_match = re.match(r"^(\d{1,4})\.(\d{1,2})\.(\d{1,2})\.?\s*(?:\((\d{1,2}:\d{2})\))?\s*$", rest_line.strip())
+
+        date_time_match = re.match(
+            r"^(\d{1,4})\.(\d{1,2})\.(\d{1,2})\.?\s*(?:\((\d{1,2}:\d{2})\))?\s*$",
+            rest_line.strip(),
+        )
         if date_time_match:
             y_str, mm, dd, time_part = date_time_match.groups()
             y_int = int(y_str)
@@ -258,49 +406,43 @@ class CaseRow:
             else:
                 full_year = y_int
             display_yy = str(full_year)[-2:]
-            rest_line = f"{display_yy}.{mm}.{dd}" + (f" ({time_part})" if time_part else "")
-        ht = ctk.CTkTextbox(
-            f3,
-            font=ctk.CTkFont(family="맑은 고딕", size=12),
-            fg_color=bg_color,
-            text_color=app.get_theme_color("text_main"),
-            width=_cell_width(3) - 8,
-            height=70,
-            activate_scrollbars=False,
-            wrap=tk.NONE,
-            border_width=0,
+            rest_line = f"{display_yy}.{mm}.{dd}" + (
+                f" ({time_part})" if time_part else ""
+            )
+
+        cw3 = _cell_width(3) - 8
+        ht = _make_plain_text(f3, bg_color, text_main, cw3, 64, font_size=fs)
+        ht.place(
+            relx=0.5,
+            rely=0.5,
+            anchor=tk.CENTER,
+            relwidth=1.0,
+            width=-8,
+            height=64,
         )
-        ht.grid(row=1, column=0, sticky="nsew", padx=4, pady=2)
         mint_color = app.get_theme_color("hearing_mint")
-        try:
-            textbox = ht._textbox
-            textbox.tag_configure("mint", foreground=mint_color)
-            textbox.tag_configure("center", justify=tk.CENTER)
-            dday_font = ctk.CTkFont(family="맑은 고딕", size=13, weight="bold")
-            textbox.tag_configure("dday", foreground=d_day_fg, font=dday_font)
-        except Exception:
-            textbox = None
+        ht.tag_configure("mint", foreground=mint_color)
+        ht.tag_configure("center", justify=tk.CENTER)
+        ht.tag_configure(
+            "dday",
+            foreground=d_day_fg,
+            font=("맑은 고딕", fs, "bold"),
+        )
+        ht.configure(state=tk.NORMAL)
         if kind_line is not None:
-            if textbox is not None:
-                textbox.insert(tk.END, kind_line, "mint")
-                textbox.insert(tk.END, rest_line)
-                if d_day_str:
-                    textbox.insert(tk.END, "\n" + d_day_str, "dday")
-                textbox.tag_add("center", "1.0", tk.END)
-            else:
-                ht.insert("1.0", kind_line + rest_line + ("\n" + d_day_str if d_day_str else ""))
+            ht.insert(tk.END, kind_line, "mint")
+            ht.insert(tk.END, rest_line)
+            if d_day_str:
+                ht.insert(tk.END, "\n" + d_day_str, "dday")
         else:
-            if textbox is not None:
-                textbox.insert(tk.END, rest_line)
-                if d_day_str:
-                    textbox.insert(tk.END, "\n" + d_day_str, "dday")
-                textbox.tag_add("center", "1.0", tk.END)
-            else:
-                ht.insert("1.0", rest_line + ("\n" + d_day_str if d_day_str else ""))
-        ht.configure(state="disabled")
+            ht.insert(tk.END, rest_line)
+            if d_day_str:
+                ht.insert(tk.END, "\n" + d_day_str, "dday")
+        ht.tag_add("center", "1.0", tk.END)
+        ht.configure(state=tk.DISABLED)
         components["hearing_label"] = ht
-            
-        # 5. 캡차 이미지
+
+        # 5. 캡차 이미지 — 대기중은 행색과 동일
         f5 = tk.Frame(
             case_frame,
             bg=bg_color,
@@ -314,15 +456,15 @@ class CaseRow:
         il = tk.Label(
             f5,
             text="대기중",
-            font=app.get_theme_color("font_small"),
-            fg=app.get_theme_color("text_sub"),
-            bg=app.get_theme_color("bg_primary"),
+            font=("맑은 고딕", fs),
+            fg=text_sub,
+            bg=bg_color,
             relief=tk.FLAT,
         )
-        il.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        il.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         components["image_label"] = il
-        
-        # 6. 캡차 입력
+
+        # 6. 캡차 입력 (기능 유지: CTkEntry)
         f6 = tk.Frame(
             case_frame,
             bg=bg_color,
@@ -337,23 +479,22 @@ class CaseRow:
         captcha_entry = ctk.CTkEntry(
             f6,
             textvariable=captcha_var,
-            font=ctk.CTkFont(family="맑은 고딕", size=14, weight="bold"),
+            font=ctk.CTkFont(family="맑은 고딕", size=max(10, fs + 1), weight="bold"),
             justify=tk.CENTER,
             width=70,
-            height=28,
+            height=26,
         )
         captcha_entry.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         captcha_entry.bind(
             "<KeyRelease>", lambda e, idx=index: app._validate_captcha_entry(idx)
         )
-        # CTkEntry 는 내부 _entry 에도 Enter 를 걸어야 키가 먹습니다.
         bind_entry_return(
             captcha_entry, lambda e, idx=index: app.on_captcha_enter(idx)
         )
         components["captcha_var"] = captcha_var
         components["captcha_entry"] = captcha_entry
-        
-        # 7. 상태
+
+        # 7. 상태 — tk.Label (배경 따라감)
         f7 = tk.Frame(
             case_frame,
             bg=bg_color,
@@ -368,18 +509,26 @@ class CaseRow:
             st = initial_status.get("status", "대기")
             em = initial_status.get("emoji", "⏸️")
             status_text = f"{em} {st}" if em else st
-            status_fg = initial_status.get("color", app.get_theme_color("text_sub"))
+            # 완료 계열은 history 색(green/회색) 무시 → 파란색
+            if _is_complete_status(st):
+                status_fg = STATUS_COMPLETE_FG
+            else:
+                status_fg = initial_status.get("color", text_sub)
         else:
-            status_text, status_fg = "⏸️ 대기", app.get_theme_color("text_sub")
-        sl = ctk.CTkLabel(
+            status_text, status_fg = "⏸️ 대기", text_sub
+        sl = tk.Label(
             f7,
             text=status_text,
-            font=ctk.CTkFont(family="맑은 고딕", size=13),
-            text_color=status_fg,
+            font=("맑은 고딕", fs),
+            fg=status_fg,
+            bg=bg_color,
+            justify=tk.CENTER,
         )
+        # apply_row_background 가 검정으로 덮지 않도록 표시
+        sl._case_ing_status_label = True
         sl.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         components["status_label"] = sl
-        
+
         # 8. 자동 조회
         f8 = tk.Frame(
             case_frame,
@@ -391,22 +540,23 @@ class CaseRow:
         )
         f8.pack_propagate(False)
         frames_by_internal[8] = f8
-        cn = case.get("사건번호", "")
         search_log = app.log_history_manager.load_search_log()
         if cn in search_log:
             record_text, record_fg = "자동 가능", app.get_theme_color("success")
         else:
-            record_text, record_fg = "최초 조회 필요", app.get_theme_color("text_sub")
-        rl = ctk.CTkLabel(
+            record_text, record_fg = "최초 조회 필요", text_sub
+        rl = tk.Label(
             f8,
             text=record_text,
-            font=ctk.CTkFont(family="맑은 고딕", size=12),
-            text_color=record_fg,
+            font=("맑은 고딕", fs),
+            fg=record_fg,
+            bg=bg_color,
+            justify=tk.CENTER,
         )
         rl.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         components["record_label"] = rl
-        
-        # 9. 최근 업데이트 (수직 가운데 정렬: grid + 스페이서)
+
+        # 9. 최근 업데이트
         f9 = tk.Frame(
             case_frame,
             bg=bg_color,
@@ -416,59 +566,47 @@ class CaseRow:
             highlightthickness=0,
         )
         f9.pack_propagate(False)
-        f9.grid_propagate(False)
-        f9.grid_rowconfigure(0, weight=1)
-        f9.grid_rowconfigure(1, weight=0)
-        f9.grid_rowconfigure(2, weight=1)
-        f9.grid_columnconfigure(0, weight=1)
-        _s9_top = tk.Frame(f9, height=1, bg=bg_color)
-        _s9_top.grid(row=0, column=0, sticky="nsew")
-        _s9_bot = tk.Frame(f9, height=1, bg=bg_color)
-        _s9_bot.grid(row=2, column=0, sticky="nsew")
         frames_by_internal[9] = f9
         u_container = tk.Frame(f9, bg=bg_color)
-        u_container.grid(row=1, column=0, sticky="nsew", padx=4, pady=2)
+        u_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         history = app.load_update_history()
-        c_data = history.get(cn, {})
+        c_data = history.get(cn, {}) if isinstance(history.get(cn), dict) else {}
         last_update_raw = c_data.get("last_update", "-")
-        # 'YY.MM.DD.' + 줄바꿈 + 'HH:MM:SS' 형식으로 정제
         last_date_display = "-"
         if last_update_raw and last_update_raw != "-":
             try:
-                # 저장된 형식: YYYY-MM-DD HH:MM:SS
                 dt = datetime.strptime(last_update_raw, "%Y-%m-%d %H:%M:%S")
                 last_date_display = dt.strftime("%y.%m.%d.\n%H:%M:%S")
-            except:
+            except Exception:
                 last_date_display = last_update_raw
-        
+
         days_since = app.get_days_since_update(case)
-        date_label = ctk.CTkLabel(
+        date_label = tk.Label(
             u_container,
             text=last_date_display,
-            font=ctk.CTkFont(family="맑은 고딕", size=12),
-            text_color=app.get_theme_color("text_sub"),
+            font=("맑은 고딕", fs),
+            fg=text_sub,
+            bg=bg_color,
+            justify=tk.CENTER,
         )
         date_label.pack(anchor=tk.CENTER)
         is_auto = c_data.get("is_auto", False)
         d_suffix = " (자동 조회)" if is_auto else ""
-        # 최근 업데이트: D+ (0 이상)는 초록색, 기록 없으면(-) 회색
         d_text = "-" if days_since < 0 else f"D+{days_since}{d_suffix}"
-        d_fg = (
-            app.get_theme_color("text_sub")
-            if days_since < 0
-            else app.get_theme_color("success")
-        )
-        d_label = ctk.CTkLabel(
+        d_fg = text_sub if days_since < 0 else app.get_theme_color("success")
+        d_label = tk.Label(
             u_container,
             text=d_text,
-            font=ctk.CTkFont(family="맑은 고딕", size=13, weight="bold"),
-            text_color=d_fg,
+            font=("맑은 고딕", fs, "bold"),
+            fg=d_fg,
+            bg=bg_color,
+            justify=tk.CENTER,
         )
         d_label.pack(anchor=tk.CENTER)
         components["update_date_label"] = date_label
         components["update_d_label"] = d_label
-        
-        # 10. 시트 버튼
+
+        # 10. 시트 버튼 (기능 유지)
         f10 = tk.Frame(
             case_frame,
             bg=bg_color,
@@ -485,18 +623,30 @@ class CaseRow:
             font=ctk.CTkFont(family="맑은 고딕", size=12),
             fg_color=app.get_theme_color("accent"),
             hover_color=app.get_theme_color("accent"),
+            text_color=BUTTON_TEXT_FG,
             width=50,
             height=28,
             cursor="hand2",
             command=lambda idx=index: app._open_sheet_viewer(idx),
         ).place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        
+
         cell_frames = []
-        for disp_idx, internal_idx in enumerate(app.col_order):
+        for _disp_idx, internal_idx in enumerate(app.col_order):
             frame = frames_by_internal[internal_idx]
             frame.pack(side=tk.LEFT)
             frame.pack_propagate(False)
             cell_frames.append(frame)
-            
+
         app.case_frames[index] = case_frame
+
+        # 목록 재구성(시작·F5) 시에는 테마 줄무늬만 사용.
+        # 완료 연두(#D4EDDA) 등 상태 행색은 조회 중 실시간 갱신에서만 칠함.
+        apply_row_background(case_frame, bg_color)
+        # 상태 라벨 글씨색 복원 (줄무늬 칠한 뒤에도 완료=파란 유지)
+        try:
+            if sl.winfo_exists():
+                sl.configure(fg=status_fg, bg=bg_color)
+        except tk.TclError:
+            pass
+
         return row_container, components, cell_frames

@@ -79,35 +79,26 @@ class SearchUI:
         self._app.case_canvas.yview_moveto(fraction)
         self.clear_find_highlights()
         self.apply_find_highlight(row_index, query)
+        from gui.panels.case_row import apply_row_background
+
         orig_fg = (
             self._app.get_theme_color("row_odd")
             if row_index % 2 == 0
             else self._app.get_theme_color("row_even")
         )
         try:
-            row_frame.configure(fg_color="#B3D9FF")
-            for c in row_frame.winfo_children():
-                try:
-                    c.configure(fg_color="#B3D9FF")
-                except (tk.TclError, AttributeError):
-                    try:
-                        c.config(bg="#B3D9FF")
-                    except Exception:
-                        pass
+            apply_row_background(row_frame, "#B3D9FF", text_color="#000000")
         except Exception:
             pass
 
         def restore():
             try:
-                row_frame.configure(fg_color=orig_fg)
-                for c in row_frame.winfo_children():
-                    try:
-                        c.configure(fg_color=orig_fg)
-                    except (tk.TclError, AttributeError):
-                        try:
-                            c.config(bg=orig_fg)
-                        except Exception:
-                            pass
+                # 다크 줄무늬로 복원 시 글자도 테마 기본색으로
+                apply_row_background(
+                    row_frame,
+                    orig_fg,
+                    text_color=self._app.get_theme_color("text_main"),
+                )
             except Exception:
                 pass
 

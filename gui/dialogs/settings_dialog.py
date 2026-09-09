@@ -11,6 +11,7 @@ user_settings.json에서 로드 가능한 항목을 GUI로 편집합니다.
   3. 본 파일: 해당 탭에 _add_row(탭, "키", "라벨", 1) 호출 추가.
   4. _collect_data(): 정수형 키면 int 변환, 나머지는 str 그대로 저장.
 """
+import os
 import tkinter as tk
 import customtkinter as ctk
 import config
@@ -26,7 +27,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self.on_save_callback = on_save_callback  # 저장 후 호출 (예: 헤더 색상 즉시 반영)
         self.app = app
         self.title("설정")
-        self.geometry("540x480")
+        self.geometry("560x560")
+        self.minsize(520, 420)
         self.resizable(True, True)
         self.transient(parent)
         self.entries = {}
@@ -41,8 +43,32 @@ class SettingsDialog(ctk.CTkToplevel):
         self.grab_set()
 
     def _build_ui(self):
-        tabview = ctk.CTkTabview(self, width=500, height=360)
-        tabview.pack(padx=12, pady=12, fill=tk.BOTH, expand=True)
+        # 주니어: 버튼을 먼저 BOTTOM 에 붙이면 탭이 많아도 「적용」이 항상 보입니다.
+        # (탭뷰를 expand 로 먼저 붙이면 창이 작을 때 버튼이 화면 밖으로 밀릴 수 있음)
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(side=tk.BOTTOM, pady=(0, 12))
+        ctk.CTkButton(
+            btn_frame,
+            text="적용",
+            width=100,
+            command=lambda: self._on_apply(close=False),
+        ).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(
+            btn_frame,
+            text="확인",
+            width=100,
+            command=lambda: self._on_apply(close=True),
+        ).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(
+            btn_frame,
+            text="취소",
+            width=100,
+            fg_color="#5D6D7E",
+            command=self.destroy,
+        ).pack(side=tk.LEFT, padx=4)
+
+        tabview = ctk.CTkTabview(self, width=500)
+        tabview.pack(padx=12, pady=(12, 8), fill=tk.BOTH, expand=True)
 
         # ---------- 구글 시트 탭 ----------
         tab_gs = tabview.add("구글 시트")
@@ -61,7 +87,7 @@ class SettingsDialog(ctk.CTkToplevel):
             tab_gs,
             text=(
                 "GCP에서 받은 데스크톱 앱 OAuth JSON입니다. "
-                "[찾아보기]로 선택 후 [저장], 그다음 [Google 계정 연동]을 누르세요."
+                "[찾아보기]로 선택 후 [적용], 그다음 [Google 계정 연동]을 누르세요."
             ),
             font=ctk.CTkFont(size=11),
             anchor="w",
@@ -169,6 +195,42 @@ class SettingsDialog(ctk.CTkToplevel):
         self._add_row(tab_proc, "DEFAULT_MAX_RETRY", "캡차 재시도 횟수", 1)
         self._add_row(tab_proc, "DEFAULT_RETRY_DELAY", "재시도 간 대기시간(초)", 1)
 
+        # 프로필(쿠키) zip 백업 / 복원
+        backup_row = ctk.CTkFrame(tab_proc, fg_color="transparent")
+        backup_row.pack(fill=tk.X, pady=(10, 2))
+        ctk.CTkButton(
+            backup_row,
+            text="프로필 백업…",
+            width=120,
+            fg_color="#2980B9",
+            command=self._on_backup_profiles,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkButton(
+            backup_row,
+            text="프로필 복원…",
+            width=120,
+            fg_color="#8E44AD",
+            command=self._on_restore_profiles,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkButton(
+            backup_row,
+            text="백업 폴더 열기",
+            width=120,
+            fg_color="#5D6D7E",
+            command=self._on_open_backup_folder,
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            tab_proc,
+            text=(
+                "프로필 백업: cookie 폴더(instance_*)를 zip으로 저장합니다(캐시 제외).\n"
+                "복원 시 같은 이름 프로필을 덮어씁니다. 조회 중이면 먼저 중지하세요."
+            ),
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+            justify="left",
+            wraplength=480,
+        ).pack(fill=tk.X, pady=(2, 4))
+
         case_count = 0
         if self.app is not None:
             try:
@@ -252,6 +314,15 @@ class SettingsDialog(ctk.CTkToplevel):
             justify="left",
             wraplength=480,
         ).pack(fill=tk.X, pady=(8, 4))
+        self._add_row(tab_theme, "CASE_LIST_FONT_SIZE", "사건 목록 글씨 크기(pt)", 1)
+        ctk.CTkLabel(
+            tab_theme,
+            text="맑은 고딕 기준. 권장 8~14. 적용 후 목록이 다시 그려집니다.",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+            justify="left",
+            wraplength=480,
+        ).pack(fill=tk.X, pady=(0, 4))
 
         # ---------- 자동화 탭 ----------
         tab_auto = tabview.add("자동화")
@@ -267,27 +338,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._add_row(tab_gen, "HEADER_BG_COLOR", "헤더 배경색(#RRGGBB)", 1)
         self._add_row(tab_gen, "MAX_PARALLEL_LIMIT", "최대 병렬 처리 수", 1)
 
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=(0, 12))
-        ctk.CTkButton(
-            btn_frame,
-            text="적용",
-            width=100,
-            command=lambda: self._on_apply(close=False),
-        ).pack(side=tk.LEFT, padx=4)
-        ctk.CTkButton(
-            btn_frame,
-            text="확인",
-            width=100,
-            command=lambda: self._on_apply(close=True),
-        ).pack(side=tk.LEFT, padx=4)
-        ctk.CTkButton(
-            btn_frame,
-            text="취소",
-            width=100,
-            fg_color="#5D6D7E",
-            command=self.destroy,
-        ).pack(side=tk.LEFT, padx=4)
+        # 적용/확인/취소 버튼은 _build_ui 상단에서 BOTTOM 고정 (탭과 무관하게 항상 표시)
 
     def _add_row(self, parent, key, label_text, height_lines=1):
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -377,6 +428,7 @@ class SettingsDialog(ctk.CTkToplevel):
             "MAX_PARALLEL_LIMIT",
             "DEFAULT_MAX_PARALLEL",
             "PROFILE_COUNT",
+            "CASE_LIST_FONT_SIZE",
             "DEFAULT_MAX_RETRY",
             "DEFAULT_RETRY_DELAY",
             "GOOGLE_CALENDAR_ENABLED",
@@ -408,6 +460,150 @@ class SettingsDialog(ctk.CTkToplevel):
             v = int(default)
         return max(low, min(high, v))
 
+    def _profiles_busy(self) -> bool:
+        """조회 중이거나 Chrome 워커가 프로필을 쓰는 중이면 True."""
+        app = self.app
+        if app is None:
+            return False
+        if getattr(app, "_captcha_batch_running", False):
+            return True
+        ps = getattr(app, "puppeteer_service", None)
+        workers = getattr(ps, "lane_workers", None) if ps else None
+        if not workers:
+            return False
+        for proc in workers.values():
+            try:
+                if proc is not None and proc.poll() is None:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _log_to_app(self, msg: str) -> None:
+        app = self.app
+        if app is not None and hasattr(app, "log_message"):
+            try:
+                app.log_message(msg)
+            except Exception:
+                pass
+
+    def _on_backup_profiles(self):
+        """프로필을 zip으로 저장 (파일 대화상자)."""
+        from services import profile_maintenance as pm
+
+        if self._profiles_busy():
+            if not messagebox.askyesno(
+                "프로필 사용 중",
+                "조회가 진행 중이거나 브라우저 워커가 켜져 있습니다.\n"
+                "일부 쿠키 파일이 잠겨 백업에서 빠질 수 있습니다.\n\n"
+                "그래도 백업할까요?",
+                parent=self,
+            ):
+                return
+
+        default_path = pm.default_backup_zip_path()
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="프로필 백업 저장",
+            initialdir=os.path.dirname(default_path),
+            initialfile=os.path.basename(default_path),
+            defaultextension=".zip",
+            filetypes=[("ZIP 백업", "*.zip"), ("모든 파일", "*.*")],
+        )
+        if not path:
+            return
+        result = pm.backup_cookie_profiles(path, log_fn=self._log_to_app)
+        if result.get("ok"):
+            skip = int(result.get("skipped") or 0)
+            extra = f"\n(잠긴 파일 {skip}개는 건너뜀)" if skip else ""
+            messagebox.showinfo(
+                "백업 완료",
+                f"프로필 {result.get('instances')}개를 저장했습니다.\n"
+                f"{result.get('path')}{extra}",
+                parent=self,
+            )
+        else:
+            messagebox.showerror(
+                "백업 실패",
+                result.get("error") or "알 수 없는 오류",
+                parent=self,
+            )
+
+    def _on_restore_profiles(self):
+        """zip에서 프로필 복원 (기존 instance_* 덮어씀)."""
+        from services import profile_maintenance as pm
+
+        if self._profiles_busy():
+            messagebox.showwarning(
+                "복원 불가",
+                "조회 중이거나 브라우저 워커가 켜져 있으면 복원할 수 없습니다.\n"
+                "조회를 중지한 뒤 다시 시도하세요.",
+                parent=self,
+            )
+            return
+
+        # 가능하면 워커를 미리 정리
+        try:
+            ps = getattr(self.app, "puppeteer_service", None) if self.app else None
+            if ps is not None and hasattr(ps, "shutdown_all_workers"):
+                ps.shutdown_all_workers()
+        except Exception:
+            pass
+
+        initial = pm._backup_root()
+        try:
+            os.makedirs(initial, exist_ok=True)
+        except Exception:
+            initial = os.path.expanduser("~")
+
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="프로필 백업 zip 선택",
+            initialdir=initial,
+            filetypes=[("ZIP 백업", "*.zip"), ("모든 파일", "*.*")],
+        )
+        if not path:
+            return
+        if not messagebox.askyesno(
+            "프로필 복원",
+            "선택한 zip의 instance_* 프로필로 덮어씁니다.\n"
+            "지금 쓰는 같은 이름 프로필은 삭제됩니다.\n\n"
+            "계속할까요?",
+            parent=self,
+        ):
+            return
+        result = pm.restore_cookie_profiles(
+            path, replace_existing=True, log_fn=self._log_to_app
+        )
+        if result.get("ok"):
+            names = ", ".join(result.get("restored") or []) or "(없음)"
+            messagebox.showinfo(
+                "복원 완료",
+                f"복원된 프로필: {names}",
+                parent=self,
+            )
+        else:
+            messagebox.showerror(
+                "복원 실패",
+                result.get("error") or "알 수 없는 오류",
+                parent=self,
+            )
+
+    def _on_open_backup_folder(self):
+        """기본 백업 폴더를 탐색기로 엽니다."""
+        from services import profile_maintenance as pm
+
+        folder = pm._backup_root()
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("폴더 열기 실패", str(e), parent=self)
+            return
+        try:
+            os.startfile(folder)  # Windows
+        except Exception as e:
+            messagebox.showerror("폴더 열기 실패", str(e), parent=self)
+
     def _apply_processing_to_app(self, data):
         """
         사건 조회 설정(IntVar)과 테마를 앱 런타임에 즉시 반영합니다.
@@ -434,6 +630,16 @@ class SettingsDialog(ctk.CTkToplevel):
             self.app.max_retry.set(retry)
         if getattr(self.app, "retry_delay", None) is not None:
             self.app.retry_delay.set(delay)
+
+        # 목록 글씨 크기 (config 에 이미 load_user_settings 반영됨)
+        font_size = self._clamp_int(
+            data.get("CASE_LIST_FONT_SIZE"),
+            8,
+            16,
+            getattr(config, "CASE_LIST_FONT_SIZE", 9),
+        )
+        config.CASE_LIST_FONT_SIZE = font_size
+        data["CASE_LIST_FONT_SIZE"] = font_size
 
         # 테마
         choice = (self._theme_var.get() if self._theme_var is not None else "") or ""
@@ -532,6 +738,12 @@ class SettingsDialog(ctk.CTkToplevel):
             )
             data["DEFAULT_RETRY_DELAY"] = self._clamp_int(
                 data.get("DEFAULT_RETRY_DELAY"), 1, 10, config.DEFAULT_RETRY_DELAY
+            )
+            data["CASE_LIST_FONT_SIZE"] = self._clamp_int(
+                data.get("CASE_LIST_FONT_SIZE"),
+                8,
+                16,
+                getattr(config, "CASE_LIST_FONT_SIZE", 9),
             )
             for key in config.USER_SETTINGS_OVERRIDABLE:
                 if key not in data:

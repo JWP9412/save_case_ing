@@ -15,6 +15,7 @@
 """
 import os
 import tkinter as tk
+import tkinter.font as tkfont
 import customtkinter as ctk
 
 import config
@@ -30,7 +31,10 @@ LOG_SEL_BG = "#1ABC9C"
 LOG_SEL_FG = "#FFFFFF"
 # 이전 CTkTextbox 체감에 맞춰 11pt
 LOG_FONT = ("맑은 고딕", 11)
+# 한 줄 높이 추정 기본값(실제로는 폰트 metrics + 줄간격 사용)
 LINE_HEIGHT = 16
+# create_text bbox 아래에 두는 줄 간격(redraw 의 y += bbox + 3 과 동일)
+LINE_GAP = 3
 LOG_PAD_X = 8
 LOG_PAD_Y = 6
 
@@ -81,11 +85,20 @@ class StatusLogCanvas:
     주니어:
     - _scroll_y 는 「맨 위 줄 인덱스」(휠로 이동).
     - 드래그 선택은 _sel_anchor / _sel_end (줄 인덱스)로 보관합니다.
+    - 스크롤 최하단(_max_scroll_y)은 고정 LINE_HEIGHT 가 아니라
+      실제 줄 높이(줄바꿈·줄간격 포함)로 계산합니다.
+    - 줄 높이는 _line_heights 에 캐시하고, redraw 는 50ms 합칩니다.
+      (로그 폭주 시 Tk 메인 스레드가 응답없음이 되지 않게)
     """
+
+    # 로그가 몰릴 때 redraw 합치는 간격(ms)
+    REDRAW_COALESCE_MS = 50
 
     def __init__(self, parent, app=None):
         self.app = app
         self._lines = []
+        self._line_heights = []  # _lines 와 1:1, 픽셀 높이 캐시
+        self._cached_max_w = None  # 폭이 바뀌면 캐시 무효
         self._scroll_y = 0
         self._follow_end = True
         self._pending = ""
@@ -94,6 +107,9 @@ class StatusLogCanvas:
         self._dragging = False
         self._moved = False  # 드래그로 실제 이동했는지 (단순 클릭과 구분)
         self._line_layout = []  # redraw 시 [(line_idx, y0, y1), ...]
+        self._tk_font = None  # lazy: canvas 생성 후 Font 객체
+        self._redraw_after_id = None  # coalesce 용 after id
+        self._avg_char_w = None  # 한글 평균 폭 (줄바꿈 추정용)
 
         # canvas + scrollbar
         self._holder = tk.Frame(parent, bg=LOG_BG, highlightthickness=0, padx=0, pady=0)
@@ -153,13 +169,20 @@ class StatusLogCanvas:
         elif parts and parts[-1] == "":
             parts = parts[:-1]
 
+        if not parts:
+            return
+
+        max_w = self._max_text_w()
+        self._ensure_height_cache(max_w)
         for part in parts:
             self._lines.append(part)
+            self._line_heights.append(self._text_block_height(part, max_w))
 
         self._trim_lines()
         if self._follow_end:
             self._scroll_to_end()
-        self._redraw()
+        # 로그 폭주 시 매 줄마다 전체 다시 그리지 않고 합칩니다.
+        self._schedule_redraw()
 
     def winfo_exists(self):
         try:
@@ -205,24 +228,139 @@ class StatusLogCanvas:
         if index in ("end", "end-1c", tk.END):
             self._follow_end = True
             self._scroll_to_end()
-            self._redraw()
+            self._schedule_redraw()
 
     def pack(self, **kwargs):
         pass
 
+    def _schedule_redraw(self):
+        """짧은 시간 안의 여러 insert 를 한 번 redraw 로 합칩니다."""
+        if self._redraw_after_id is not None:
+            return
+        try:
+            self._redraw_after_id = self.canvas.after(
+                self.REDRAW_COALESCE_MS, self._flush_redraw
+            )
+        except Exception:
+            self._redraw_after_id = None
+            self._redraw()
+
+    def _flush_redraw(self):
+        self._redraw_after_id = None
+        if self._follow_end:
+            self._scroll_to_end()
+        self._redraw()
+
+    def _get_font(self):
+        """Canvas와 같은 폰트 객체 (줄 높이·줄바꿈 폭 측정용)."""
+        if self._tk_font is None:
+            try:
+                self._tk_font = tkfont.Font(
+                    root=self.canvas, family=LOG_FONT[0], size=LOG_FONT[1]
+                )
+            except Exception:
+                self._tk_font = tkfont.Font(family=LOG_FONT[0], size=LOG_FONT[1])
+        return self._tk_font
+
+    def _max_text_w(self):
+        w = max(1, int(self.canvas.winfo_width() or 1))
+        return max(40, w - LOG_PAD_X * 2)
+
+    def _usable_height(self):
+        h = max(1, int(self.canvas.winfo_height() or 1))
+        return max(LINE_HEIGHT, h - LOG_PAD_Y * 2)
+
+    def _char_width(self):
+        if self._avg_char_w is None:
+            try:
+                self._avg_char_w = max(1, int(self._get_font().measure("가")))
+            except Exception:
+                self._avg_char_w = 12
+        return self._avg_char_w
+
+    def _text_block_height(self, text, max_w=None):
+        """
+        한 로그 줄이 화면에서 차지하는 세로 픽셀(줄바꿈 + LINE_GAP).
+
+        주니어: 예전에는 글자마다 font.measure 를 돌려 Tk 가 멈췄습니다.
+        지금은 전체 폭 / 행폭 또는 글자 수×평균폭으로 빠르게 추정합니다.
+        """
+        font = self._get_font()
+        try:
+            linespace = int(font.metrics("linespace") or LINE_HEIGHT)
+        except Exception:
+            linespace = LINE_HEIGHT
+        if max_w is None:
+            max_w = self._max_text_w()
+        raw = text if text is not None else ""
+        if not raw:
+            return linespace + LINE_GAP
+        try:
+            tw = font.measure(raw)
+            if tw <= max_w:
+                return linespace + LINE_GAP
+            rows = max(1, (tw + max_w - 1) // max_w)
+        except Exception:
+            cw = self._char_width()
+            rows = max(1, (len(raw) * cw + max_w - 1) // max(1, max_w))
+        return rows * linespace + LINE_GAP
+
+    def _ensure_height_cache(self, max_w=None):
+        """폭이 바뀌었으면 높이 캐시를 비우고, 모자란 줄만 채웁니다."""
+        if max_w is None:
+            max_w = self._max_text_w()
+        if self._cached_max_w != max_w:
+            self._line_heights = []
+            self._cached_max_w = max_w
+        while len(self._line_heights) < len(self._lines):
+            i = len(self._line_heights)
+            self._line_heights.append(self._text_block_height(self._lines[i], max_w))
+        if len(self._line_heights) > len(self._lines):
+            self._line_heights = self._line_heights[: len(self._lines)]
+
+    def _max_scroll_y(self):
+        """
+        맨 아래까지 내렸을 때 허용되는 최대 _scroll_y (맨 위 줄 인덱스).
+        뷰포트에 아래에서부터 줄을 채워, 더 이상 못 넣는 지점이 start 입니다.
+        """
+        n = len(self._lines)
+        if n <= 0:
+            return 0
+        self._ensure_height_cache()
+        usable = self._usable_height()
+        acc = 0
+        start = n
+        while start > 0:
+            block_h = self._line_heights[start - 1]
+            # 이미 한 줄 이상 넣었고, 다음 줄을 넣으면 넘치면 중단
+            if acc > 0 and acc + block_h > usable:
+                break
+            start -= 1
+            acc += block_h
+        return start
+
     def _scroll_to_end(self):
-        visible = self._visible_line_count()
-        self._scroll_y = max(0, len(self._lines) - visible)
+        self._scroll_y = self._max_scroll_y()
 
     def _visible_line_count(self):
-        h = max(1, int(self.canvas.winfo_height() or 1))
-        usable = max(LINE_HEIGHT, h - LOG_PAD_Y * 2)
-        return max(1, usable // LINE_HEIGHT)
+        """
+        redraw 시 몇 줄까지 그릴지(윈도잉)용 대략값.
+        스크롤 한계 계산에는 쓰지 말고 _max_scroll_y 를 쓰세요.
+        """
+        font = self._get_font()
+        try:
+            linespace = int(font.metrics("linespace") or LINE_HEIGHT)
+        except Exception:
+            linespace = LINE_HEIGHT
+        step = max(1, linespace + LINE_GAP)
+        return max(1, self._usable_height() // step)
 
     def _trim_lines(self):
         if len(self._lines) > MAX_LOG_LINES:
             overflow = len(self._lines) - MAX_LOG_LINES
             self._lines = self._lines[overflow:]
+            if self._line_heights:
+                self._line_heights = self._line_heights[overflow:]
             self._scroll_y = max(0, self._scroll_y - overflow)
             if self._sel_anchor is not None:
                 self._sel_anchor = max(0, self._sel_anchor - overflow)
@@ -230,9 +368,13 @@ class StatusLogCanvas:
                 self._sel_end = max(0, self._sel_end - overflow)
 
     def _on_configure(self, _event=None):
+        # 폭 변경 시 줄바꿈 높이 캐시 무효
+        self._cached_max_w = None
         if self._follow_end:
             self._scroll_to_end()
-        self._redraw()
+        else:
+            self._scroll_y = min(self._scroll_y, self._max_scroll_y())
+        self._schedule_redraw()
 
     def _on_mousewheel(self, event):
         try:
@@ -247,15 +389,16 @@ class StatusLogCanvas:
         """Scrollbar 콜백: moveto / scroll."""
         if not args:
             return
-        visible = self._visible_line_count()
-        max_scroll = max(0, len(self._lines) - visible)
+        max_scroll = self._max_scroll_y()
+        total = max(1, len(self._lines))
         if args[0] == "moveto":
             try:
                 frac = float(args[1])
             except (TypeError, ValueError):
                 return
             self._follow_end = False
-            self._scroll_y = max(0, min(max_scroll, int(frac * max(1, len(self._lines)))))
+            # Tk: moveto(frac) = 문서에서 보이는 영역의 시작 비율
+            self._scroll_y = max(0, min(max_scroll, int(frac * total)))
             if self._scroll_y >= max_scroll:
                 self._follow_end = True
             self._redraw()
@@ -265,26 +408,32 @@ class StatusLogCanvas:
             except (TypeError, ValueError):
                 return
             unit = args[2] if len(args) > 2 else "units"
+            visible = self._visible_line_count()
             step = n * (visible if unit == "pages" else 3)
             self._scroll_lines(step)
 
     def _update_scrollbar(self):
         total = max(1, len(self._lines))
-        visible = self._visible_line_count()
-        if total <= visible:
+        max_scroll = self._max_scroll_y()
+        if max_scroll <= 0:
             # 스크롤 대상이 없어도 트랙이 사라져 보이지 않지 않도록 아주 짧게 남깁니다.
             self._scrollbar.set(0.0, 0.99)
             return
+        # 썸 크기 ≈ (화면에 들어오는 줄 수) / 전체 줄
+        visible_approx = max(1, total - max_scroll)
         first = self._scroll_y / total
-        last = min(1.0, (self._scroll_y + visible) / total)
+        last = min(1.0, (self._scroll_y + visible_approx) / total)
+        # 최하단에서는 last 가 1.0 이 되도록 보정 (썸이 바닥에 붙게)
+        if self._scroll_y >= max_scroll:
+            last = 1.0
+            first = max(0.0, 1.0 - (visible_approx / total))
         self._scrollbar.set(first, last)
 
     def _scroll_lines(self, delta):
         if not delta:
             return
         self._follow_end = False
-        visible = self._visible_line_count()
-        max_scroll = max(0, len(self._lines) - visible)
+        max_scroll = self._max_scroll_y()
         self._scroll_y = max(0, min(max_scroll, self._scroll_y + int(delta)))
         if self._scroll_y >= max_scroll:
             self._follow_end = True
@@ -419,11 +568,11 @@ class StatusLogCanvas:
                             tags=("selbg",),
                         )
                         c.tag_lower(rid, tid)
-                    y = y1 + 3
+                    y = y1 + LINE_GAP
                 else:
-                    y += LINE_HEIGHT
+                    y += LINE_HEIGHT + LINE_GAP
             except Exception:
-                y += LINE_HEIGHT
+                y += LINE_HEIGHT + LINE_GAP
             self._line_layout.append((i, y0, y1))
             if y > h + LINE_HEIGHT:
                 break

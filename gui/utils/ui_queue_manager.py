@@ -67,20 +67,39 @@ def process_ui_queue(app):
                     case_index, display_text, text_color, bg_color = args
 
                     if case_index in app.case_status and app.case_status[case_index].winfo_exists():
-                        app.case_status[case_index].configure(text=display_text, text_color=text_color)
+                        lbl = app.case_status[case_index]
+                        # tk.Label 은 fg, CTkLabel 은 text_color
+                        try:
+                            lbl.configure(text=display_text, fg=text_color)
+                        except (tk.TclError, AttributeError):
+                            try:
+                                lbl.configure(text=display_text, text_color=text_color)
+                            except Exception:
+                                pass
 
-                    if case_index in app.case_frames and app.case_frames[case_index].winfo_exists():
-                        if bg_color:
-                            app.case_frames[case_index].configure(fg_color=bg_color)
-                            for widget in app.case_frames[case_index].winfo_children():
-                                if widget.winfo_exists():
-                                    try:
-                                        widget.configure(fg_color=bg_color)
-                                    except (tk.TclError, AttributeError):
-                                        try:
-                                            widget.config(bg=bg_color)
-                                        except Exception:
-                                            pass
+                    if (
+                        bg_color
+                        and case_index in app.case_frames
+                        and app.case_frames[case_index].winfo_exists()
+                    ):
+                        from gui.panels.case_row import apply_row_background
+
+                        apply_row_background(
+                            app.case_frames[case_index], bg_color, text_color="#000000"
+                        )
+                        # 행 배경을 칠한 뒤에도 상태 라벨 글씨색 유지 (완료=파란)
+                        if (
+                            case_index in app.case_status
+                            and app.case_status[case_index].winfo_exists()
+                        ):
+                            lbl = app.case_status[case_index]
+                            try:
+                                lbl.configure(fg=text_color, bg=bg_color)
+                            except (tk.TclError, AttributeError):
+                                try:
+                                    lbl.configure(text_color=text_color)
+                                except Exception:
+                                    pass
 
                 elif task == "progress":
                     percentage, text_status = args
@@ -112,6 +131,11 @@ def process_ui_queue(app):
 def update_case_status(app, case_index, status, color, emoji=""):
     """사건 상태 업데이트 (Thread-Safe). 파일 저장은 별도 스레드, UI 갱신은 큐로 메인 스레드에서 처리."""
     from gui.utils.glyphs import sanitize
+    from gui.panels.case_row import STATUS_COMPLETE_FG, _is_complete_status
+
+    # 완료 계열 글씨는 항상 파란색 (호출부가 green/회색이어도 UI·history 통일)
+    if _is_complete_status(status):
+        color = STATUS_COMPLETE_FG
 
     if 0 <= case_index < len(app.case_list):
         case_number = app.case_list[case_index].get("사건번호", "")
@@ -131,14 +155,7 @@ def update_case_status(app, case_index, status, color, emoji=""):
     bg_color = None
     if status.startswith("처리중"):
         bg_color = "#FFF3CD"
-    elif (
-        status.startswith("완료")
-        or status.startswith("기간조회 완료")
-        or status.startswith("재수집 완료")
-        or status.startswith("중복 정리 완료")
-        or status.startswith("입력완료")
-        or status.startswith("대조")
-    ):
+    elif _is_complete_status(status):
         bg_color = "#D4EDDA"
     elif status.startswith("실패") or status.startswith("오류"):
         bg_color = "#F8D7DA"

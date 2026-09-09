@@ -87,7 +87,11 @@ def create_root_and_services(app):
     attach_tk_callback_guard(app.root)
 
     app.google_sheets_service = GoogleSheetsService()
-    app.puppeteer_service = PuppeteerService()
+    # GUI 로그창에도 워커 진행이 보이도록 콜백 연결
+    app.puppeteer_service = PuppeteerService(
+        log_callback=app.log_message,
+        processing_flag=lambda: bool(getattr(app, "processing", False)),
+    )
     app.history_manager = update_history_service.HistoryManager()
     app.log_history_manager = HistoryManager(app)
     max_profiles = max(

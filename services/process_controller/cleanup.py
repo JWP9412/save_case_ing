@@ -89,10 +89,14 @@ class CleanupMixin:
         except Exception as e:
             self.app.log_message(f"⚠️ Chrome 프로세스 정리 오류: {e}")
             try:
+                # 주니어: CREATE_NO_WINDOW 없으면 taskkill 때문에 CMD 창이 번쩍입니다.
+                # Chrome 을 보이게 하는 설정이 아닙니다. 콘솔 창만 숨깁니다.
+                kill_kwargs = dict(capture_output=True, timeout=3)
+                if os.name == "nt":
+                    kill_kwargs["creationflags"] = sp.CREATE_NO_WINDOW
                 sp.run(
                     ["taskkill", "/F", "/IM", "chrome.exe"],
-                    capture_output=True,
-                    timeout=3,
+                    **kill_kwargs,
                 )
                 self.app.log_message("⚠️ taskkill로 Chrome 강제 종료 시도")
             except Exception:

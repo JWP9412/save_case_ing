@@ -385,6 +385,25 @@ class CaptchaOcrMixin:
         )
         if not is_period and not is_compare:
             self.app.ui_queue.put(("function", (self.app.show_info, completion_msg), {}))
+        # 완료 알림 다음에 종국 숨김 확인 (메인 스레드 · 배치당 1회)
+        # 주니어: 워커에서 askyesno 하면 Tk가 깨지므로 ui_queue 로만 호출
+        try:
+            self.app.ui_queue.put(
+                ("function", (self.app.prompt_hide_finalized_cases,), {})
+            )
+        except Exception:
+            try:
+                from services import finalized_case as finalized_case_module
+
+                self.app.ui_queue.put(
+                    (
+                        "function",
+                        (finalized_case_module.prompt_hide_finalized_cases, self.app),
+                        {},
+                    )
+                )
+            except Exception:
+                pass
         self.app.processing = False
         if hasattr(self.app, "is_dedup_mode"):
             self.app.is_dedup_mode = False

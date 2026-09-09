@@ -116,8 +116,10 @@ class GeneralInfoDialog(tk.Toplevel):
 
         self.content.bind("<Configure>", self._on_content_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
-        # 마우스 휠 스크롤
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # 마우스 휠: add="+" 로 다른 창 바인딩을 지우지 않음
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        self.content.bind("<MouseWheel>", self._on_mousewheel, add="+")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -129,16 +131,27 @@ class GeneralInfoDialog(tk.Toplevel):
 
     def _on_mousewheel(self, event):
         try:
-            if self.winfo_exists():
-                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            if not self.winfo_exists():
+                return
+            # 이 창 위에 있을 때만 스크롤 (전역 바인딩이어도 다른 창 방해 안 함)
+            w = event.widget
+            under = False
+            while w is not None:
+                if w is self or w is self.canvas or w is self.content:
+                    under = True
+                    break
+                try:
+                    w = w.master
+                except Exception:
+                    break
+            if not under:
+                return
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         except Exception:
             pass
 
     def _on_close(self):
-        try:
-            self.canvas.unbind_all("<MouseWheel>")
-        except Exception:
-            pass
+        # unbind_all 금지: 다른 창(수동 캡차 등) 휠까지 사라짐
         # 새로고침 대기 등록 해제
         if self.app is not None:
             refresh = getattr(self.app, "_general_info_dialog_refresh", None)

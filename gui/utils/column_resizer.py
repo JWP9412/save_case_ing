@@ -63,6 +63,24 @@ def on_resize_release(app, event):
         apply_column_width(app, display_idx)
 
 
+def _resize_text_in_cell(cell, cell_w):
+    """칸 안 tk.Text 가 place 고정폭이면 열 리사이즈 후에도 잘립니다 → 너비 동기화."""
+    try:
+        for child in cell.winfo_children():
+            if isinstance(child, tk.Text):
+                try:
+                    # relwidth 가 있으면 부모에 맡기고, 없으면 고정폭 갱신
+                    info = child.place_info()
+                    if info.get("relwidth"):
+                        child.place_configure(relwidth=1.0, width=-8)
+                    else:
+                        child.place_configure(width=max(20, int(cell_w) - 8))
+                except tk.TclError:
+                    pass
+    except tk.TclError:
+        pass
+
+
 def apply_column_width(app, display_idx):
     """리사이즈 후 해당 표시 열 너비만 적용 (display_idx = 표시 순서상 인덱스). 비고 열은 캔버스 여분 반영."""
     if not hasattr(app, "col_order") or display_idx >= len(app.col_order):
@@ -80,14 +98,18 @@ def apply_column_width(app, display_idx):
     if hasattr(app, "case_cell_frames"):
         for row_cells in app.case_cell_frames.values():
             if display_idx < len(row_cells):
-                row_cells[display_idx].config(width=w)
+                cell = row_cells[display_idx]
+                cell.config(width=w)
+                _resize_text_in_cell(cell, w)
     w_last = app.col_widths[last_internal] + extra_last
     if last_disp_idx != display_idx and hasattr(app, "header_cell_frames") and last_disp_idx < len(app.header_cell_frames):
         app.header_cell_frames[last_disp_idx].configure(width=w_last)
     if hasattr(app, "case_cell_frames"):
         for row_cells in app.case_cell_frames.values():
             if last_disp_idx < len(row_cells):
-                row_cells[last_disp_idx].config(width=w_last)
+                cell = row_cells[last_disp_idx]
+                cell.config(width=w_last)
+                _resize_text_in_cell(cell, w_last)
     if hasattr(app, "header_container") and app.header_container.winfo_exists():
         app.header_container.configure(width=effective_total)
     if hasattr(app, "header_canvas") and app.header_canvas.winfo_exists():

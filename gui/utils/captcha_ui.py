@@ -9,6 +9,8 @@ app_controller에서 해당 메서드 호출 시 이 모듈에 위임합니다.
 import time
 import os
 
+import config
+
 
 def get_captcha_input(app, case_index):
     """캡차 입력값 가져오기"""
@@ -255,11 +257,15 @@ def update_captcha_image(app, case_index, image_path):
             image_label = app.case_images[case_index]
 
             if image_path == "__CLICK__":
+                try:
+                    fs = max(8, min(16, int(getattr(config, "CASE_LIST_FONT_SIZE", 9) or 9)))
+                except (TypeError, ValueError):
+                    fs = 9
                 image_label.config(
                     image="",
                     text="최근검색 (자동클릭)",
                     fg="blue",
-                    font=("맑은 고딕", 10, "bold"),
+                    font=("맑은 고딕", fs, "bold"),
                 )
                 if case_index in app.case_image_photos:
                     del app.case_image_photos[case_index]
@@ -307,7 +313,12 @@ def update_captcha_image(app, case_index, image_path):
 
             else:
                 app.log_message(f"⚠️ 캡차 이미지 없음: {image_path}")
-                image_label.config(image="", text="이미지없음", fg="red")
+                image_label.config(
+                    image="",
+                    text="이미지없음",
+                    fg="red",
+                    font=("맑은 고딕", max(8, min(16, int(getattr(config, "CASE_LIST_FONT_SIZE", 9) or 9)))),
+                )
                 if case_index in app.case_image_photos:
                     del app.case_image_photos[case_index]
 
