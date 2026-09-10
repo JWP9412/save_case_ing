@@ -10,8 +10,8 @@
 주니어 개발자 참고:
 - 추가 패키지 없이 urllib.request 만 사용합니다.
 - GitHub은 User-Agent가 비어 있으면 거절할 수 있어 헤더를 넣습니다.
-- Releases가 없으면(/releases/latest 404) tags API로 폴백합니다.
-  (이 저장소는 태그 위주로 버전을 올리는 경우가 많습니다.)
+- Releases/latest 와 tags 목록을 둘 다 보고, 버전 번호가 더 높은 쪽을 씁니다.
+  (태그만 푸시하고 Release를 안 만든 경우에도 맞는 최신을 보여 줍니다.)
 """
 
 import json
@@ -116,13 +116,10 @@ def fetch_latest_from_tags(timeout=12):
     }
 
 
-def fetch_latest_release(timeout=12):
+def _fetch_releases_latest_only(timeout=12):
     """
-    GitHub releases/latest 를 우선 조회하고,
-    릴리스가 없으면(404 등) tags API로 폴백합니다.
-
-    반환: {"tag_name": "v4.12.1", "html_url": "...", "name": "...", "source": "..."}
-    실패 시 예외를 그대로 올립니다.
+    /releases/latest 만 조회합니다. 없거나 실패하면 None.
+    (폴백은 호출측에서 tags와 비교합니다.)
     """
     url = getattr(
         config,
@@ -132,10 +129,10 @@ def fetch_latest_release(timeout=12):
     try:
         data = _github_get_json(url, timeout=timeout)
         if not isinstance(data, dict):
-            raise ValueError("예상과 다른 GitHub 응답 형식")
+            return None
         tag = (data.get("tag_name") or "").strip()
         if not tag:
-            raise ValueError("tag_name 없음 (릴리스가 없을 수 있음)")
+            return None
         return {
             "tag_name": tag,
             "html_url": (data.get("html_url") or "").strip() or _tag_html_url(tag),
@@ -143,13 +140,40 @@ def fetch_latest_release(timeout=12):
             "source": "releases",
         }
     except urllib.error.HTTPError as e:
-        # Releases 미게시 시 흔한 응답 → 태그로 폴백
         if e.code in (404, 403):
-            return fetch_latest_from_tags(timeout=timeout)
+            return None
         raise
-    except ValueError:
-        # tag_name 없음 등 → 태그로 폴백
-        return fetch_latest_from_tags(timeout=timeout)
+    except Exception:
+        return None
+
+
+def fetch_latest_release(timeout=12):
+    """
+    Release 최신과 Tags 최신 중 버전 번호가 더 높은 쪽을 반환합니다.
+
+    주니어: 예전에 Releases만 보면 태그만 올린 v5.3.x가 무시되고
+    오래된 Release(v5.1.1)가 '최신'으로 나오던 문제를 막습니다.
+    """
+    from_release = _fetch_releases_latest_only(timeout=timeout)
+    from_tags = None
+    try:
+        from_tags = fetch_latest_from_tags(timeout=timeout)
+    except Exception:
+        from_tags = None
+
+    if from_release and from_tags:
+        if compare_versions(from_release["tag_name"], from_tags["tag_name"]) >= 0:
+            chosen = dict(from_release)
+            chosen["source"] = "releases+tags"
+            return chosen
+        chosen = dict(from_tags)
+        chosen["source"] = "tags+releases"
+        return chosen
+    if from_tags:
+        return from_tags
+    if from_release:
+        return from_release
+    raise ValueError("GitHub에서 최신 버전을 찾지 못했습니다 (releases/tags)")
 
 
 def check_for_update(local_version=None):

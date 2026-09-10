@@ -9,7 +9,8 @@
 | 3 | `00.README/README_vX.Y.Z.md` 신규 작성 (이전 버전 복사 후 버전·특징·구조·링크 수정) |
 | 4 | `00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_vX.Y.Z.md` 신규 작성 (이전 버전 복사 후 구조 반영) |
 | 5 | 루트 [README.md](../README.md) 버전·현재 버전 특징·프로젝트 구조·개발 히스토리·상세 변경 이력 링크 갱신 |
-| 6 | 커밋 후 GitHub 푸시 (필요 시 태그 `vX.Y.Z`) |
+| 6 | 커밋 후 GitHub 푸시 + 태그 `vX.Y.Z` |
+| 7 | **GitHub Release 게시**: `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file 00.CHANGELOG/CHANGELOG_vX.Y.Z.md` (태그만 올리면 「버전 업데이트 확인」이 옛 Release를 최신으로 볼 수 있음) |
 
 ## 문서 형식 참고
 
