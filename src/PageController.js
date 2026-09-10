@@ -907,7 +907,18 @@ class PageController {
 
       const data = await this.page.evaluate(() => {
         function clean(t) {
+          // 줄바꿈·연속 공백을 한 칸으로 (마스킹 문자 0/O/○ 는 그대로 유지)
           return (t || '').replace(/\s+/g, ' ').trim();
+        }
+
+        /** 칸 텍스트: innerText 우선 (여러 줄·br 반영), 없으면 textContent */
+        function cellText(el) {
+          if (!el) return '';
+          const raw =
+            typeof el.innerText === 'string' && el.innerText.length
+              ? el.innerText
+              : el.textContent || '';
+          return clean(raw);
         }
 
         // 스코프: 일반내용 탭 body 우선, 없으면 상세 영역 전체
@@ -932,10 +943,10 @@ class PageController {
             // th/td 짝: 라벨 칸은 보통 짧고, 값 칸이 옆에 붙음
             let i = 0;
             while (i < cells.length) {
-              const label = clean(cells[i].textContent);
+              const label = cellText(cells[i]);
               // 라벨처럼 보이는 칸만 (너무 긴 문장은 값으로 취급)
               if (label && label.length > 0 && label.length < 40 && i + 1 < cells.length) {
-                const value = clean(cells[i + 1].textContent);
+                const value = cellText(cells[i + 1]);
                 // 이미 같은 키가 있으면 덮지 않음 (첫 값 우선)
                 if (!(label in result)) {
                   result[label] = value;
@@ -951,6 +962,10 @@ class PageController {
 
         /**
          * 헤더+데이터 행 표 파싱
+         *
+         * 주니어: 위 칸이 rowspan으로 아래를 덮으면 아래 <tr>의 <td> 개수가 줄어듭니다.
+         * 그걸 무시하면 '이름' 열에 다른 값이 들어갑니다.
+         * rowspan/colspan 잔여 맵으로 논리 그리드를 맞춘 뒤 헤더와 매핑합니다.
          */
         function parseDataTable(table) {
           if (!table) return [];
@@ -965,16 +980,62 @@ class PageController {
               break;
             }
           }
-          const headers = Array.from(rows[headerRowIdx].querySelectorAll('th, td')).map((c) =>
-            clean(c.textContent)
-          );
+
+          // colIndex → 앞으로 몇 행 더 이 칸을 유지할지 (이미 사용한 현재 행은 제외한 잔여)
+          const spanRemain = {};
+          const spanText = {}; // rowspan으로 내려오는 칸의 실제 텍스트
+
+          function buildLogicalRow(tr) {
+            const logical = [];
+            const physical = Array.from(tr.querySelectorAll('td, th'));
+            let p = 0;
+            let col = 0;
+            // 물리 칸이 남거나, 아직 소비할 rowspan 슬롯이 있으면 계속
+            while (
+              p < physical.length ||
+              Object.keys(spanRemain).some((k) => spanRemain[k] > 0 && Number(k) >= col)
+            ) {
+              if (spanRemain[col] > 0) {
+                // 위 행 병합 칸 → 같은 텍스트를 논리 열에 채워 헤더 매핑이 밀리지 않게 함
+                logical[col] = spanText[col] || '';
+                spanRemain[col] -= 1;
+                if (spanRemain[col] <= 0) {
+                  delete spanRemain[col];
+                  delete spanText[col];
+                }
+                col += 1;
+                continue;
+              }
+              if (p >= physical.length) break;
+              const cell = physical[p++];
+              const rs = parseInt(cell.getAttribute('rowspan') || '1', 10) || 1;
+              const cs = parseInt(cell.getAttribute('colspan') || '1', 10) || 1;
+              const text = cellText(cell);
+              for (let c = 0; c < cs; c++) {
+                const at = col;
+                logical[at] = c === 0 ? text : '';
+                if (rs > 1 && c === 0) {
+                  spanRemain[at] = rs - 1;
+                  spanText[at] = text;
+                }
+                col += 1;
+              }
+            }
+            return logical;
+          }
+
+          const headerCells = buildLogicalRow(rows[headerRowIdx]);
+          // 헤더 행의 rowspan 잔여를 데이터 행에 넘기기 위해 spanRemain 유지
+          const headers = headerCells.map((h, i) => h || `col${i}`);
+          const colCount = Math.max(headers.length, 1);
+
           const data = [];
           for (let r = headerRowIdx + 1; r < rows.length; r++) {
-            const cells = Array.from(rows[r].querySelectorAll('td, th')).map((c) =>
-              clean(c.textContent)
-            );
-            if (cells.length === 0) continue;
-            const joined = cells.join('');
+            const cells = buildLogicalRow(rows[r]);
+            // 헤더 열 수에 맞춰 패딩/절단
+            while (cells.length < colCount) cells.push('');
+            const trimmed = cells.slice(0, colCount);
+            const joined = trimmed.join('');
             // "지정된 기일내용이 없습니다" 같은 안내 행은 스킵
             if (joined.includes('없습니다') || joined.includes('조회된 내용이 없')) {
               continue;
@@ -983,7 +1044,7 @@ class PageController {
             if (!joined.trim()) continue;
             const obj = {};
             headers.forEach((h, i) => {
-              obj[h || `col${i}`] = cells[i] || '';
+              obj[h || `col${i}`] = trimmed[i] || '';
             });
             data.push(obj);
           }

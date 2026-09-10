@@ -4,6 +4,8 @@
 ========================
 사건 추가, 수정, 삭제, 숨기기, 숨김 해제 기능을 탭으로 제공합니다.
 """
+import csv
+import io
 import json
 import os
 import tkinter as tk
@@ -311,6 +313,62 @@ COURT_NAMES = [
     "법원행정처",
 ]
 
+# 일괄 추가 열 순서 (엑셀 붙여넣기·타이핑 공통)
+BULK_ADD_KEYS = ["법원", "사건번호", "피고", "사건명"]
+
+
+def _split_bulk_line_cells(line):
+    """
+    한 줄을 4칸으로 나눕니다.
+
+    주니어: 엑셀 복사는 탭(\\t), 직접 타이핑은 보통 쉼표(,).
+    탭이 있으면 탭 우선, 없으면 csv 모듈로 쉼표(따옴표 포함) 파싱.
+    """
+    raw = (line or "").strip()
+    if not raw:
+        return []
+    if "\t" in raw:
+        cells = [c.strip() for c in raw.split("\t")]
+    else:
+        try:
+            cells = next(csv.reader(io.StringIO(raw)))
+            cells = [str(c).strip() for c in cells]
+        except Exception:
+            cells = [c.strip() for c in raw.split(",")]
+    # 칸이 4개보다 많으면 뒤는 사건명에 합침
+    if len(cells) > 4:
+        cells = cells[:3] + [",".join(cells[3:])]
+    while len(cells) < 4:
+        cells.append("")
+    return cells[:4]
+
+
+def parse_bulk_case_text(text):
+    """
+    붙여넣기/타이핑 텍스트 → (행번호, row_dict) 리스트.
+
+    행번호는 입력칸 기준 1부터(빈 줄도 센다). 헤더(첫 칸이 '법원')는 건너뜀.
+    빈 줄은 결과에 넣지 않음.
+    """
+    rows = []
+    if text is None:
+        return rows
+    lines = str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    header_skipped = False
+    for i, line in enumerate(lines, start=1):
+        if not (line or "").strip():
+            continue
+        cells = _split_bulk_line_cells(line)
+        if not cells:
+            continue
+        # 첫 데이터 줄이 헤더면 스킵 (엑셀에서 제목까지 복사한 경우)
+        if not header_skipped and not rows and cells[0] == "법원":
+            header_skipped = True
+            continue
+        row_dict = {BULK_ADD_KEYS[j]: cells[j] for j in range(4)}
+        rows.append((i, row_dict))
+    return rows
+
 
 class CourtAutocomplete(ctk.CTkFrame):
     """입력 시 법원명 목록을 필터링해 보여주는 자동완성 필드 (구글 시트 드롭다운처럼 동작). 목록은 Toplevel 오버레이로 표시해 폼 간격이 벌어지지 않음."""
@@ -467,6 +525,193 @@ class CourtAutocomplete(ctk.CTkFrame):
         self._hide_list()
 
 
+class TkCourtAutocomplete(tk.Frame):
+    """
+    일괄 추가 격자용 법원 자동완성 (tk 전용).
+
+    주니어: 기존 CourtAutocomplete(CTk)와 같은 UX이지만,
+    격자 칸은 tk.Frame이라 CTk를 넣으면 Windows에서 깨질 수 있어
+    tk.Entry + ▼ 버튼 + Toplevel 목록으로 구현합니다.
+    Entry와 비슷하게 get/delete/insert/focus_set/bind 를 지원합니다.
+    """
+
+    def __init__(
+        self,
+        parent,
+        bg="#1A1A1A",
+        fg="#FFFFFF",
+        accent="#3498DB",
+        **kwargs,
+    ):
+        super().__init__(parent, bg=bg, highlightthickness=0, **kwargs)
+        self._bg = bg
+        self._fg = fg
+        self._accent = accent
+        self._popup = None
+        self._listbox = None
+        self._hide_job = None
+
+        self.entry = tk.Entry(
+            self,
+            font=("맑은 고딕", 10),
+            bg=bg,
+            fg=fg,
+            insertbackground=fg,
+            relief=tk.FLAT,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(2, 0), pady=2)
+        self._btn = tk.Button(
+            self,
+            text="▼",
+            font=("맑은 고딕", 8),
+            bg=bg,
+            fg=fg,
+            activebackground=accent,
+            activeforeground="white",
+            relief=tk.FLAT,
+            bd=0,
+            width=2,
+            cursor="hand2",
+            command=self._show_list,
+        )
+        self._btn.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
+        self.entry.bind("<KeyRelease>", self._on_key)
+        self.entry.bind("<FocusIn>", self._on_focus_in)
+        self.entry.bind("<FocusOut>", self._on_entry_focus_out)
+
+    def get(self):
+        return (self.entry.get() or "").strip()
+
+    def delete(self, first, last=None):
+        self.entry.delete(first, last if last is not None else first)
+
+    def insert(self, index, string):
+        self.entry.insert(index, string)
+
+    def focus_set(self):
+        self.entry.focus_set()
+
+    def bind(self, sequence=None, func=None, add=None):
+        """이벤트는 내부 Entry에 연결합니다 (격자 KeyRelease/Paste 등)."""
+        return self.entry.bind(sequence, func, add)
+
+    def _ensure_popup(self):
+        if self._popup is not None:
+            try:
+                self._popup.winfo_exists()
+            except tk.TclError:
+                self._popup = None
+        if self._popup is None:
+            toplevel = self.winfo_toplevel()
+            self._popup = tk.Toplevel(toplevel)
+            self._popup.overrideredirect(True)
+            self._popup.transient(toplevel)
+            self._popup.configure(bg=self._bg)
+            self._listbox = tk.Listbox(
+                self._popup,
+                height=8,
+                font=("맑은 고딕", 10),
+                selectmode=tk.SINGLE,
+                activestyle="none",
+                bg=self._bg,
+                fg=self._fg,
+                selectbackground=self._accent,
+                selectforeground="white",
+                highlightthickness=0,
+                relief=tk.FLAT,
+            )
+            self._listbox.pack(fill=tk.BOTH, expand=True)
+            self._listbox.bind("<<ListboxSelect>>", self._on_select)
+            self._listbox.bind("<FocusOut>", self._on_list_focus_out)
+
+    def _fill_listbox(self):
+        if self._listbox is None:
+            return
+        self._listbox.delete(0, tk.END)
+        q = (self.entry.get() or "").strip()
+        if not q:
+            for name in COURT_NAMES[:50]:
+                self._listbox.insert(tk.END, name)
+        else:
+            matched = [c for c in COURT_NAMES if q in c]
+            for name in matched[:20]:
+                self._listbox.insert(tk.END, name)
+
+    def _show_list(self):
+        if self._hide_job:
+            try:
+                self.after_cancel(self._hide_job)
+            except Exception:
+                pass
+            self._hide_job = None
+        self._ensure_popup()
+        self._fill_listbox()
+        if self._listbox.size() == 0:
+            self._hide_list()
+            return
+        self.entry.update_idletasks()
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height()
+        w = max(self.winfo_width(), 180)
+        h = min(220, max(120, self._listbox.size() * 20))
+        self._popup.geometry(f"{w}x{h}+{x}+{y}")
+        self._popup.deiconify()
+        self._popup.lift()
+
+    def _on_focus_in(self, event=None):
+        self._show_list()
+
+    def _on_key(self, event=None):
+        if self._hide_job:
+            try:
+                self.after_cancel(self._hide_job)
+            except Exception:
+                pass
+            self._hide_job = None
+        q = (self.entry.get() or "").strip()
+        if not q:
+            self._hide_list()
+            return
+        self._ensure_popup()
+        self._fill_listbox()
+        if self._listbox.size() > 0:
+            self.entry.update_idletasks()
+            x = self.entry.winfo_rootx()
+            y = self.entry.winfo_rooty() + self.entry.winfo_height()
+            w = max(self.winfo_width(), 180)
+            h = min(220, max(120, self._listbox.size() * 20))
+            self._popup.geometry(f"{w}x{h}+{x}+{y}")
+            self._popup.deiconify()
+            self._popup.lift()
+        else:
+            self._hide_list()
+
+    def _hide_list(self):
+        if self._popup is not None:
+            try:
+                self._popup.withdraw()
+            except tk.TclError:
+                pass
+
+    def _on_select(self, event=None):
+        if self._listbox is None:
+            return
+        sel = self._listbox.curselection()
+        if sel:
+            val = self._listbox.get(sel[0])
+            self.entry.delete(0, tk.END)
+            self.entry.insert(0, val)
+        self._hide_list()
+
+    def _on_entry_focus_out(self, event=None):
+        self._hide_job = self.after(150, self._hide_list)
+
+    def _on_list_focus_out(self, event=None):
+        self._hide_job = self.after(150, self._hide_list)
+
+
 def _case_display_text(case):
     """사건 한 줄 표시 문자열 (왼쪽 리스트용)."""
     cn = case.get("사건번호", "") or ""
@@ -515,6 +760,7 @@ class CaseListManageDialog(ctk.CTkToplevel):
 
     def _on_close(self):
         """다이얼로그 닫을 때 왼쪽 패널 너비·창 크기 저장 후 destroy."""
+        # 일괄 격자는 bind_all을 쓰지 않으므로 전역 unbind 불필요
         if getattr(self, "left_frm", None) is not None and self.left_frm.winfo_exists():
             try:
                 w = self.left_frm.winfo_width()
@@ -630,7 +876,7 @@ class CaseListManageDialog(ctk.CTkToplevel):
         self.unhide_listbox.bind("<<ListboxSelect>>", lambda e: self._update_button_states())
         paned.add(self.left_frm, minsize=180, width=left_width, stretch="never")
 
-        # 오른쪽: 탭뷰 + 변경 예정 사건 목록
+        # 오른쪽: 헤더 + 탭뷰 + 변경 예정 사건 목록
         right_frm = ctk.CTkFrame(paned, fg_color=bg_primary)
         ctk.CTkFrame(
             right_frm,
@@ -644,13 +890,25 @@ class CaseListManageDialog(ctk.CTkToplevel):
             width=2,
             corner_radius=0,
         ).pack(side=tk.RIGHT, fill=tk.Y)
-        self.tabview = ctk.CTkTabview(right_frm, width=420, height=240)
-        self.tabview.pack(fill=tk.X)
+        # 왼쪽 '사건 목록'과 맞추는 오른쪽 헤더
+        ctk.CTkLabel(
+            right_frm,
+            text="사건 편집",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w",
+        ).pack(fill=tk.X, padx=(8, 0), pady=(0, 4))
+        # anchor=nw: 탭 버튼과 내용 칸 사이 빈 간격을 줄입니다
+        self.tabview = ctk.CTkTabview(
+            right_frm, width=420, height=280, anchor="nw"
+        )
+        self.tabview.pack(fill=tk.BOTH, expand=False, padx=(4, 4))
 
         self.tabview.add("사건 추가")
+        self.tabview.add("한번에 여러 사건 추가하기")
         self.tabview.add("사건 수정")
 
         self._build_add_tab(self.tabview.tab("사건 추가"))
+        self._build_bulk_add_tab(self.tabview.tab("한번에 여러 사건 추가하기"))
         self._build_edit_tab(self.tabview.tab("사건 수정"))
 
         ctk.CTkFrame(
@@ -750,7 +1008,15 @@ class CaseListManageDialog(ctk.CTkToplevel):
         self._update_button_states()
 
     def _update_button_states(self):
-        """조건에 따라 7개 버튼 활성/비활성."""
+        """조건에 따라 버튼 활성/비활성.
+        주니어: 일괄 격자 초기화처럼 위젯이 아직 없으면 있는 것만 갱신하고 나머지는 건너뜁니다.
+        """
+        # 리스트박스조차 없으면 초기화 중 → 전체 스킵
+        if not hasattr(self, "case_listbox") or not hasattr(self, "unhide_listbox"):
+            return
+        if not hasattr(self, "pending_listbox"):
+            return
+
         case_sel = self.case_listbox.curselection()
         case_n = len(case_sel)
         unhide_sel = self.unhide_listbox.curselection()
@@ -759,21 +1025,49 @@ class CaseListManageDialog(ctk.CTkToplevel):
         pending_n = len(pending_sel)
         pending_has_items = self.pending_listbox.size() > 0
 
-        self.hide_btn.configure(state="normal" if case_n >= 1 else "disabled")
-        self.unhide_btn.configure(state="normal" if unhide_n >= 1 else "disabled")
-        self.delete_btn.configure(state="normal" if case_n >= 1 else "disabled")
-        self.cancel_pending_btn.configure(
-            state="normal" if pending_has_items and pending_n >= 1 else "disabled"
-        )
+        if getattr(self, "hide_btn", None) is not None:
+            self.hide_btn.configure(state="normal" if case_n >= 1 else "disabled")
+        if getattr(self, "unhide_btn", None) is not None:
+            self.unhide_btn.configure(state="normal" if unhide_n >= 1 else "disabled")
+        if getattr(self, "delete_btn", None) is not None:
+            self.delete_btn.configure(state="normal" if case_n >= 1 else "disabled")
+        if getattr(self, "cancel_pending_btn", None) is not None:
+            self.cancel_pending_btn.configure(
+                state="normal" if pending_has_items and pending_n >= 1 else "disabled"
+            )
 
         add_cn = ""
         if getattr(self, "add_entries", None) and "사건번호" in self.add_entries:
             e = self.add_entries["사건번호"]
             add_cn = (e.get() if hasattr(e, "get") else getattr(e, "get", lambda: "")()).strip()
-        self.add_btn.configure(state="normal" if add_cn else "disabled")
+        if getattr(self, "add_btn", None) is not None:
+            self.add_btn.configure(state="normal" if add_cn else "disabled")
 
-        self.load_edit_btn.configure(state="normal" if case_n == 1 else "disabled")
+        # 일괄 추가: 격자에 내용이 있으면 목록에 넣기·전체 지우기 활성
+        has_bulk = (
+            getattr(self, "_bulk_grid_rows", None) is not None
+            and self._bulk_grid_has_any_content()
+        )
+        bulk_btn = getattr(self, "bulk_add_btn", None)
+        if bulk_btn is not None and getattr(self, "_bulk_grid_rows", None) is not None:
+            bulk_btn.configure(state="normal" if has_bulk else "disabled")
+        clear_all_btn = getattr(self, "bulk_clear_all_btn", None)
+        if clear_all_btn is not None:
+            clear_all_btn.configure(state="normal" if has_bulk else "disabled")
+        clear_row_btn = getattr(self, "bulk_clear_row_btn", None)
+        if clear_row_btn is not None:
+            fr = getattr(self, "_bulk_focused_row", None)
+            row_has = False
+            rows = getattr(self, "_bulk_grid_rows", None) or []
+            if fr is not None and 0 <= fr < len(rows):
+                row_has = any((e.get() or "").strip() for e in rows[fr])
+            clear_row_btn.configure(state="normal" if row_has else "disabled")
 
+        if getattr(self, "load_edit_btn", None) is not None:
+            self.load_edit_btn.configure(state="normal" if case_n == 1 else "disabled")
+
+        if getattr(self, "edit_save_btn", None) is None:
+            return
         cn = getattr(self, "_editing_case_number", None) or ""
         if not cn:
             self.edit_save_btn.configure(state="disabled")
@@ -1140,6 +1434,409 @@ class CaseListManageDialog(ctk.CTkToplevel):
         if add_cn_ent is not None:
             add_cn_ent.bind("<KeyRelease>", lambda e: self._update_button_states())
 
+    def _build_bulk_add_tab(self, tab):
+        """
+        한번에 여러 사건 추가하기 탭 — 엑셀형 격자(헤더+칸).
+
+        주니어: 각 칸에 직접 타이핑하거나, 엑셀에서 복사 후 Ctrl+V 로 여러 칸에 붙입니다.
+        """
+        btn_row = ctk.CTkFrame(tab, fg_color="transparent")
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 4))
+        self.bulk_add_row_btn = ctk.CTkButton(
+            btn_row,
+            text="행 추가",
+            width=90,
+            height=32,
+            command=lambda: self._bulk_grid_add_rows(3),
+        )
+        self.bulk_add_row_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.bulk_clear_row_btn = ctk.CTkButton(
+            btn_row,
+            text="선택 행 지우기",
+            width=110,
+            height=32,
+            command=self._on_bulk_clear_selected_row,
+        )
+        self.bulk_clear_row_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.bulk_clear_all_btn = ctk.CTkButton(
+            btn_row,
+            text="전체 지우기",
+            width=100,
+            height=32,
+            command=self._on_bulk_clear_all,
+        )
+        self.bulk_clear_all_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.bulk_add_btn = ctk.CTkButton(
+            btn_row, text="목록에 넣기", width=140, height=32, command=self._on_bulk_add
+        )
+        self.bulk_add_btn.pack(side=tk.LEFT)
+        # 포커스가 있는 격자 행 인덱스 (선택 행 지우기용)
+        self._bulk_focused_row = None
+
+        ctk.CTkLabel(
+            tab,
+            text="한번에 여러 사건 추가하기",
+            font=ctk.CTkFont(weight="bold", size=14),
+            anchor="w",
+        ).pack(fill=tk.X, pady=(4, 2))
+        ctk.CTkLabel(
+            tab,
+            text="칸에 직접 입력하거나, 엑셀 4열을 복사한 뒤 격자에서 Ctrl+V 하세요.",
+            anchor="w",
+            text_color=("gray40", "gray70"),
+            font=ctk.CTkFont(size=12),
+        ).pack(fill=tk.X, pady=(0, 4))
+
+        # ----- 엑셀형 격자: 헤더 + 스크롤 본문 -----
+        # 주니어: CTk 안에 tk만 두고, tk.Frame 안에 CTkScrollbar를 넣지 않습니다.
+        # (Windows에서 tk 부모 + CTk 자식 조합은 Tcl 오류로 앱이 죽을 수 있음)
+        bg = self.app.get_theme_color("bg_primary")
+        text_main = self.app.get_theme_color("text_main")
+        accent = self.app.get_theme_color("accent")
+        border = self.app.get_theme_color("border")
+        header_bg = accent
+
+        grid_outer = ctk.CTkFrame(tab, fg_color=border, corner_radius=4)
+        grid_outer.pack(fill=tk.BOTH, expand=True)
+
+        # 열 너비 비율
+        col_weights = (3, 3, 2, 3)
+        self._bulk_col_weights = col_weights
+
+        header = tk.Frame(grid_outer, bg=header_bg)
+        header.pack(fill=tk.X, padx=1, pady=(1, 0))
+        for i, key in enumerate(BULK_ADD_KEYS):
+            lbl = tk.Label(
+                header,
+                text=key,
+                bg=header_bg,
+                fg="white",
+                font=("맑은 고딕", 10, "bold"),
+                relief=tk.FLAT,
+                padx=4,
+                pady=4,
+            )
+            lbl.grid(row=0, column=i, sticky="nsew", padx=1, pady=0)
+            header.grid_columnconfigure(i, weight=col_weights[i], uniform="bulkcol")
+
+        # 스크롤 영역: CTkFrame + CTkScrollbar (부모가 CTk여야 안전)
+        body_wrap = ctk.CTkFrame(grid_outer, fg_color=border, corner_radius=0)
+        body_wrap.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        self._bulk_canvas = tk.Canvas(body_wrap, bg=bg, highlightthickness=0, height=140)
+        vscroll = ctk.CTkScrollbar(body_wrap, command=self._bulk_canvas.yview)
+        self._bulk_canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._bulk_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._bulk_grid_inner = tk.Frame(self._bulk_canvas, bg=border)
+        self._bulk_canvas_window = self._bulk_canvas.create_window(
+            (0, 0), window=self._bulk_grid_inner, anchor="nw"
+        )
+
+        def _on_inner_configure(_event=None):
+            self._bulk_canvas.configure(scrollregion=self._bulk_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self._bulk_canvas.itemconfigure(self._bulk_canvas_window, width=event.width)
+
+        self._bulk_grid_inner.bind("<Configure>", _on_inner_configure)
+        self._bulk_canvas.bind("<Configure>", _on_canvas_configure)
+
+        self._bulk_grid_rows = []  # 각 행: Entry/TkCourtAutocomplete 4개 리스트
+        self._bulk_cell_bg = bg
+        self._bulk_cell_fg = text_main
+        self._bulk_border = border
+        self._bulk_accent = accent
+
+        # 마우스 휠: 격자/캔버스에만 bind (bind_all 금지 — 다른 창 휠 가로채기 방지)
+        # 행 추가보다 먼저 핸들러를 등록해 각 Entry에도 붙일 수 있게 합니다.
+        def _on_mousewheel(event):
+            if getattr(event, "delta", 0):
+                self._bulk_canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        self._bulk_on_mousewheel = _on_mousewheel
+        self._bulk_canvas.bind("<MouseWheel>", _on_mousewheel)
+        self._bulk_grid_inner.bind("<MouseWheel>", _on_mousewheel)
+        self._bulk_grid_add_rows(8)
+
+    def _bulk_grid_add_rows(self, count=1):
+        """격자 맨 아래에 빈 행을 count개 추가합니다."""
+        if not getattr(self, "_bulk_grid_inner", None):
+            return
+        start = len(self._bulk_grid_rows)
+        wheel_handler = getattr(self, "_bulk_on_mousewheel", None)
+        for r in range(start, start + count):
+            row_entries = []
+            for c in range(4):
+                cell = tk.Frame(self._bulk_grid_inner, bg=self._bulk_border)
+                cell.grid(row=r, column=c, sticky="nsew", padx=1, pady=1)
+                # 0열(법원): 기존 사건추가와 같은 드롭다운 자동완성
+                if c == 0:
+                    ent = TkCourtAutocomplete(
+                        cell,
+                        bg=self._bulk_cell_bg,
+                        fg=self._bulk_cell_fg,
+                        accent=getattr(self, "_bulk_accent", "#3498DB"),
+                    )
+                else:
+                    ent = tk.Entry(
+                        cell,
+                        font=("맑은 고딕", 10),
+                        bg=self._bulk_cell_bg,
+                        fg=self._bulk_cell_fg,
+                        insertbackground=self._bulk_cell_fg,
+                        relief=tk.FLAT,
+                        highlightthickness=0,
+                        bd=0,
+                    )
+                ent.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+                # add="+": 법원 드롭다운의 FocusIn/KeyRelease 를 덮어쓰지 않음
+                ent.bind("<KeyRelease>", lambda e: self._update_button_states(), add="+")
+                # 포커스된 행을 기억 (선택 행 지우기)
+                ent.bind(
+                    "<FocusIn>",
+                    lambda e, rr=r: self._on_bulk_cell_focus(rr),
+                    add="+",
+                )
+                # Ctrl+V: 엑셀 여러 칸 붙여넣기
+                ent.bind("<<Paste>>", self._on_bulk_grid_paste)
+                ent.bind("<Control-v>", self._on_bulk_grid_paste)
+                ent.bind("<Control-V>", self._on_bulk_grid_paste)
+                # 칸 위에서도 휠 스크롤 (bind_all 없이)
+                if wheel_handler is not None:
+                    ent.bind("<MouseWheel>", wheel_handler)
+                    cell.bind("<MouseWheel>", wheel_handler)
+                # Tab: 다음 칸 / Shift+Tab: 이전 칸
+                ent.bind(
+                    "<Tab>",
+                    lambda e, rr=r, cc=c: self._bulk_grid_focus_next(rr, cc, 1),
+                )
+                ent.bind(
+                    "<Shift-Tab>",
+                    lambda e, rr=r, cc=c: self._bulk_grid_focus_next(rr, cc, -1),
+                )
+                row_entries.append(ent)
+            self._bulk_grid_rows.append(row_entries)
+            for c in range(4):
+                self._bulk_grid_inner.grid_columnconfigure(
+                    c, weight=self._bulk_col_weights[c], uniform="bulkcol"
+                )
+        # 초기화 중(pending_listbox 미생성)에는 버튼 갱신 스킵
+        if hasattr(self, "pending_listbox") and getattr(self, "bulk_add_btn", None):
+            self._update_button_states()
+
+    def _bulk_grid_focus_next(self, row, col, delta):
+        """칸 포커스를 좌우로 옮깁니다. 행 끝이면 다음/이전 행으로."""
+        idx = row * 4 + col + delta
+        total = len(self._bulk_grid_rows) * 4
+        if idx < 0 or idx >= total:
+            return "break"
+        nr, nc = divmod(idx, 4)
+        try:
+            self._bulk_grid_rows[nr][nc].focus_set()
+        except Exception:
+            pass
+        return "break"
+
+    def _bulk_grid_has_any_content(self):
+        for row in getattr(self, "_bulk_grid_rows", []) or []:
+            for ent in row:
+                if (ent.get() or "").strip():
+                    return True
+        return False
+
+    def _bulk_grid_read_rows(self):
+        """
+        격자에서 비어 있지 않은 행만 (표시용 행번호, row_dict) 로 읽습니다.
+
+        행번호는 격자 1행부터 (헤더 아래 첫 데이터 = 1).
+        네 칸이 모두 빈 행은 건너뜁니다.
+        """
+        result = []
+        for i, entries in enumerate(getattr(self, "_bulk_grid_rows", []) or [], start=1):
+            vals = [(e.get() or "").strip() for e in entries]
+            if not any(vals):
+                continue
+            row_dict = {BULK_ADD_KEYS[j]: vals[j] for j in range(4)}
+            result.append((i, row_dict))
+        return result
+
+    def _bulk_grid_clear(self):
+        """격자 내용을 비웁니다. (행 위젯은 그대로 두고 칸 값만 삭제)"""
+        for row in getattr(self, "_bulk_grid_rows", []) or []:
+            for ent in row:
+                try:
+                    ent.delete(0, tk.END)
+                except Exception:
+                    pass
+        self._update_button_states()
+
+    def _on_bulk_cell_focus(self, row_index):
+        """격자 칸에 포커스가 들어오면 선택 행으로 기억합니다."""
+        self._bulk_focused_row = row_index
+        self._update_button_states()
+
+    def _on_bulk_clear_selected_row(self):
+        """포커스가 있는 행의 4칸을 비웁니다."""
+        fr = getattr(self, "_bulk_focused_row", None)
+        rows = getattr(self, "_bulk_grid_rows", None) or []
+        if fr is None or not (0 <= fr < len(rows)):
+            messagebox.showwarning(
+                "선택",
+                "지울 행의 칸을 먼저 클릭하세요.",
+                parent=self,
+            )
+            return
+        for ent in rows[fr]:
+            try:
+                ent.delete(0, tk.END)
+            except Exception:
+                pass
+        self._update_button_states()
+
+    def _on_bulk_clear_all(self):
+        """격자 전체 칸을 비웁니다. 내용이 있으면 한 번 확인합니다."""
+        if not self._bulk_grid_has_any_content():
+            return
+        if not messagebox.askyesno(
+            "확인",
+            "격자 내용을 모두 지울까요?",
+            parent=self,
+        ):
+            return
+        self._bulk_grid_clear()
+
+    def _on_bulk_grid_paste(self, event):
+        """
+        엑셀/CSV 클립보드를 격자 칸에 채웁니다.
+
+        주니어: 포커스된 칸을 시작점으로, 아래로·오른쪽으로 채웁니다.
+        """
+        try:
+            raw = self.clipboard_get()
+        except Exception:
+            return None
+        if not raw or not str(raw).strip():
+            return None
+
+        # 시작 칸 찾기 (법원 칸은 TkCourtAutocomplete → event.widget 이 내부 Entry일 수 있음)
+        start_r, start_c = 0, 0
+        widget = event.widget
+        for ri, row in enumerate(self._bulk_grid_rows):
+            for ci, ent in enumerate(row):
+                if ent is widget or getattr(ent, "entry", None) is widget:
+                    start_r, start_c = ri, ci
+                    break
+            else:
+                continue
+            break
+
+        parsed = parse_bulk_case_text(raw)
+        if not parsed:
+            # 한 칸짜리 일반 붙여넣기는 기본 동작에 맡김
+            return None
+
+        need = start_r + len(parsed) - len(self._bulk_grid_rows)
+        if need > 0:
+            self._bulk_grid_add_rows(need)
+
+        for offset, (_line_no, row_dict) in enumerate(parsed):
+            r = start_r + offset
+            if r >= len(self._bulk_grid_rows):
+                break
+            ordered = [row_dict.get(k, "") for k in BULK_ADD_KEYS]
+            for i, val in enumerate(ordered):
+                c = start_c + i
+                if c >= 4:
+                    break
+                ent = self._bulk_grid_rows[r][c]
+                ent.delete(0, tk.END)
+                ent.insert(0, val)
+            # 시작 열이 0이 아니면(부분 붙여넣기) 첫 클립보드 행만 반영
+            if start_c != 0:
+                break
+
+        self._update_button_states()
+        return "break"
+
+    def _existing_case_numbers_for_bulk(self):
+        """
+        일괄 추가 시 중복으로 볼 사건번호 집합.
+
+        시트 목록 + 숨김 + 이미 pending_adds 에 넣은 번호를 포함합니다.
+        """
+        existing = set()
+        for c in getattr(self.app, "case_list", []) or []:
+            raw = c.get("사건번호") or ""
+            cn = str(raw).strip() if raw is not None else ""
+            if cn:
+                existing.add(cn)
+        for h in load_hidden_cases():
+            cn = self._hidden_item_to_case_number(h)
+            if cn:
+                existing.add(cn)
+        for row in self.pending_adds:
+            cn = str(row.get("사건번호") or "").strip()
+            if cn:
+                existing.add(cn)
+        return existing
+
+    def _on_bulk_add(self):
+        """격자 행을 검사 후 통과 행만 pending_adds 에 넣습니다."""
+        parsed = self._bulk_grid_read_rows()
+        if not parsed:
+            messagebox.showwarning(
+                "입력",
+                "넣을 내용이 없습니다.\n"
+                "격자 칸에 법원·사건번호·피고·사건명을 입력하세요.",
+                parent=self,
+            )
+            return
+
+        existing = self._existing_case_numbers_for_bulk()
+        court_set = set(COURT_NAMES)
+        ok_rows = []
+        problems = []
+        seen_in_batch = set()
+
+        for line_no, row in parsed:
+            empties = [k for k in BULK_ADD_KEYS if not str(row.get(k) or "").strip()]
+            if empties:
+                problems.append(f"{line_no}행: 빈칸 ({', '.join(empties)})")
+                continue
+            court = str(row.get("법원") or "").strip()
+            if court not in court_set:
+                problems.append(f"{line_no}행: 법원명이 목록에 없음 ({court})")
+                continue
+            cn = str(row.get("사건번호") or "").strip()
+            if cn in existing or cn in seen_in_batch:
+                problems.append(f"{line_no}행: 이미 있는 사건번호 ({cn})")
+                continue
+            seen_in_batch.add(cn)
+            ok_rows.append(row)
+
+        for row in ok_rows:
+            self.pending_adds.append(row)
+
+        if ok_rows:
+            self._bulk_grid_clear()
+            self._update_apply_button_and_summary()
+            self._update_button_states()
+
+        msg_lines = []
+        if ok_rows:
+            msg_lines.append(f"{len(ok_rows)}건을 변경 예정에 넣었습니다.")
+        else:
+            msg_lines.append("넣어진 사건이 없습니다.")
+        if problems:
+            msg_lines.append("")
+            msg_lines.append("아래 행은 넣지 않았습니다.")
+            show = problems[:10]
+            msg_lines.extend(show)
+            if len(problems) > 10:
+                msg_lines.append(f"외 {len(problems) - 10}건")
+        messagebox.showwarning("일괄 추가", "\n".join(msg_lines), parent=self)
+
     def _on_add(self):
         row_dict = {k: (e.get() or "").strip() for k, e in self.add_entries.items()}
         if not row_dict.get("사건번호"):
@@ -1152,6 +1849,7 @@ class CaseListManageDialog(ctk.CTkToplevel):
             else:
                 e.delete(0, tk.END)
         self._update_apply_button_and_summary()
+        self._update_button_states()
 
     def _build_edit_tab(self, tab):
         ctk.CTkLabel(

@@ -1,11 +1,11 @@
 # case-ing (미어캣싱)
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.3.1**  
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.3.2**  
 제품 UI 명칭: **미어캣싱** (저장소/폴더명 case-ing 유지)
 
 - 개발자 : 박지원 -
 
-공식 버전 순서: **v5.3.0 → v5.3.1**
+공식 버전 순서: **v5.3.0 → v5.3.1 → v5.3.2**
 
 ## 원본 출처
 
@@ -27,7 +27,7 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 ```
 case-ing/
 ├── auto_runner.py               CLI 실행기
-├── config.py                    설정 상수 (APP_VERSION = "5.3.1", APP_TITLE = "미어캣싱")
+├── config.py                    설정 상수 (APP_VERSION = "5.3.2", APP_TITLE = "미어캣싱")
 ├── main.py                      진입점 (GUI 또는 --auto)
 ├── requirements.txt             Python 패키지
 ├── data/                        설정·이력 JSON
@@ -156,18 +156,19 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 
 ---
 
-## 현재 버전 특징 (v5.3.1)
+## 현재 버전 특징 (v5.3.2)
 
-1. **브라우저 준비 타임아웃 수정** — stdout 줄 훔침을 없애 READY를 놓치지 않습니다. CLI 배치가 약 2분 안팎으로 단축됩니다.
-2. **CLI 숨김 필터** — `hidden_cases.json`에 있는 사건은 자동조회·캡차·메일에서 제외합니다.
-3. **Node READY 선행** — puppeteer 로드 전에 준비 신호를 보내 콜드 스타트 대기를 줄입니다.
-4. **CLI 시작 시 고아 청소** — 이전 Node/Chrome이 프로필을 잠그지 않게 배치 시작 전에도 정리합니다.
-5. **로그 쉬운 말** — 「워커 READY」대신 「브라우저 준비」로 표시합니다.
+1. **한번에 여러 사건 추가** — 사건목록 관리에서 엑셀형 격자로 여러 건을 붙여 넣거나 입력할 수 있습니다.
+2. **법원 드롭다운·지우기** — 일괄 격자 법원 열 자동완성, 선택 행/전체 지우기.
+3. **일괄 창 크래시 수정** — 창이 떴다 꺼지거나 메인까지 죽던 문제를 고쳤습니다.
+4. **당사자내용 표시·파싱** — 이름 열 잘림·표 파싱 보강. (캐시는 재조회 시 갱신)
+5. **일반내용 창 가독성** — 최소 크기·줄바꿈·기본내용 열 균등·기일/당사자 표별 열 비중.
 
 ---
 
 ## 개발 히스토리
 
+- **v5.3.2**: 일괄 사건 추가 격자·일괄 창 크래시 수정·당사자 표시/파싱·일반내용 가독성
 - **v5.3.1**: CLI READY 줄 훔침 수정·숨김 필터·Node READY 선행·시작 전 고아 청소·로그 쉬운 말
 - **v5.3.0**: WORKER_IDLE 오판·스마트 스킵·종국결과 칸 판별·CLI 설정 로드·taskkill 숨김·Error case
 - **v5.2.0**: 실패 집계·탭/그리드·OCR conf·Chrome 재사용·메모리/속도·캡차 데이터셋
@@ -183,9 +184,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 - **v4.7.0**: 구글 캘린더·OAuth, 기록 초기화·재수집
 - **v4.6.x ~ v4.0.0**: 목록 캐시·관리 UI, 아키텍처, CLI, 알림메일 등
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.3.1.md](00.CHANGELOG/CHANGELOG_v5.3.1.md)  
-버전별 README: [00.README/README_v5.3.1.md](00.README/README_v5.3.1.md)  
-구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.1.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.1.md)
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.3.2.md](00.CHANGELOG/CHANGELOG_v5.3.2.md)  
+버전별 README: [00.README/README_v5.3.2.md](00.README/README_v5.3.2.md)  
+구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.2.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.2.md)
 
 ---
 

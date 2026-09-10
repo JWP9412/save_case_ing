@@ -38,8 +38,9 @@ class GeneralInfoDialog(tk.Toplevel):
         case_number = self.case_data.get("사건번호", "")
         self.case_number = str(case_number).strip()
         self.title(f"일반내용: {self.case_number}")
-        self.geometry("780x640")
-        self.minsize(520, 400)
+        # 2열 기본내용(긴 라벨 포함)이 잘리지 않도록 최소 폭을 넉넉히 잡습니다.
+        self.geometry("820x640")
+        self.minsize(720, 500)
 
         bg = self._c("bg_primary")
         try:
@@ -247,6 +248,8 @@ class GeneralInfoDialog(tk.Toplevel):
         )
 
         # 4) 당사자내용
+        # 이름 열은 넓게 표시함. 예전 조회에서 이름이 잘렸다면
+        # 「당사자·대리인 내용 변경시 클릭」으로 재조회해 캐시를 갱신하세요.
         self._section_title("ㅇ 당사자내용")
         self._render_table(
             ["구분", "이름", "종국결과", "판결도달일", "확정일"],
@@ -318,28 +321,49 @@ class GeneralInfoDialog(tk.Toplevel):
         for r, (k1, k2) in enumerate(pairs):
             row = tk.Frame(frame, bg=row_bg)
             row.pack(fill=tk.X, padx=1, pady=1)
-            self._basic_cell(row, k1, basic.get(k1, ""), text_sub, text_main, row_bg)
+            # 주니어: pack(expand)는 글자 길이에 따라 좌·우 열 폭이 달라짐.
+            # grid + uniform 으로 좌·우를 항상 50:50 맞춥니다.
+            row.grid_columnconfigure(0, weight=1, uniform="basic_cols")
+            row.grid_columnconfigure(1, weight=1, uniform="basic_cols")
+            self._basic_cell(
+                row, k1, basic.get(k1, ""), text_sub, text_main, row_bg, col=0
+            )
             if k2:
-                self._basic_cell(row, k2, basic.get(k2, ""), text_sub, text_main, row_bg)
+                self._basic_cell(
+                    row, k2, basic.get(k2, ""), text_sub, text_main, row_bg, col=1
+                )
             else:
-                # 빈 칸으로 맞춤
-                tk.Frame(row, bg=row_bg).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                tk.Frame(row, bg=row_bg).grid(row=0, column=1, sticky="nsew")
 
-    def _basic_cell(self, parent, label, value, label_fg, value_fg, bg):
+    def _basic_cell(self, parent, label, value, label_fg, value_fg, bg, col=0):
+        """
+        기본내용 한 칸(라벨+값).
+
+        주니어: 창을 줄여도 글이 잘리지 않게
+        - 라벨은 wraplength로 여러 줄
+        - 값은 Text height를 글자 수에 맞게 늘림
+        - col: 부모 row 그리드에서 왼쪽(0)/오른쪽(1)
+        """
         cell = tk.Frame(parent, bg=bg)
-        cell.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=3)
-        tk.Label(
+        cell.grid(row=0, column=col, sticky="nsew", padx=4, pady=3)
+        lbl = tk.Label(
             cell,
             text=str(label),
             font=("맑은 고딕", 9),
             fg=label_fg,
             bg=bg,
             anchor="w",
-        ).pack(fill=tk.X)
-        # Entry처럼 보이는 읽기 전용 텍스트 (드래그 복사)
+            justify="left",
+            wraplength=300,
+        )
+        lbl.pack(fill=tk.X)
+
+        val = str(value) if value is not None else ""
+        # 대략 28자당 1줄, 최대 8줄 (원고·피고 마스킹 긴 이름 대비)
+        lines = max(1, min(8, (len(val) // 28) + 1)) if val else 1
         tb = tk.Text(
             cell,
-            height=1,
+            height=lines,
             wrap="word",
             font=("맑은 고딕", 10),
             fg=value_fg,
@@ -348,9 +372,19 @@ class GeneralInfoDialog(tk.Toplevel):
             highlightthickness=0,
             relief="flat",
         )
-        tb.insert("1.0", str(value) if value is not None else "")
+        tb.insert("1.0", val)
         tb.configure(state="disabled")
         tb.pack(fill=tk.X)
+
+        # 칸 폭이 바뀌면 라벨 줄바꿈 폭도 맞춤
+        def _on_cell_cfg(event, label_w=lbl):
+            w = max(60, int(event.width) - 8)
+            try:
+                label_w.configure(wraplength=w)
+            except Exception:
+                pass
+
+        cell.bind("<Configure>", _on_cell_cfg)
 
     def _cell_value_for_header(self, row, header, col_index):
         """
@@ -407,11 +441,19 @@ class GeneralInfoDialog(tk.Toplevel):
             headers = list(rows[0].keys())
 
         n = max(len(headers), 1)
-        # 열 비중: 앞쪽(일자·구분)은 좁게, 내용/이름 쪽은 넓게
+        # 열 비중: 표 종류마다 다르게 (5열 공통 [1,5,...] 쓰면 기일표 '시각'이 비대해짐)
+        header_set = {str(h).strip() for h in headers}
         if n == 2:
+            # 서류·대리인: 앞 좁게, 내용/이름 넓게
             weights = [1, 4]
-        elif n == 5:
+        elif n == 5 and "이름" in header_set:
+            # 당사자: 구분 | 이름 | 종국결과 | 판결도달일 | 확정일
+            weights = [1, 5, 1, 1, 1]
+        elif n == 5 and "시각" in header_set:
+            # 최근기일: 일자 | 시각(짧음) | 기일구분 | 기일장소 | 결과
             weights = [2, 1, 2, 2, 2]
+        elif n == 5:
+            weights = [1, 1, 1, 1, 1]
         else:
             weights = [1] * n
 
@@ -438,8 +480,15 @@ class GeneralInfoDialog(tk.Toplevel):
             for i, h in enumerate(headers):
                 rframe.grid_columnconfigure(i, weight=weights[i], uniform="gi_cols")
                 val = self._cell_value_for_header(row, h, i)
-                # 긴 텍스트면 줄 수를 조금 늘림 (대략 22자당 1줄)
-                lines = max(1, min(4, (len(val) // 22) + 1)) if val else 1
+                # 이름 열은 마스킹·여러 줄이 길어 줄 수를 더 넉넉히 (12자당 1줄, 최대 6)
+                # 그 외 열은 대략 22자당 1줄, 최대 4
+                if val:
+                    if str(h).strip() == "이름":
+                        lines = max(1, min(6, (len(val) // 12) + 1))
+                    else:
+                        lines = max(1, min(4, (len(val) // 22) + 1))
+                else:
+                    lines = 1
                 tb = tk.Text(
                     rframe,
                     height=lines,

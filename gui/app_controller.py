@@ -375,8 +375,28 @@ class AppController:
         ):
             self._case_list_manage_dialog.focus_set()
             return
-        self._case_list_manage_dialog = CaseListManageDialog(self.root, self)
-        self._case_list_manage_dialog.focus_set()
+        # 주니어: 생성 중 예외가 나도 메인 앱은 살아 있게 try/except로 감쌉니다.
+        try:
+            self._case_list_manage_dialog = CaseListManageDialog(self.root, self)
+            self._case_list_manage_dialog.focus_set()
+        except Exception as e:
+            import traceback
+
+            self.log_message(f"사건목록 관리 창 열기 실패: {e}")
+            self.log_message(traceback.format_exc())
+            dlg = getattr(self, "_case_list_manage_dialog", None)
+            if dlg is not None:
+                try:
+                    if dlg.winfo_exists():
+                        dlg.destroy()
+                except Exception:
+                    pass
+                self._case_list_manage_dialog = None
+            messagebox.showerror(
+                "오류",
+                "사건목록 관리 창을 열지 못했습니다.\n자세한 내용은 로그를 확인하세요.",
+                parent=getattr(self, "root", None),
+            )
 
     def _open_find_dialog(self, event=None):
         """Open find dialog."""
