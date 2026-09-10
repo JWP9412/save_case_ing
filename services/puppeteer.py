@@ -8,6 +8,7 @@ Node.js 레인 워커를 유지하며 캡차 입력과 검색을 수행합니다
 
 import json
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -130,6 +131,12 @@ class PuppeteerService:
         self.lane_workers = {}
         # 레인 → stderr 파일 핸들 (PIPE 데드락 방지 + 원인 추적)
         self._lane_stderr_files = {}
+        # 레인 → stdout 줄 큐 (읽기 스레드 1개만 사용, 줄 훔침 방지)
+        self._lane_stdout_queues = {}
+        # 레인 → 읽기 스레드 종료 신호
+        self._lane_reader_stop = {}
+        # 레인 → 읽기 스레드 핸들
+        self._lane_reader_threads = {}
         # 사건번호 → 프로필 인덱스 (cleanup 시 워커를 죽이지 않기 위함)
         self._case_to_profile = {}
         # Node JSON의 generalInfo를 사건번호별로 임시 보관
@@ -265,13 +272,14 @@ class PuppeteerService:
         script = _node_script_path()
         if not os.path.isfile(script):
             self._log(
-                f"❌ 워커 READY 실패: 스크립트없음 "
-                f"(instance_{instance_index}, path={script})"
+                f"❌ 브라우저 준비 실패: 스크립트 없음 "
+                f"(레인 {instance_index}, path={script})"
             )
             return None
 
         self._log(
-            f"▶ Node 워커 기동 시도 instance_{instance_index} (node={node_exe})"
+            f"▶ 브라우저 담당 프로그램 시작 시도 "
+            f"(레인 {instance_index}, node={node_exe})"
         )
         cmd = [node_exe, script, "--worker", str(instance_index)]
         env = self._build_env(smart_skip_enabled=smart_skip_enabled)
@@ -279,12 +287,15 @@ class PuppeteerService:
         process = subprocess.Popen(cmd, **self._popen_kwargs(env, stderr_target=stderr_fh))
         self.lane_workers[instance_index] = process
         self.chrome_launch_count += 1
+        # 주니어: Popen 직후 레인당 읽기 스레드 1개만 띄웁니다.
+        # 타임아웃마다 새 readline 스레드를 만들면 WORKER_READY 를 훔칩니다.
+        self._start_lane_stdout_reader(instance_index, process)
         self._log(
-            f"🚀 [Worker] 레인 워커 기동 instance_{instance_index} "
+            f"🚀 브라우저 담당 프로그램 시작 (레인 {instance_index}) "
             f"(누적 Chrome 기동: {self.chrome_launch_count})"
         )
 
-        # WORKER_READY 대기 — readline 무제한 블로킹 금지
+        # Node가 stdout에 WORKER_READY 를 보낼 때까지 대기 (프로토콜 신호명은 유지)
         # 주니어: 콜드 스타트(첫 Chrome/Node)는 puppeteer 로드·프로필 잠금 해제로
         # 30초를 넘길 수 있습니다. 재기동은 짧게, 첫 기동만 여유를 둡니다.
         start = time.time()
@@ -304,8 +315,8 @@ class PuppeteerService:
             if process.poll() is not None:
                 code = process.returncode
                 self._log(
-                    f"❌ 워커 READY 실패: 프로세스종료 "
-                    f"(instance_{instance_index}, exit={code}, 경과 {int(elapsed)}s)"
+                    f"❌ 브라우저 준비 실패: 프로그램이 바로 종료됨 "
+                    f"(레인 {instance_index}, exit={code}, 경과 {int(elapsed)}s)"
                 )
                 # 이미 죽은 프로세스 — kill 불필요, 핸들·맵만 정리
                 self._pop_lane_worker(instance_index, kill_if_alive=False)
@@ -314,14 +325,14 @@ class PuppeteerService:
             # 약 5초마다 진행 로그 (무음 대기 방지)
             if elapsed - last_progress_log >= 5.0:
                 self._log(
-                    f"⏳ 워커 READY 대기 중 instance_{instance_index} "
+                    f"⏳ 브라우저가 켜질 때까지 기다리는 중 (레인 {instance_index}) "
                     f"(경과 {int(elapsed)}s / 한도 {int(timeout)}s)"
                 )
                 last_progress_log = elapsed
 
             remaining = timeout - elapsed
             line, timed_out = self._readline_with_timeout(
-                process, min(1.0, max(0.05, remaining))
+                process, min(1.0, max(0.05, remaining)), instance_index=instance_index
             )
             if timed_out:
                 continue
@@ -330,17 +341,19 @@ class PuppeteerService:
             line = line.strip()
             if not line:
                 continue
-            if line.startswith("WORKER_READY"):
+            # 프로토콜 토큰(WORKER_READY) + CASE/QUIT 대기 로그도 준비 완료로 칩니다.
+            # 주니어: READY 줄을 놓쳐도 "CASE/QUIT 대기 중"이면 이미 명령을 받을 수 있습니다.
+            if self._is_worker_ready_line(line):
                 self._log(
-                    f"✅ WORKER_READY instance_{instance_index} "
+                    f"✅ 브라우저 준비 완료 (레인 {instance_index}) "
                     f"(기동 소요 {int(time.time() - start)}s)"
                 )
                 return process
             self._log(f"[Node] {line}")
 
         self._log(
-            f"❌ 워커 READY 실패: 타임아웃 "
-            f"(instance_{instance_index}, 경과 {int(time.time() - start)}s / "
+            f"❌ 브라우저가 제시간에 안 켜짐 "
+            f"(레인 {instance_index}, 경과 {int(time.time() - start)}s / "
             f"한도 {int(timeout)}s)"
         )
         self._pop_lane_worker(instance_index, kill_if_alive=True)
@@ -390,13 +403,109 @@ class PuppeteerService:
         except Exception as e:
             logger.debug("Kill error: %s", e)
 
-    def _readline_with_timeout(self, process, timeout_sec):
+    def _is_worker_ready_line(self, line):
         """
-        stdout.readline() 을 timeout_sec 초만 기다립니다.
+        Node 워커가 '명령을 받을 준비'가 됐는지 판별합니다.
 
-        Windows 파이프는 select 가 안 되므로 스레드로 읽습니다.
-        타임아웃이면 (None, True), 읽으면 (line, False).
+        주니어: WORKER_READY 가 줄 훔침으로 사라져도
+        'CASE/QUIT 대기 중' 로그가 보이면 이미 stdin 대기 중입니다.
         """
+        s = (line or "").strip()
+        if not s:
+            return False
+        if s.startswith("WORKER_READY"):
+            return True
+        if "CASE/QUIT 대기" in s:
+            return True
+        return False
+
+    def _start_lane_stdout_reader(self, instance_index, process):
+        """
+        레인당 stdout 읽기 스레드 1개 + Queue.
+
+        주니어 개발자 참고 (줄 훔침 버그):
+        - 예전 `_readline_with_timeout` 은 타임아웃마다 새 스레드로
+          process.stdout.readline() 을 호출했습니다.
+        - join 타임아웃이 나도 그 스레드는 죽지 않고, 나중에 온
+          WORKER_READY 줄을 가로챕니다 → Python 본문은 30~60초를 허비합니다.
+        - 레인마다 스레드 1개만 두고 큐에 넣으면 줄이 사라지지 않습니다.
+        """
+        self._stop_lane_stdout_reader(instance_index)
+        if not process or not process.stdout:
+            return
+        q = queue.Queue()
+        stop_ev = threading.Event()
+        self._lane_stdout_queues[instance_index] = q
+        self._lane_reader_stop[instance_index] = stop_ev
+
+        def _reader():
+            # 주니어: 프로세스가 죽으면 readline 이 '' 를 반환하며 루프가 끝납니다.
+            try:
+                while not stop_ev.is_set():
+                    try:
+                        line = process.stdout.readline()
+                    except Exception:
+                        break
+                    if line == "" or line is None:
+                        # EOF — 큐에 None 센티널을 넣어 대기자가 깨게 합니다.
+                        try:
+                            q.put(None)
+                        except Exception:
+                            pass
+                        break
+                    try:
+                        q.put(line)
+                    except Exception:
+                        break
+            except Exception:
+                try:
+                    q.put(None)
+                except Exception:
+                    pass
+
+        t = threading.Thread(
+            target=_reader,
+            daemon=True,
+            name=f"lane-stdout-{instance_index}",
+        )
+        self._lane_reader_threads[instance_index] = t
+        t.start()
+
+    def _stop_lane_stdout_reader(self, instance_index):
+        """레인 stdout 읽기 스레드·큐를 정리합니다 (프로세스 kill 전/후)."""
+        stop_ev = self._lane_reader_stop.pop(instance_index, None)
+        if stop_ev is not None:
+            try:
+                stop_ev.set()
+            except Exception:
+                pass
+        self._lane_stdout_queues.pop(instance_index, None)
+        self._lane_reader_threads.pop(instance_index, None)
+
+    def _readline_with_timeout(self, process, timeout_sec, instance_index=None):
+        """
+        stdout 한 줄을 timeout_sec 초만 기다립니다.
+
+        타임아웃이면 (None, True), 읽으면 (line, False).
+
+        주니어: instance_index 가 있으면 레인 큐에서만 꺼냅니다.
+        큐가 없을 때만(레거시·예외) 일회성 스레드를 쓰되, 그 경우도
+        가능하면 쓰지 않는 것이 안전합니다.
+        """
+        q = None
+        if instance_index is not None:
+            q = self._lane_stdout_queues.get(instance_index)
+        if q is not None:
+            try:
+                line = q.get(timeout=max(0.05, float(timeout_sec)))
+            except queue.Empty:
+                return None, True
+            # None 센티널 = EOF
+            if line is None:
+                return "", False
+            return line, False
+
+        # 폴백: 큐가 없는 경우(거의 없어야 함). 줄 훔침 위험이 있어 짧게만.
         result = {"line": None}
 
         def _reader():
@@ -418,17 +527,20 @@ class PuppeteerService:
 
         주니어 개발자 참고:
         - 워커는 사건 끝에 WORKER_IDLE 을 stdout 에 찍습니다.
-        - Python 이 JSON_RESULT 만 읽고 끝나면 IDLE 이 파이프에 남습니다.
+        - Python 이 JSON_RESULT 만 읽고 끝나면 IDLE 이 파이프(큐)에 남습니다.
         - 다음 사건 캡차 대기가 그 줄을 읽으면
           '캡차/스킵 없이 IDLE = 실패' 로 오판하고 레인을 죽입니다.
-        - 이미 도착한 줄만 읽습니다. 빈 파이프에서 오래 기다리면
-          타임아웃 리더 스레드가 다음 줄을 훔칠 수 있습니다.
+        - 이미 도착한 줄만 읽습니다 (짧은 타임아웃).
         """
-        if not process or process.poll() is not None or not process.stdout:
+        if not process or process.poll() is not None:
+            return
+        if instance_index is None and process.stdout is None:
             return
         drained_idle = 0
         while True:
-            line, timed_out = self._readline_with_timeout(process, 0.12)
+            line, timed_out = self._readline_with_timeout(
+                process, 0.12, instance_index=instance_index
+            )
             if timed_out or not line:
                 break
             line = line.strip()
@@ -457,6 +569,7 @@ class PuppeteerService:
                     self._kill_process_tree(process)
             except Exception:
                 pass
+        self._stop_lane_stdout_reader(instance_index)
         self._close_lane_stderr(instance_index)
         return process
 
@@ -594,7 +707,7 @@ class PuppeteerService:
 
                 # 남은 시간만 기다리며 읽기 (블로킹으로 타임아웃이 밀리지 않게)
                 line, timed_out = self._readline_with_timeout(
-                    process, min(1.0, remaining)
+                    process, min(1.0, remaining), instance_index=instance_index
                 )
                 if timed_out:
                     continue
@@ -770,17 +883,27 @@ class PuppeteerService:
 
             start_time = time.time()
             timeout = config.PUPPETEER_PROCESSING_TIMEOUT
+            # 주니어: stdout 은 레인 전용 읽기 스레드가 큐에 넣습니다.
+            # 여기서 process.stdout.readline() 을 직접 쓰면 큐와 경쟁하거나
+            # 줄이 안 와서 영원히 기다릴 수 있습니다.
+            profile_index = self._case_to_profile.get(case_number)
 
             while time.time() - start_time < timeout:
                 if callable(self.processing_flag) and not self.processing_flag():
                     self._log(f"⏹️ 처리 중지로 실행 중단: {case_number}")
                     self.unbind_case(case_number)
                     return False
-                line = process.stdout.readline()
+                remaining = timeout - (time.time() - start_time)
+                line, timed_out = self._readline_with_timeout(
+                    process,
+                    min(1.0, max(0.05, remaining)),
+                    instance_index=profile_index,
+                )
+                if timed_out:
+                    continue
                 if not line:
                     if process.poll() is not None:
                         break
-                    time.sleep(0.05)
                     continue
 
                 line = line.strip()
@@ -897,6 +1020,7 @@ class PuppeteerService:
                         self._kill_process_tree(process)
             finally:
                 self.lane_workers.pop(idx, None)
+                self._stop_lane_stdout_reader(idx)
                 self._close_lane_stderr(idx)
         self.running_processes.clear()
         self._case_to_profile.clear()

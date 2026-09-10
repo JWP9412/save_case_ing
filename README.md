@@ -1,11 +1,11 @@
 # case-ing (미어캣싱)
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.3.0**  
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.3.1**  
 제품 UI 명칭: **미어캣싱** (저장소/폴더명 case-ing 유지)
 
 - 개발자 : 박지원 -
 
-공식 버전 순서: **v5.2.0 → v5.3.0**
+공식 버전 순서: **v5.3.0 → v5.3.1**
 
 ## 원본 출처
 
@@ -27,7 +27,7 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 ```
 case-ing/
 ├── auto_runner.py               CLI 실행기
-├── config.py                    설정 상수 (APP_VERSION = "5.3.0", APP_TITLE = "미어캣싱")
+├── config.py                    설정 상수 (APP_VERSION = "5.3.1", APP_TITLE = "미어캣싱")
 ├── main.py                      진입점 (GUI 또는 --auto)
 ├── requirements.txt             Python 패키지
 ├── data/                        설정·이력 JSON
@@ -156,19 +156,19 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 
 ---
 
-## 현재 버전 특징 (v5.3.0)
+## 현재 버전 특징 (v5.3.1)
 
-1. **WORKER_IDLE 가짜 실패 수정** — 이전 사건 잔여 IDLE로 다음 건이 연쇄 실패하던 문제를 고쳤습니다.
-2. **스마트 스킵 복구** — 검색 UI 대기·번호 정규화·about:blank 제거로, 한 번 조회한 사건은 캡차 없이 진행합니다.
-3. **종국 판별 정확화** — 기본내용「종국결과」칸만 봅니다. 이름(박종국) 오탐을 막습니다.
-4. **CLI 설정 로드** — `--auto`도 `user_settings.json`의 수신 메일을 읽습니다.
-5. **taskkill 창 숨김** — 조회 시작 시 Windows CMD 번쩍임을 줄입니다.
-6. **사고 기록** — `99.Error case/`에 2026-09-09 사례를 남겼습니다.
+1. **브라우저 준비 타임아웃 수정** — stdout 줄 훔침을 없애 READY를 놓치지 않습니다. CLI 배치가 약 2분 안팎으로 단축됩니다.
+2. **CLI 숨김 필터** — `hidden_cases.json`에 있는 사건은 자동조회·캡차·메일에서 제외합니다.
+3. **Node READY 선행** — puppeteer 로드 전에 준비 신호를 보내 콜드 스타트 대기를 줄입니다.
+4. **CLI 시작 시 고아 청소** — 이전 Node/Chrome이 프로필을 잠그지 않게 배치 시작 전에도 정리합니다.
+5. **로그 쉬운 말** — 「워커 READY」대신 「브라우저 준비」로 표시합니다.
 
 ---
 
 ## 개발 히스토리
 
+- **v5.3.1**: CLI READY 줄 훔침 수정·숨김 필터·Node READY 선행·시작 전 고아 청소·로그 쉬운 말
 - **v5.3.0**: WORKER_IDLE 오판·스마트 스킵·종국결과 칸 판별·CLI 설정 로드·taskkill 숨김·Error case
 - **v5.2.0**: 실패 집계·탭/그리드·OCR conf·Chrome 재사용·메모리/속도·캡차 데이터셋
 - **v5.1.1**: 시작 버튼 TypeError 수정, 진행상황 스크롤바·전체 복사 버그 수정
@@ -183,9 +183,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 - **v4.7.0**: 구글 캘린더·OAuth, 기록 초기화·재수집
 - **v4.6.x ~ v4.0.0**: 목록 캐시·관리 UI, 아키텍처, CLI, 알림메일 등
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.3.0.md](00.CHANGELOG/CHANGELOG_v5.3.0.md)  
-버전별 README: [00.README/README_v5.3.0.md](00.README/README_v5.3.0.md)  
-구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.0.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.0.md)
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.3.1.md](00.CHANGELOG/CHANGELOG_v5.3.1.md)  
+버전별 README: [00.README/README_v5.3.1.md](00.README/README_v5.3.1.md)  
+구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.1.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.3.1.md)
 
 ---
 

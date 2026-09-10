@@ -14,12 +14,27 @@
  *   사건 처리 후 프로세스를 유지하고 다음 CASE를 기다립니다.
  */
 
-const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs').promises;
 const readline = require('readline');
-const PageController = require('./PageController');
 const maintenance = require('../maintenance.js');
+
+// ---------------------------------------------------------------------------
+// 주니어: puppeteer / PageController 는 파일 맨 위에서 require 하지 않습니다.
+// require('puppeteer') 콜드 스타트가 수십 초면 WORKER_READY 가 늦게 나가
+// Python 이 60초 READY 타임아웃을 냅니다. READY 먼저 → 그다음 로드.
+// ---------------------------------------------------------------------------
+let puppeteer = null;
+let PageController = null;
+
+function loadBrowserDeps() {
+    if (!puppeteer) {
+        puppeteer = require('puppeteer');
+    }
+    if (!PageController) {
+        PageController = require('./PageController');
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 최후 방어선: unhandled rejection / uncaught exception 으로 워커가
@@ -66,6 +81,10 @@ function logLine(msg) {
     const line = String(msg == null ? '' : msg);
     try {
         process.stdout.write(line + '\n');
+        // Node 에 sync flush 는 없지만, cork 해제·drain 유도용
+        if (typeof process.stdout.uncork === 'function') {
+            try { process.stdout.uncork(); } catch (_) { /* ignore */ }
+        }
     } catch (_) {
         console.log(line);
     }
@@ -344,6 +363,8 @@ async function runLegacy() {
         console.error('   또는: node src/interactive_runner.js --worker <인스턴스번호>');
         process.exit(1);
     }
+    // 레거시는 READY 프로토콜이 없으므로 바로 브라우저 의존성 로드
+    loadBrowserDeps();
     const [caseNumber, defendant, court] = args;
     const instanceIndex = args.length >= 4 ? parseInt(args[3], 10) || 0 : 0;
     let browser = null;
@@ -373,12 +394,14 @@ async function runWorker() {
     let browser = null;
     let page = null;
 
-    // 파이프에서도 즉시 보이도록 write (console.log 만으로는 버퍼링될 수 있음)
+    // 파이프에서도 즉시 보이도록 write — puppeteer require 전에 먼저 보냄
     logLine(`WORKER_READY instance=${currentInstance}`);
+    // READY 이후에 무거운 모듈 로드 (Python 대기 시간 단축)
+    loadBrowserDeps();
 
     try {
         while (true) {
-            console.log('⏳ [Worker] CASE/QUIT 대기 중...');
+            logLine('⏳ [Worker] CASE/QUIT 대기 중...');
             const line = await waitForInput();
             if (!line) continue;
 

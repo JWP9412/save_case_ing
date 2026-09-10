@@ -192,7 +192,9 @@ def run_auto_batch():
     app = MockApp()
     app.log_message("🚀 백그라운드 자동 실행 초기화 완료")
     
-    # 1. 사건 목록 가져오기
+    # 1. 사건 목록 가져오기 (+ GUI와 동일하게 숨긴 사건 제외)
+    # 주니어: 숨김은 data/hidden_cases.json 에만 있습니다. 시트에서 지우지 않습니다.
+    # CLI가 필터를 빼먹으면 숨긴 사건도 조회·캡차·메일에 올라갑니다.
     try:
         cases = app.google_sheets_service.load_case_list()
         if not cases:
@@ -201,7 +203,42 @@ def run_auto_batch():
     except Exception as e:
         app.log_message(f"❌ 사건 목록 로드 실패: {e}")
         return
-        
+
+    try:
+        from gui.utils.google_sheet_ui import (
+            load_hidden_cases,
+            _hidden_item_to_case_number,
+        )
+
+        hidden_set = {
+            _hidden_item_to_case_number(x) for x in load_hidden_cases()
+        }
+    except Exception:
+        hidden_set = set()
+
+    if hidden_set:
+        before = len(cases)
+
+        def _case_number_str(c):
+            raw = c.get("사건번호") or ""
+            return str(raw).strip() if raw is not None else ""
+
+        cases = [c for c in cases if _case_number_str(c) not in hidden_set]
+        skipped = before - len(cases)
+        if skipped > 0:
+            app.log_message(
+                f"🙈 숨긴 사건 {skipped}건 제외 "
+                f"(숨김 목록 {len(hidden_set)}건 · 조회 대상 {len(cases)}건)"
+            )
+
+    if not cases:
+        app.log_message(
+            "📭 숨긴 사건을 제외하니 조회할 사건이 없습니다. "
+            "(사건목록 관리에서 숨김 해제 후 다시 실행하세요)"
+        )
+        return
+
+    app.case_list = list(cases)
     app.log_message(f"📋 총 {len(cases)}개의 사건을 로드했습니다. 스마트 스킵 조회를 시작합니다.")
 
     # GUI와 동일 Chrome 프로필(쿠키) 경로 — Node CASEING_COOKIE_DIR 과 같아야 함
@@ -212,6 +249,15 @@ def run_auto_batch():
         f"📂 COOKIE_DIR={cookie_abs} | PROFILE_COUNT={profile_count} "
         f"(GUI와 동일 프로필 · 스마트 스킵)"
     )
+
+    # GUI 배치와 동일: 시작 전에 남은 interactive_runner·Chrome 을 치웁니다.
+    # 주니어: 이전 CLI/GUI 가 프로필을 잠그면 첫 워커 기동이 60초까지 늘어납니다.
+    try:
+        from services.puppeteer import kill_orphan_interactive_runners
+
+        kill_orphan_interactive_runners(log_fn=app.log_message)
+    except Exception as e:
+        app.log_message(f"⚠️ 시작 전 Node 고아 청소 생략: {e}")
 
     # 종국 후보 목록 초기화 (CLI는 질문 없이 감지만 로그)
     try:

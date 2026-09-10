@@ -579,7 +579,7 @@ class CaseRunnerMixin:
                 else:
                     self.app.log_message(
                         f"◀ 캡차 로드 결과: 실패 (소요 {captcha_elapsed}s) "
-                        f"— 워커 READY/응답 타임아웃·크래시 가능"
+                        f"— 브라우저 준비/응답 지연·크래시 가능"
                     )
                     self.app.update_case_status(case_index, f"실패 ({elapsed_time}초)", "red", "❌")
                     self.app.log_message(f"❌ 캡차 이미지 로딩 실패: {case_number}")
