@@ -149,7 +149,20 @@ class ReportPreviewDialog(ctk.CTkToplevel):
 
         def worker():
             try:
-                ok = app.google_sheets_service.append_notification_mail(html, recipient)
+                # 미리보기 HTML이 길면 분할 저장(한도·깨진 태그 방지)
+                max_chars = int(getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000))
+                if len(html) > max_chars:
+                    from services import email_manager as em
+
+                    # 단일 미리보기 본문도 안전하게 잘라 1통으로 기록
+                    trimmed, _ = em.safe_trim_html(html, max_chars)
+                    ok = app.google_sheets_service.append_notification_mails(
+                        [trimmed], recipient
+                    )
+                else:
+                    ok = app.google_sheets_service.append_notification_mails(
+                        [html], recipient
+                    )
                 # 중요: clear_unsent_emails 호출하지 않음
                 def done():
                     if ok:

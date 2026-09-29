@@ -925,24 +925,49 @@ class GoogleSheetsService:
 
     def append_notification_mail(self, summary_text, recipient_email=""):
         """
-        '알림메일' 워크시트에 메일 내역 행을 추가합니다.
-        GAS(Apps Script)가 '발송상태'가 '대기'인 행을 감지해 수신주소 열을 보고 메일 발송합니다.
+        '알림메일' 워크시트에 메일 내역 행을 1개 추가합니다.
+        본문이 셀 한도를 넘으면 깨진 태그 없이 안전하게 자릅니다(폴백).
+        여러 통 분할은 append_notification_mails 를 사용하세요.
+        """
+        return self.append_notification_mails(
+            [summary_text] if summary_text else [], recipient_email
+        )
 
-        summary_text: 메일 본문으로 쓸 문자열 (사건별 업데이트 요약).
-        recipient_email: 수신 메일 주소 (GUI 설정에서 입력).
+    def append_notification_mails(self, html_list, recipient_email=""):
+        """
+        '알림메일' 워크시트에 HTML 본문을 행마다 추가합니다(각 행 = 메일 1통).
+        GAS가 '대기' 행을 읽어 발송합니다.
+
+        html_list: 메일 본문 HTML 문자열 리스트
+        recipient_email: 수신 메일 주소
         반환: True 성공, False 실패.
         """
-        if not summary_text or not summary_text.strip():
+        if not html_list:
             return False
+        cleaned = []
+        for item in html_list:
+            if item and str(item).strip():
+                cleaned.append(str(item).strip())
+        if not cleaned:
+            return False
+
         try:
-            # 구글 시트 한 셀은 최대 50000자까지만 허용합니다.
-            # 메일 본문이 그보다 길면 잘라서 넣어 저장 실패(400 에러)를 막습니다.
+            from services import email_manager as email_manager_module
+
             max_chars = getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000)
-            body_text = summary_text.strip()
-            if len(body_text) > max_chars:
-                omitted = len(body_text) - max_chars
-                body_text = body_text[:max_chars] + f"\n...(이하 {omitted}자 생략)"
-                self._log(f"⚠️ 알림메일 본문이 너무 길어 일부를 생략했습니다(생략 {omitted}자).")
+            bodies = []
+            for body_text in cleaned:
+                if len(body_text) > max_chars:
+                    trimmed, omitted = email_manager_module.safe_trim_html(
+                        body_text, max_chars
+                    )
+                    self._log(
+                        f"⚠️ 알림메일 본문이 한도를 넘어 안전하게 잘랐습니다"
+                        f"(생략 약 {omitted}자, 깨진 태그 제거)."
+                    )
+                    bodies.append(trimmed)
+                else:
+                    bodies.append(body_text)
 
             spreadsheet = self._get_spreadsheet()
             try:
@@ -960,10 +985,17 @@ class GoogleSheetsService:
             elif len(all_values) == 1 and len(all_values[0]) < 4:
                 self._throttle_api()
                 worksheet.update("A1:D1", [header], value_input_option="USER_ENTERED")
+
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._throttle_api()
-            worksheet.append_row([current_time, (recipient_email or "").strip(), body_text, "대기"])
-            self._log(f"✅ 알림메일 시트에 행 추가 완료 (발송상태: 대기)")
+            recipient = (recipient_email or "").strip()
+            # append_rows 는 표 범위 추정으로 열이 밀릴 수 있어, 행마다 append_row 사용
+            for body in bodies:
+                self._throttle_api()
+                worksheet.append_row(
+                    [current_time, recipient, body, "대기"],
+                    value_input_option="USER_ENTERED",
+                )
+            self._log(f"✅ 알림메일 시트에 {len(bodies)}건 추가 완료 (발송상태: 대기)")
             return True
         except Exception as e:
             self._log(f"❌ 알림메일 시트 추가 실패: {e}")

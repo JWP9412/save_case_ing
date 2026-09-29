@@ -378,20 +378,21 @@ def run_auto_batch():
         except Exception:
             pass
 
-    # 4. 결과 메일 발송 (전체 사건 기준 요약)
+    # 4. 결과 메일 발송 (전체 사건 기준 요약, 한도 초과 시 여러 통으로 분할)
     app.log_message("이메일 발송을 준비합니다.")
-    summary_html, _ = email_manager_module.get_summary_html(all_cases=cases)
-    
+    parts, _ = email_manager_module.get_summary_html_parts(all_cases=cases)
+
     recipient = (getattr(config, "NOTIFICATION_EMAIL_ADDRESS", "") or "").strip()
     if not recipient:
         app.log_message("⚠️ 설정된 수신 메일 주소가 없습니다. 이메일을 발송할 수 없습니다.")
-    elif not summary_html or not summary_html.strip():
+    elif not parts:
         app.log_message("📭 조회 결과가 없어 이메일을 발송하지 않습니다.")
     else:
         try:
-            ok = app.google_sheets_service.append_notification_mail(summary_html, recipient)
+            ok = app.google_sheets_service.append_notification_mails(parts, recipient)
             if ok:
                 email_manager_module.clear_unsent_emails_and_update_last_sent()
+                app.log_message(f"알림메일 분할 발송: {len(parts)}통 시트 기록")
                 webapp_url = (getattr(config, "NOTIFICATION_GAS_WEBAPP_URL", "") or "").strip()
                 if webapp_url:
                     try:

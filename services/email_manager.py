@@ -415,74 +415,144 @@ def _mail_td(text, color=None, with_border=False):
     )
 
 
-def _build_update_cards(updates_by_sheet):
-    """최신 업데이트: 시트(사건)별 카드 HTML 목록."""
+def _render_update_card(s_name, sheet_updates, sheet_url="", title_suffix=""):
+    """업데이트 행 묶음 1개를 카드 HTML로 렌더."""
+    title = f"{s_name}{title_suffix}" if title_suffix else s_name
+    header = _mail_card_header(title, sheet_url)
+    rows = [
+        "<tr>"
+        f'<th style="{_TH_STYLE} width:18%;">일자</th>'
+        f'<th style="{_TH_STYLE} width:52%;">내용</th>'
+        f'<th style="{_TH_STYLE} width:30%;">결과</th>'
+        "</tr>"
+    ]
+    last_i = len(sheet_updates) - 1
+    for i, u in enumerate(sheet_updates):
+        border = i < last_i
+        rows.append(
+            "<tr>"
+            f"{_mail_td(u.get('date', ''), u.get('dateColor'), border)}"
+            f"{_mail_td(u.get('content', ''), u.get('contentColor'), border)}"
+            f"{_mail_td(u.get('result', ''), u.get('resultColor'), border)}"
+            "</tr>"
+        )
+    body = (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
+    )
+    return _mail_card(header, body)
+
+
+def _render_result_change_card(s_name, sheet_changes, sheet_url="", title_suffix=""):
+    """결과 변경 행 묶음 1개를 카드 HTML로 렌더."""
+    title = f"{s_name}{title_suffix}" if title_suffix else s_name
+    header = _mail_card_header(title, sheet_url)
+    rows = [
+        "<tr>"
+        f'<th style="{_TH_STYLE}">일자</th>'
+        f'<th style="{_TH_STYLE}">내용</th>'
+        f'<th style="{_TH_STYLE}">이전 결과</th>'
+        f'<th style="{_TH_STYLE}">변경 결과</th>'
+        "</tr>"
+    ]
+    last_i = len(sheet_changes) - 1
+    for i, ch in enumerate(sheet_changes):
+        border = i < last_i
+        rows.append(
+            "<tr>"
+            f"{_mail_td(ch.get('date', ''), ch.get('dateColor'), border)}"
+            f"{_mail_td(ch.get('content', ''), ch.get('contentColor'), border)}"
+            f"{_mail_td(ch.get('old_result', ''), None, border)}"
+            f"{_mail_td(ch.get('result', ''), ch.get('resultColor'), border)}"
+            "</tr>"
+        )
+    body = (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
+    )
+    return _mail_card(header, body)
+
+
+def _chunk_items_to_cards(s_name, items, sheet_url, render_fn, max_card_chars):
+    """
+    한 사건 행이 너무 많으면 여러 카드로 나눕니다.
+    render_fn(s_name, chunk, sheet_url, title_suffix) -> html
+    """
+    if not items:
+        return []
+    cards = []
+    chunk = []
+    part_idx = 0
+    for item in items:
+        trial = chunk + [item]
+        suffix = f" (이어짐 {part_idx + 1})" if part_idx > 0 else ""
+        trial_html = render_fn(s_name, trial, sheet_url, suffix)
+        if chunk and len(trial_html) > max_card_chars:
+            # 지금까지 모은 행으로 카드 확정
+            suffix = f" (이어짐 {part_idx + 1})" if part_idx > 0 else ""
+            cards.append(render_fn(s_name, chunk, sheet_url, suffix))
+            part_idx += 1
+            chunk = [item]
+        else:
+            chunk = trial
+    if chunk:
+        suffix = f" (이어짐 {part_idx + 1})" if part_idx > 0 else ""
+        cards.append(render_fn(s_name, chunk, sheet_url, suffix))
+    return cards
+
+
+def _build_update_card_list(updates_by_sheet, max_card_chars=None):
+    """최신 업데이트: 시트별 카드 HTML 리스트 (거대 카드는 행 분할)."""
+    if max_card_chars is None:
+        max_card_chars = int(getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000)) - 2500
     cards = []
     for s_name, sheet_updates in updates_by_sheet.items():
         rep_url = next(
             (u.get("sheet_url") for u in sheet_updates if u.get("sheet_url")),
             "",
         )
-        header = _mail_card_header(s_name, rep_url)
-        rows = [
-            "<tr>"
-            f'<th style="{_TH_STYLE} width:18%;">일자</th>'
-            f'<th style="{_TH_STYLE} width:52%;">내용</th>'
-            f'<th style="{_TH_STYLE} width:30%;">결과</th>'
-            "</tr>"
-        ]
-        last_i = len(sheet_updates) - 1
-        for i, u in enumerate(sheet_updates):
-            border = i < last_i
-            rows.append(
-                "<tr>"
-                f"{_mail_td(u.get('date', ''), u.get('dateColor'), border)}"
-                f"{_mail_td(u.get('content', ''), u.get('contentColor'), border)}"
-                f"{_mail_td(u.get('result', ''), u.get('resultColor'), border)}"
-                "</tr>"
+        cards.extend(
+            _chunk_items_to_cards(
+                s_name,
+                sheet_updates,
+                rep_url,
+                _render_update_card,
+                max_card_chars,
             )
-        body = (
-            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-            f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
         )
-        cards.append(_mail_card(header, body))
-    return "".join(cards)
+    return cards
 
 
-def _build_result_change_cards(changes_by_sheet):
-    """결과 변경: 시트(사건)별 카드 HTML 목록."""
+def _build_result_change_card_list(changes_by_sheet, max_card_chars=None):
+    """결과 변경: 시트별 카드 HTML 리스트 (거대 카드는 행 분할)."""
+    if max_card_chars is None:
+        max_card_chars = int(getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000)) - 2500
     cards = []
     for s_name, sheet_changes in changes_by_sheet.items():
         rep_url = next(
             (ch.get("sheet_url") for ch in sheet_changes if ch.get("sheet_url")),
             "",
         )
-        header = _mail_card_header(s_name, rep_url)
-        rows = [
-            "<tr>"
-            f'<th style="{_TH_STYLE}">일자</th>'
-            f'<th style="{_TH_STYLE}">내용</th>'
-            f'<th style="{_TH_STYLE}">이전 결과</th>'
-            f'<th style="{_TH_STYLE}">변경 결과</th>'
-            "</tr>"
-        ]
-        last_i = len(sheet_changes) - 1
-        for i, ch in enumerate(sheet_changes):
-            border = i < last_i
-            rows.append(
-                "<tr>"
-                f"{_mail_td(ch.get('date', ''), ch.get('dateColor'), border)}"
-                f"{_mail_td(ch.get('content', ''), ch.get('contentColor'), border)}"
-                f"{_mail_td(ch.get('old_result', ''), None, border)}"
-                f"{_mail_td(ch.get('result', ''), ch.get('resultColor'), border)}"
-                "</tr>"
+        cards.extend(
+            _chunk_items_to_cards(
+                s_name,
+                sheet_changes,
+                rep_url,
+                _render_result_change_card,
+                max_card_chars,
             )
-        body = (
-            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-            f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
         )
-        cards.append(_mail_card(header, body))
-    return "".join(cards)
+    return cards
+
+
+def _build_update_cards(updates_by_sheet):
+    """하위 호환: 시트별 카드를 이어 붙인 문자열."""
+    return "".join(_build_update_card_list(updates_by_sheet))
+
+
+def _build_result_change_cards(changes_by_sheet):
+    """하위 호환: 시트별 카드를 이어 붙인 문자열."""
+    return "".join(_build_result_change_card_list(changes_by_sheet))
 
 
 def _build_run_result_footer(
@@ -585,27 +655,176 @@ def _wrap_mail_body(inner_html):
     )
 
 
-def get_summary_html(
+def _mail_part_banner(part_no, total):
+    """메일 상단: CASE-ING NOTIFICATION · 메일 N/M"""
+    label = f"CASE-ING NOTIFICATION · 메일 {part_no}/{total}"
+    return (
+        '<div style="padding:0 0 4px 0;">'
+        '<div style="font-family:Arial,sans-serif; font-size:11px; letter-spacing:0.08em; '
+        f'color:#6B7280; margin-bottom:6px;">{_esc_html(label)}</div>'
+        "</div>"
+    )
+
+
+def _finalize_mail_html(inner_html):
+    """완성된 메일 HTML 문서."""
+    return f"<html><body>{_wrap_mail_body(inner_html)}</body></html>"
+
+
+def _estimate_wrapper_overhead():
+    """래퍼+배너 대략 길이 (예산 계산용)."""
+    sample = _finalize_mail_html(_mail_part_banner(99, 99))
+    return len(sample)
+
+
+def safe_trim_html(html, max_chars, omitted_hint="다음 메일에서 이어집니다"):
+    """
+    셀 한도 초과 시 깨진 태그 조각을 남기지 않고 자릅니다.
+    반환: (잘린_html, 생략된_글자_수) — 생략 없으면 omitted=0.
+    """
+    if not html:
+        return "", 0
+    if len(html) <= max_chars:
+        return html, 0
+
+    omitted = len(html) - max_chars
+    notice = (
+        f'<p style="margin:16px 0 0 0; padding:12px 14px; background:#F9FAFB; '
+        f'border:1px solid #E5E7EB; border-radius:8px; font-family:{_MAIL_FONT}; '
+        f'font-size:13px; color:#6B7280;">'
+        f"(이하 {omitted}자 생략"
+        f"{(' — ' + omitted_hint) if omitted_hint else ''})"
+        f"</p>"
+    )
+    # 안내 문구·닫는 태그를 넣을 여유를 확보
+    reserve = len(notice) + len("</td></tr></table></td></tr></table></div></body></html>") + 80
+    budget = max(500, max_chars - reserve)
+    cut = html[:budget]
+
+    # 미완성 태그 제거: 마지막 '<' 가 '>' 보다 뒤에 있으면 그 앞까지
+    last_lt = cut.rfind("<")
+    last_gt = cut.rfind(">")
+    if last_lt > last_gt:
+        cut = cut[:last_lt]
+
+    # 가능하면 행/카드 경계에서 끊기
+    for marker in ("</table>", "</tr>", "</td>", "</div>"):
+        idx = cut.rfind(marker)
+        if idx != -1 and idx > budget // 2:
+            cut = cut[: idx + len(marker)]
+            break
+
+    # 열린 래퍼를 최소한으로 닫아 메일 클라이언트가 깨지지 않게 함
+    closers = ""
+    lower = cut.lower()
+    for tag, open_pat, close_pat in (
+        ("table", "<table", "</table"),
+        ("tr", "<tr", "</tr"),
+        ("td", "<td", "</td"),
+        ("div", "<div", "</div"),
+    ):
+        opens = lower.count(open_pat) - lower.count(close_pat)
+        if opens > 0:
+            closers += f"</{tag}>" * opens
+
+    # html/body 가 잘렸으면 보충
+    if "<html" in lower and "</html" not in lower:
+        if "<body" in lower and "</body" not in lower:
+            closers += "</body></html>"
+        else:
+            closers += "</html>"
+    elif "<body" in lower and "</body" not in lower:
+        closers += "</body>"
+
+    result = cut + notice + closers
+    if len(result) > max_chars:
+        # 최후: 안내만 남기고 본문은 더 짧게
+        mini_notice = (
+            f'<html><body><p style="font-family:{_MAIL_FONT}; font-size:13px; color:#6B7280;">'
+            f"(이하 {omitted}자 생략"
+            f"{(' — ' + omitted_hint) if omitted_hint else ''})"
+            f"</p></body></html>"
+        )
+        if len(mini_notice) <= max_chars:
+            return mini_notice, omitted
+        return mini_notice[:max_chars], omitted
+    return result, omitted
+
+
+def _pack_mail_parts(content_blocks, footer_html, max_chars):
+    """
+    content_blocks: [{'kind': 'update'|'change'|'title', 'html': '...'}, ...]
+    카드/제목을 한도 내로 묶어 완성 HTML 리스트를 반환. footer는 마지막에만.
+    """
+    overhead = _estimate_wrapper_overhead()
+    budget = max(2000, max_chars - overhead - 200)
+
+    batches = []  # list of list of html snippets
+    current = []
+    current_len = 0
+
+    def flush():
+        nonlocal current, current_len
+        if current:
+            batches.append(current)
+            current = []
+            current_len = 0
+
+    for block in content_blocks:
+        html = block.get("html") or ""
+        if not html:
+            continue
+        # 단일 블록이 예산 초과면 그대로 한 배치(이후 safe_trim 폴백)
+        if len(html) > budget:
+            flush()
+            batches.append([html])
+            continue
+        if current and current_len + len(html) > budget:
+            flush()
+        current.append(html)
+        current_len += len(html)
+    flush()
+
+    if not batches:
+        if footer_html:
+            batches = [[]]
+        else:
+            return []
+
+    # footer를 마지막 배치에 붙일 수 있는지 확인
+    if footer_html:
+        last = batches[-1]
+        last_len = sum(len(x) for x in last)
+        if last_len + len(footer_html) <= budget:
+            last.append(footer_html)
+        else:
+            batches.append([footer_html])
+
+    total = len(batches)
+    parts = []
+    for i, snippets in enumerate(batches, start=1):
+        inner = _mail_part_banner(i, total) + "".join(snippets)
+        html = _finalize_mail_html(inner)
+        if len(html) > max_chars:
+            html, _ = safe_trim_html(html, max_chars)
+        parts.append(html)
+    return parts
+
+
+def _resolve_case_lists(
     success_cases=None,
     failed_cases=None,
     no_update_cases=None,
     captcha_cases=None,
     all_cases=None,
 ):
-    """
-    미발송 내역을 사건별 카드형 HTML로 조합하여 반환.
-    일자/내용/결과 글자색은 시트에서 온 색상을 그대로 유지합니다.
-
-    all_cases: 사건 목록 전체(list of dict). 있으면 run_results에 없는 건을 '미조회'로 표시.
-    인자로 success/... 를 넘기면 그 값을 우선 쓰고, 없으면 파일의 run_results를 사용합니다.
-    """
+    """get_summary_html / parts 공통: 상태별 리스트와 last_sent, updates, changes 반환."""
     data = load_unsent_emails()
     updates = data.get("updates", [])
     result_changes = data.get("result_changes", [])
     last_sent = data.get("last_sent", "") or "없음"
     run_results = data.get("run_results") or {}
 
-    # 명시 인자가 하나라도 있으면 구버전 경로(리스트 직접 전달)로 취급
     explicit = any(
         x is not None
         for x in (success_cases, failed_cases, no_update_cases, captcha_cases)
@@ -637,59 +856,128 @@ def get_summary_html(
             _case_lists_from_run_results(run_results, all_cases=all_cases)
         )
 
+    return {
+        "updates": updates,
+        "result_changes": result_changes,
+        "last_sent": last_sent,
+        "use_success": use_success,
+        "use_failed": use_failed,
+        "use_no_update": use_no_update,
+        "use_captcha": use_captcha,
+        "use_result_changed": use_result_changed,
+        "use_not_queried": use_not_queried,
+    }
+
+
+def get_summary_html_parts(
+    success_cases=None,
+    failed_cases=None,
+    no_update_cases=None,
+    captcha_cases=None,
+    all_cases=None,
+    max_chars=None,
+):
+    """
+    알림메일 HTML을 셀 한도 내로 나눈 리스트로 반환.
+    반환: (html_parts:list[str], last_sent:str)
+    성공/실패 요약은 마지막 파트에만 포함됩니다.
+    """
+    if max_chars is None:
+        max_chars = int(getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000))
+
+    ctx = _resolve_case_lists(
+        success_cases, failed_cases, no_update_cases, captcha_cases, all_cases
+    )
+    updates = ctx["updates"]
+    result_changes = ctx["result_changes"]
+    last_sent = ctx["last_sent"]
+
     has_footer = bool(
-        use_success
-        or use_failed
-        or use_no_update
-        or use_captcha
-        or use_result_changed
-        or use_not_queried
+        ctx["use_success"]
+        or ctx["use_failed"]
+        or ctx["use_no_update"]
+        or ctx["use_captcha"]
+        or ctx["use_result_changed"]
+        or ctx["use_not_queried"]
     )
 
     if not updates and not result_changes and not has_footer:
-        return "", last_sent
+        return [], last_sent
 
-    body_parts = []
+    # 카드 1개 예산: 전체 한도에서 래퍼·footer 여유를 뺀 값
+    max_card = max(3000, max_chars - _estimate_wrapper_overhead() - 1500)
+    blocks = []
 
-    # 상단 라벨 (업데이트가 있을 때만)
     if updates:
-        body_parts.append(
-            '<div style="padding:0 0 4px 0;">'
-            '<div style="font-family:Arial,sans-serif; font-size:11px; letter-spacing:0.12em; '
-            'color:#6B7280; margin-bottom:6px;">CASE-ING NOTIFICATION</div>'
-            f"{_mail_section_title('최신 업데이트 내역', padding='0 0 12px 0')}"
-            "</div>"
-        )
+        blocks.append({
+            "kind": "title",
+            "html": _mail_section_title("최신 업데이트 내역", padding="0 0 12px 0"),
+        })
         updates_by_sheet = {}
         for u in updates:
             s_name = u.get("sheet_name") or "기타"
             updates_by_sheet.setdefault(s_name, []).append(u)
-        body_parts.append(_build_update_cards(updates_by_sheet))
+        for card in _build_update_card_list(updates_by_sheet, max_card_chars=max_card):
+            blocks.append({"kind": "update", "html": card})
 
     if result_changes:
-        body_parts.append(_mail_section_title("결과 변경 내역"))
+        blocks.append({
+            "kind": "title",
+            "html": _mail_section_title("결과 변경 내역"),
+        })
         changes_by_sheet = {}
         for ch in result_changes:
             s_name = ch.get("sheet_name") or "기타"
             changes_by_sheet.setdefault(s_name, []).append(ch)
-        body_parts.append(_build_result_change_cards(changes_by_sheet))
+        for card in _build_result_change_card_list(changes_by_sheet, max_card_chars=max_card):
+            blocks.append({"kind": "change", "html": card})
 
+    footer_html = ""
     if has_footer:
-        total = None
-        if all_cases is not None:
-            total = len(all_cases)
-        body_parts.append(
-            _build_run_result_footer(
-                use_success,
-                use_failed,
-                use_no_update,
-                use_captcha,
-                use_result_changed,
-                use_not_queried,
-                total_count=total,
-            )
+        total = len(all_cases) if all_cases is not None else None
+        footer_html = _build_run_result_footer(
+            ctx["use_success"],
+            ctx["use_failed"],
+            ctx["use_no_update"],
+            ctx["use_captcha"],
+            ctx["use_result_changed"],
+            ctx["use_not_queried"],
+            total_count=total,
         )
 
-    inner = "".join(body_parts)
-    html = f"<html><body>{_wrap_mail_body(inner)}</body></html>"
-    return html, last_sent
+    parts = _pack_mail_parts(blocks, footer_html, max_chars)
+    return parts, last_sent
+
+
+def get_summary_html(
+    success_cases=None,
+    failed_cases=None,
+    no_update_cases=None,
+    captcha_cases=None,
+    all_cases=None,
+):
+    """
+    미발송 내역을 사건별 카드형 HTML로 조합하여 반환.
+    미리보기용: 분할 파트를 순서대로 이어 붙입니다(시트 저장은 get_summary_html_parts 사용).
+    """
+    parts, last_sent = get_summary_html_parts(
+        success_cases=success_cases,
+        failed_cases=failed_cases,
+        no_update_cases=no_update_cases,
+        captcha_cases=captcha_cases,
+        all_cases=all_cases,
+    )
+    if not parts:
+        return "", last_sent
+    if len(parts) == 1:
+        return parts[0], last_sent
+    # 미리보기: 파트들을 구분선과 함께 합침
+    joined_inners = []
+    for i, p in enumerate(parts, start=1):
+        joined_inners.append(
+            f'<div style="margin:0 0 24px 0; padding:0 0 16px 0; '
+            f'border-bottom:2px dashed #D1D5DB;">'
+            f'<div style="font-size:12px; color:#9CA3AF; margin-bottom:8px;">'
+            f'[미리보기 파트 {i}/{len(parts)}]</div>{p}</div>'
+        )
+    return "".join(joined_inners), last_sent

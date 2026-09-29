@@ -49,8 +49,8 @@ def send_notification_email(app):
     """미발송 누적 내역 또는 마지막 조회 결과를 구글 시트 '알림메일' 시트에 기록하고, 로컬 누적을 비웁니다. (비동기 처리)"""
     # 사건 목록 전체를 넘겨 미조회 건까지 요약에 포함
     all_cases = getattr(app, "case_list", None) or []
-    summary_html, last_sent = email_manager_module.get_summary_html(all_cases=all_cases)
-    if not summary_html or not summary_html.strip():
+    parts, last_sent = email_manager_module.get_summary_html_parts(all_cases=all_cases)
+    if not parts:
         messagebox.showinfo(
             "알림메일",
             "보낼 내역이 없습니다. (조회를 실행한 뒤 메일을 보낼 수 있습니다.)",
@@ -71,9 +71,7 @@ def send_notification_email(app):
 
     def worker():
         try:
-            ok = app.google_sheets_service.append_notification_mail(
-                summary_html, recipient
-            )
+            ok = app.google_sheets_service.append_notification_mails(parts, recipient)
             if not ok:
                 app.root.after(
                     0,
@@ -84,6 +82,7 @@ def send_notification_email(app):
                 return
 
             email_manager_module.clear_unsent_emails_and_update_last_sent()
+            app.log_message(f"알림메일 분할 발송: {len(parts)}통 시트 기록")
 
             msg_suffix = ""
             webapp_url = (
@@ -102,11 +101,15 @@ def send_notification_email(app):
                     app.log_message(f"GAS 웹 앱 즉시 발송 호출 실패: {e}")
                     msg_suffix = "\n\n(웹 앱 호출에 실패했습니다. 트리거가 설정되어 있다면 1분 내로 발송됩니다.)"
 
+            part_info = (
+                f"\n(메일 {len(parts)}통으로 분할 기록)" if len(parts) > 1 else ""
+            )
+
             def final_update():
                 update_email_btn_text(app)
                 messagebox.showinfo(
                     "알림메일",
-                    f"알림메일 시트에 기록했습니다. (발송상태: 대기){msg_suffix}",
+                    f"알림메일 시트에 기록했습니다. (발송상태: 대기){part_info}{msg_suffix}",
                 )
 
             app.root.after(0, final_update)
