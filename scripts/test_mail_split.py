@@ -112,6 +112,7 @@ def test_small_cases_stay_one_mail(path):
     assert html.count(SHORT_NAME) == 1, html.count(SHORT_NAME)
     assert "최신 업데이트" in html and "결과 변경" in html
     assert "font-weight:800" in html
+    assert "#E8F4FC" in html and "#7EB6D9" in html
     assert "이어짐" not in html
 
 

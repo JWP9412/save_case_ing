@@ -1,11 +1,11 @@
 # case-ing (미어캣싱)
 
-대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.5.0**  
+대법원 나의 사건 조회 자동화 시스템 (Puppeteer + Python GUI) - **v5.5.1**  
 제품 UI 명칭: **미어캣싱** (저장소/폴더명 case-ing 유지)
 
 - 개발자 : 박지원 -
 
-공식 버전 순서: **v5.3.0 → v5.3.1 → v5.3.2 → v5.3.3 → v5.4.0 → v5.5.0**
+공식 버전 순서: **v5.3.0 → v5.3.1 → v5.3.2 → v5.3.3 → v5.4.0 → v5.5.0 → v5.5.1**
 
 ## 원본 출처
 
@@ -27,7 +27,7 @@ case-ing는 case + ~ing의 합성어로 여러 개의 사건 진행현황을 쉽
 ```
 case-ing/
 ├── auto_runner.py               CLI 실행기
-├── config.py                    설정 상수 (APP_VERSION = "5.5.0", APP_TITLE = "미어캣싱")
+├── config.py                    설정 상수 (APP_VERSION = "5.5.1", APP_TITLE = "미어캣싱")
 ├── main.py                      진입점 (GUI 또는 --auto)
 ├── requirements.txt             Python 패키지
 ├── data/                        설정·이력 JSON
@@ -156,11 +156,11 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 
 ---
 
-## 현재 버전 특징 (v5.5.0)
+## 현재 버전 특징 (v5.5.1)
 
-1. **사건당 카드 하나** — 최신 업데이트와 결과 변경을 같은 카드에 담고, 구분 제목은 진하게 표시.
-2. **긴 기록 우선** — 행이 많은 사건부터 위에 오고, 한도 안에 들어가면 한 통으로 보냄. 넘을 때만 `(이어짐 N)`.
-3. **메일 제목** — 여러 통이면 `(1/2)` 순번, 일시는 `YYYY-MM-DD HH:MM:SS`.
+1. **결과 변경은 하늘색** — 같은 카드에서 최신 업데이트는 흰색, 결과 변경만 하늘색. 경계에 파란색 구분선.
+2. **(유지) 사건당 카드 하나** — 구분 제목은 진하게. 행이 많은 사건부터, 한도를 넘을 때만 `(이어짐 N)`.
+3. **(유지) 메일 제목** — 여러 통이면 `(1/2)` 순번, 일시는 `YYYY-MM-DD HH:MM:SS`.
 4. **(유지) 잘림 안내** — 깨진 HTML 태그 대신 생략 문구만 표시.
 5. **(유지) 버전 업데이트 확인** — GitHub Release와 태그 중 더 높은 버전을 최신으로 봅니다.
 
@@ -168,6 +168,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 
 ## 개발 히스토리
 
+- **v5.5.1**: 알림메일 결과 변경 구역 하늘색·경계 구분선
 - **v5.5.0**: 알림메일 사건 카드 하나·긴 기록 우선·제목 (1/N)
 - **v5.4.0**: 알림메일 카드형 HTML·분할 발송·안전 절단
 - **v5.3.3**: 버전 업데이트 확인(releases+tags)·Release 게시 체크리스트
@@ -187,9 +188,9 @@ powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1
 - **v4.7.0**: 구글 캘린더·OAuth, 기록 초기화·재수집
 - **v4.6.x ~ v4.0.0**: 목록 캐시·관리 UI, 아키텍처, CLI, 알림메일 등
 
-상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.5.0.md](00.CHANGELOG/CHANGELOG_v5.5.0.md)  
-버전별 README: [00.README/README_v5.5.0.md](00.README/README_v5.5.0.md)  
-구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.5.0.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.5.0.md)
+상세 변경 이력: [00.CHANGELOG/CHANGELOG_v5.5.1.md](00.CHANGELOG/CHANGELOG_v5.5.1.md)  
+버전별 README: [00.README/README_v5.5.1.md](00.README/README_v5.5.1.md)  
+구조: [00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.5.1.md](00.PROJECT_STRUCTURE/PROJECT_STRUCTURE_v5.5.1.md)
 
 ---
 

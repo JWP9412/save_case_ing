@@ -369,24 +369,22 @@ def _mail_section_title(title, padding="18px 0 12px 0"):
     )
 
 
-def _mail_kind_label(title, with_divider=False):
+# 결과 변경 구역만 하늘색. 최신 업데이트(흰색)와 만나는 경계선.
+_CHANGE_BG = "#E8F4FC"
+_CHANGE_LINE = "#7EB6D9"
+_CHANGE_ROW_LINE = "#D6E8F5"
+
+
+def _mail_kind_label(title):
     """
     같은 사건 카드 안에서 '최신 업데이트' / '결과 변경'을 구분하는 제목.
 
     주니어: 연한 회색 작은 글씨는 메일에서 잘 안 보였습니다.
-    미리보기와 같이 15px, 굵기 800, 거의 검정(#111827)으로 둡니다.
-    결과 변경이 업데이트 바로 아래면 with_divider=True 로 얇은 선만 긋습니다.
-    카드 테두리는 사건당 한 번만 감쌉니다.
+    15px, 굵기 800, 거의 검정(#111827)으로 둡니다.
+    흰 영역과 하늘색 영역의 경계선은 제목이 아니라 결과 변경 칸의 border-top 입니다.
     """
-    if with_divider:
-        box = (
-            "margin:10px 6px 8px 6px; padding-top:14px; "
-            "border-top:1px solid #E5E7EB; "
-        )
-    else:
-        box = "margin:0 6px 8px 6px; "
     return (
-        f'<div style="{box}font-family:{_MAIL_FONT}; font-size:15px; '
+        f'<div style="margin:0 6px 8px 6px; font-family:{_MAIL_FONT}; font-size:15px; '
         f'font-weight:800; color:#111827;">{_esc_html(title)}</div>'
     )
 
@@ -428,20 +426,22 @@ def _mail_card_header(title, sheet_url=""):
     )
 
 
-def _mail_td(text, color=None, with_border=False):
-    """표 셀. color는 시트에서 온 글자색을 그대로 씁니다."""
+def _mail_td(text, color=None, with_border=False, bg=None, border_color="#F3F4F6"):
+    """표 셀. color는 시트에서 온 글자색을 그대로 씁니다. bg는 칸 배경(결과 변경은 하늘색)."""
     css_color = _rgb_to_css(color) if color is not None else "#222222"
-    border = " border-bottom:1px solid #F3F4F6;" if with_border else ""
+    border = f" border-bottom:1px solid {border_color};" if with_border else ""
+    bg_css = f" background-color:{bg};" if bg else ""
     return (
-        f'<td style="{_TD_BASE} color:{css_color};{border}">{_esc_html(text)}</td>'
+        f'<td style="{_TD_BASE} color:{css_color};{border}{bg_css}">{_esc_html(text)}</td>'
     )
 
 
-def _html_data_table(rows_html):
+def _html_data_table(rows_html, bg=None):
     """카드 안의 진행 표. 헤더 행과 데이터 행 HTML을 그대로 감쌉니다."""
+    bg_css = f" background-color:{bg};" if bg else ""
     return (
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-        f'style="border-collapse:collapse; width:100%;">{rows_html}</table>'
+        f'style="border-collapse:collapse; width:100%;{bg_css}">{rows_html}</table>'
     )
 
 
@@ -468,13 +468,19 @@ def _update_table_html(sheet_updates):
 
 
 def _change_table_html(sheet_changes):
-    """결과 변경 표만. 이전 결과/변경 결과 열이 업데이트 표와 다릅니다."""
+    """
+    결과 변경 표만. 이전 결과/변경 결과 열이 업데이트 표와 다릅니다.
+    셀 배경도 하늘색으로 둡니다. 메일 앱은 표 칸 배경을 따로 안 칠하면 하얗게 보입니다.
+    """
+    bg = _CHANGE_BG
+    line = _CHANGE_ROW_LINE
+    th = f"{_TH_STYLE} background-color:{bg}; border-bottom:1px solid {line};"
     rows = [
         "<tr>"
-        f'<th style="{_TH_STYLE}">일자</th>'
-        f'<th style="{_TH_STYLE}">내용</th>'
-        f'<th style="{_TH_STYLE}">이전 결과</th>'
-        f'<th style="{_TH_STYLE}">변경 결과</th>'
+        f'<th style="{th}">일자</th>'
+        f'<th style="{th}">내용</th>'
+        f'<th style="{th}">이전 결과</th>'
+        f'<th style="{th}">변경 결과</th>'
         "</tr>"
     ]
     last_i = len(sheet_changes) - 1
@@ -482,13 +488,13 @@ def _change_table_html(sheet_changes):
         border = i < last_i
         rows.append(
             "<tr>"
-            f"{_mail_td(ch.get('date', ''), ch.get('dateColor'), border)}"
-            f"{_mail_td(ch.get('content', ''), ch.get('contentColor'), border)}"
-            f"{_mail_td(ch.get('old_result', ''), None, border)}"
-            f"{_mail_td(ch.get('result', ''), ch.get('resultColor'), border)}"
+            f"{_mail_td(ch.get('date', ''), ch.get('dateColor'), border, bg, line)}"
+            f"{_mail_td(ch.get('content', ''), ch.get('contentColor'), border, bg, line)}"
+            f"{_mail_td(ch.get('old_result', ''), None, border, bg, line)}"
+            f"{_mail_td(ch.get('result', ''), ch.get('resultColor'), border, bg, line)}"
             "</tr>"
         )
-    return _html_data_table("".join(rows))
+    return _html_data_table("".join(rows), bg)
 
 
 def _render_update_card(s_name, sheet_updates, sheet_url="", title_suffix=""):
@@ -509,21 +515,37 @@ def _render_combined_case_card(s_name, updates, changes, sheet_url="", title_suf
     """
     사건 하나의 업데이트와 결과변경을 카드 하나에 담습니다.
 
-    주니어: 시트명·바로가기는 맨 위에 한 번만 둡니다.
-    그 아래 '최신 업데이트' 표와 '결과 변경' 표를 같은 흰 카드 안에 이어 붙입니다.
+    주니어: 시트명·바로가기는 맨 위 흰 칸에 한 번만 둡니다.
+    최신 업데이트는 흰 배경, 결과 변경은 하늘색(#E8F4FC)입니다.
+    두 구역이 같이 있으면 경계에 파란 구분선(2px)을 긋습니다.
     둘 중 하나만 있으면 그 표만 카드에 넣습니다.
     """
     title = f"{s_name}{title_suffix}" if title_suffix else s_name
     header = _mail_card_header(title, sheet_url)
-    sections = []
+    rows = [
+        '<tr><td style="padding:16px 18px 12px 18px; border-bottom:1px solid #EEF0F3; '
+        f'background-color:#FFFFFF;">{header}</td></tr>'
+    ]
     if updates:
-        sections.append(_mail_kind_label("최신 업데이트"))
-        sections.append(_update_table_html(updates))
+        update_body = _mail_kind_label("최신 업데이트") + _update_table_html(updates)
+        rows.append(
+            '<tr><td style="padding:14px 12px 8px 12px; background-color:#FFFFFF;">'
+            f"{update_body}</td></tr>"
+        )
     if changes:
-        # 업데이트가 위에 있을 때만 구분선. 결과변경만 있으면 제목만 진하게.
-        sections.append(_mail_kind_label("결과 변경", with_divider=bool(updates)))
-        sections.append(_change_table_html(changes))
-    return _mail_card(header, "".join(sections))
+        # 업데이트가 위에 있을 때만 흰/하늘 경계선. 결과변경만 있으면 헤더 아래 테두리로 충분합니다.
+        edge = f" border-top:2px solid {_CHANGE_LINE};" if updates else ""
+        change_body = _mail_kind_label("결과 변경") + _change_table_html(changes)
+        rows.append(
+            f'<tr><td style="padding:14px 12px 14px 12px; background-color:{_CHANGE_BG};{edge}">'
+            f"{change_body}</td></tr>"
+        )
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background-color:#FFFFFF; border:1px solid #E5E7EB; border-radius:10px; '
+        'overflow:hidden; margin:0 0 14px 0;">'
+        f'{"".join(rows)}</table>'
+    )
 
 
 def _chunk_items_to_cards(s_name, items, sheet_url, render_fn, max_card_chars):
