@@ -978,22 +978,34 @@ class GoogleSheetsService:
                 )
             self._throttle_api()
             all_values = worksheet.get_all_values()
-            header = ["일시", "수신주소", "메일내용", "발송상태"]
+            # E열: 메일제목 (분할 시 "(1/2)" 포함, GAS가 제목으로 사용)
+            header = ["일시", "수신주소", "메일내용", "발송상태", "메일제목"]
             if len(all_values) == 0:
                 self._throttle_api()
-                worksheet.append_row(header)
-            elif len(all_values) == 1 and len(all_values[0]) < 4:
-                self._throttle_api()
-                worksheet.update("A1:D1", [header], value_input_option="USER_ENTERED")
+                worksheet.append_row(header, value_input_option="RAW")
+            else:
+                row1 = all_values[0] if all_values else []
+                # 헤더에 메일제목 열이 없으면 E1에 추가
+                if len(row1) < 5 or (len(row1) >= 5 and str(row1[4]).strip() == ""):
+                    self._throttle_api()
+                    worksheet.update("A1:E1", [header], value_input_option="RAW")
+                elif len(row1) < 4:
+                    self._throttle_api()
+                    worksheet.update("A1:E1", [header], value_input_option="RAW")
 
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             recipient = (recipient_email or "").strip()
-            # append_rows 는 표 범위 추정으로 열이 밀릴 수 있어, 행마다 append_row 사용
-            for body in bodies:
+            total = len(bodies)
+            # RAW: 일시 문자열이 Date로 변환되지 않도록 (제목의 GMT 장문 방지)
+            for idx, body in enumerate(bodies, start=1):
+                part_label = f" ({idx}/{total})" if total > 1 else ""
+                mail_subject = (
+                    f"case-ing 최신 업데이트 내역{part_label} ({current_time})"
+                )
                 self._throttle_api()
                 worksheet.append_row(
-                    [current_time, recipient, body, "대기"],
-                    value_input_option="USER_ENTERED",
+                    [current_time, recipient, body, "대기", mail_subject],
+                    value_input_option="RAW",
                 )
             self._log(f"✅ 알림메일 시트에 {len(bodies)}건 추가 완료 (발송상태: 대기)")
             return True

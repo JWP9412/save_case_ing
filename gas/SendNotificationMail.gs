@@ -8,6 +8,9 @@
  * 3. sendPendingNotificationEmails 함수를 한 번 수동 실행하여 권한 부여
  * 4. 배포 > 새 배포 > 웹 앱으로 배포 후 URL을 복사해 case-ing 설정에 붙여넣기
  * 5. 수신 주소는 case-ing 프로그램의 "설정" 창에서 입력합니다.
+ *
+ * 시트 열:
+ *   A 일시 | B 수신주소 | C 메일내용 | D 발송상태 | E 메일제목(선택, case-ing가 채움)
  */
 
 /**
@@ -23,7 +26,29 @@ const COL_일시 = 1;       // A
 const COL_수신주소 = 2;   // B
 const COL_메일내용 = 3;   // C
 const COL_발송상태 = 4;   // D
+const COL_메일제목 = 5;   // E (선택: 분할 발송 시 "(1/2)" 포함 제목)
 const HEADER_ROW = 1;
+
+/**
+ * 시트 일시 값을 yyyy-MM-dd HH:mm:ss 문자열로 통일합니다.
+ * (Date 객체가 들어오면 GMT 장문 문자열이 되지 않도록 포맷)
+ */
+function formatMailTimestamp_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  }
+  const s = String(value == null ? '' : value).trim();
+  // 이미 yyyy-MM-dd HH:mm:ss 형태면 그대로
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) {
+    return s;
+  }
+  // Date.toString() 잔여물 등 → 파싱 시도
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime()) && s.length > 10) {
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  }
+  return s;
+}
 
 /**
  * 발송상태가 "대기"인 행을 찾아, 해당 행의 수신주소(B열)로 메일 발송 후 "완료"로 변경합니다.
@@ -38,40 +63,78 @@ function sendPendingNotificationEmails() {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
 
-  const dataRange = sheet.getRange(2, 1, lastRow, COL_발송상태);
+  // E열(메일제목)까지 읽음 — 없으면 빈 칸
+  const lastCol = Math.max(sheet.getLastColumn(), COL_메일제목);
+  const dataRange = sheet.getRange(2, 1, lastRow, lastCol);
   const rows = dataRange.getValues();
   const statusRange = sheet.getRange(2, COL_발송상태, lastRow, COL_발송상태);
 
-  const subject = 'case-ing 최신 업데이트 내역';
-
+  // 1) 대기 행만 모음
+  const pending = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const status = String(row[COL_발송상태 - 1] || '').trim();
     if (status !== '대기') continue;
+    pending.push({ index: i, row: row });
+  }
+  if (pending.length === 0) return;
 
-    const 일시 = row[COL_일시 - 1];
+  // 2) 같은 일시+수신주소 묶음별로 (1/N) 부여 (메일제목 열이 비어 있을 때 폴백)
+  const groupCounts = {};
+  const groupOrders = {};
+  pending.forEach(function (item) {
+    const row = item.row;
+    const dateStr = formatMailTimestamp_(row[COL_일시 - 1]);
+    const to = String(row[COL_수신주소 - 1] || '').trim();
+    const key = dateStr + '|' + to;
+    groupCounts[key] = (groupCounts[key] || 0) + 1;
+  });
+  pending.forEach(function (item) {
+    const row = item.row;
+    const dateStr = formatMailTimestamp_(row[COL_일시 - 1]);
+    const to = String(row[COL_수신주소 - 1] || '').trim();
+    const key = dateStr + '|' + to;
+    groupOrders[key] = (groupOrders[key] || 0) + 1;
+    item.partNo = groupOrders[key];
+    item.partTotal = groupCounts[key];
+    item.dateStr = dateStr;
+  });
+
+  // 3) 발송
+  pending.forEach(function (item) {
+    const i = item.index;
+    const row = item.row;
     const 수신주소 = String(row[COL_수신주소 - 1] || '').trim();
     const 메일내용 = row[COL_메일내용 - 1];
+    const customSubject = String(row[COL_메일제목 - 1] || '').trim();
 
     if (!수신주소 || 수신주소.indexOf('@') === -1) {
       statusRange.getCell(i + 1, 1).setValue('건너뜀(수신주소없음)');
-      continue;
+      return;
     }
     if (!메일내용 || String(메일내용).trim() === '') {
       statusRange.getCell(i + 1, 1).setValue('건너뜀(내용없음)');
-      continue;
+      return;
+    }
+
+    let subject = customSubject;
+    if (!subject) {
+      const partLabel =
+        item.partTotal > 1 ? ' (' + item.partNo + '/' + item.partTotal + ')' : '';
+      subject =
+        'case-ing 최신 업데이트 내역' + partLabel + ' (' + (item.dateStr || '') + ')';
     }
 
     try {
       const htmlBody = String(메일내용).trim();
       MailApp.sendEmail({
         to: 수신주소,
-        subject: subject + ' (' + (일시 || '') + ')',
+        subject: subject,
         htmlBody: htmlBody
       });
       statusRange.getCell(i + 1, 1).setValue('완료');
     } catch (e) {
       statusRange.getCell(i + 1, 1).setValue('실패: ' + (e.message || e.toString()).slice(0, 50));
     }
-  }
+  });
 }

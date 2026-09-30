@@ -362,10 +362,32 @@ def _case_lists_from_run_results(run_results, all_cases=None):
 
 
 def _mail_section_title(title, padding="18px 0 12px 0"):
-    """섹션 제목 HTML (최신 업데이트 / 결과 변경 / 조회 요약)."""
+    """섹션 제목 HTML (조회 결과 요약 등)."""
     return (
         f'<div style="padding:{padding}; font-family:{_MAIL_FONT}; '
         f'font-size:18px; font-weight:700; color:#111827;">{_esc_html(title)}</div>'
+    )
+
+
+def _mail_kind_label(title, with_divider=False):
+    """
+    같은 사건 카드 안에서 '최신 업데이트' / '결과 변경'을 구분하는 제목.
+
+    주니어: 연한 회색 작은 글씨는 메일에서 잘 안 보였습니다.
+    미리보기와 같이 15px, 굵기 800, 거의 검정(#111827)으로 둡니다.
+    결과 변경이 업데이트 바로 아래면 with_divider=True 로 얇은 선만 긋습니다.
+    카드 테두리는 사건당 한 번만 감쌉니다.
+    """
+    if with_divider:
+        box = (
+            "margin:10px 6px 8px 6px; padding-top:14px; "
+            "border-top:1px solid #E5E7EB; "
+        )
+    else:
+        box = "margin:0 6px 8px 6px; "
+    return (
+        f'<div style="{box}font-family:{_MAIL_FONT}; font-size:15px; '
+        f'font-weight:800; color:#111827;">{_esc_html(title)}</div>'
     )
 
 
@@ -415,10 +437,16 @@ def _mail_td(text, color=None, with_border=False):
     )
 
 
-def _render_update_card(s_name, sheet_updates, sheet_url="", title_suffix=""):
-    """업데이트 행 묶음 1개를 카드 HTML로 렌더."""
-    title = f"{s_name}{title_suffix}" if title_suffix else s_name
-    header = _mail_card_header(title, sheet_url)
+def _html_data_table(rows_html):
+    """카드 안의 진행 표. 헤더 행과 데이터 행 HTML을 그대로 감쌉니다."""
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="border-collapse:collapse; width:100%;">{rows_html}</table>'
+    )
+
+
+def _update_table_html(sheet_updates):
+    """최신 업데이트 표만. 카드 테두리는 호출하는 쪽에서 한 번만 감쌉니다."""
     rows = [
         "<tr>"
         f'<th style="{_TH_STYLE} width:18%;">일자</th>'
@@ -436,17 +464,11 @@ def _render_update_card(s_name, sheet_updates, sheet_url="", title_suffix=""):
             f"{_mail_td(u.get('result', ''), u.get('resultColor'), border)}"
             "</tr>"
         )
-    body = (
-        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-        f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
-    )
-    return _mail_card(header, body)
+    return _html_data_table("".join(rows))
 
 
-def _render_result_change_card(s_name, sheet_changes, sheet_url="", title_suffix=""):
-    """결과 변경 행 묶음 1개를 카드 HTML로 렌더."""
-    title = f"{s_name}{title_suffix}" if title_suffix else s_name
-    header = _mail_card_header(title, sheet_url)
+def _change_table_html(sheet_changes):
+    """결과 변경 표만. 이전 결과/변경 결과 열이 업데이트 표와 다릅니다."""
     rows = [
         "<tr>"
         f'<th style="{_TH_STYLE}">일자</th>'
@@ -466,11 +488,42 @@ def _render_result_change_card(s_name, sheet_changes, sheet_url="", title_suffix
             f"{_mail_td(ch.get('result', ''), ch.get('resultColor'), border)}"
             "</tr>"
         )
-    body = (
-        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-        f'style="border-collapse:collapse; width:100%;">{"".join(rows)}</table>'
-    )
-    return _mail_card(header, body)
+    return _html_data_table("".join(rows))
+
+
+def _render_update_card(s_name, sheet_updates, sheet_url="", title_suffix=""):
+    """업데이트만 있는 카드. 알림메일 본문은 _render_combined_case_card 를 씁니다."""
+    title = f"{s_name}{title_suffix}" if title_suffix else s_name
+    header = _mail_card_header(title, sheet_url)
+    return _mail_card(header, _update_table_html(sheet_updates))
+
+
+def _render_result_change_card(s_name, sheet_changes, sheet_url="", title_suffix=""):
+    """결과 변경만 있는 카드. 알림메일 본문은 _render_combined_case_card 를 씁니다."""
+    title = f"{s_name}{title_suffix}" if title_suffix else s_name
+    header = _mail_card_header(title, sheet_url)
+    return _mail_card(header, _change_table_html(sheet_changes))
+
+
+def _render_combined_case_card(s_name, updates, changes, sheet_url="", title_suffix=""):
+    """
+    사건 하나의 업데이트와 결과변경을 카드 하나에 담습니다.
+
+    주니어: 시트명·바로가기는 맨 위에 한 번만 둡니다.
+    그 아래 '최신 업데이트' 표와 '결과 변경' 표를 같은 흰 카드 안에 이어 붙입니다.
+    둘 중 하나만 있으면 그 표만 카드에 넣습니다.
+    """
+    title = f"{s_name}{title_suffix}" if title_suffix else s_name
+    header = _mail_card_header(title, sheet_url)
+    sections = []
+    if updates:
+        sections.append(_mail_kind_label("최신 업데이트"))
+        sections.append(_update_table_html(updates))
+    if changes:
+        # 업데이트가 위에 있을 때만 구분선. 결과변경만 있으면 제목만 진하게.
+        sections.append(_mail_kind_label("결과 변경", with_divider=bool(updates)))
+        sections.append(_change_table_html(changes))
+    return _mail_card(header, "".join(sections))
 
 
 def _chunk_items_to_cards(s_name, items, sheet_url, render_fn, max_card_chars):
@@ -753,8 +806,10 @@ def safe_trim_html(html, max_chars, omitted_hint="다음 메일에서 이어집�
 
 def _pack_mail_parts(content_blocks, footer_html, max_chars):
     """
-    content_blocks: [{'kind': 'update'|'change'|'title', 'html': '...'}, ...]
-    카드/제목을 한도 내로 묶어 완성 HTML 리스트를 반환. footer는 마지막에만.
+    content_blocks: [{'kind': 'case', 'html': '...'}, ...]
+    사건 덩어리(또는 이어짐 조각)를 한도 안으로 최대한 묶어 완성 HTML을 만듭니다.
+    한 블록은 중간에서 자르지 않습니다. 블록 하나가 예산보다 클 때만 안전 절단합니다.
+    footer(조회 요약)는 마지막 메일에만 붙입니다.
     """
     overhead = _estimate_wrapper_overhead()
     budget = max(2000, max_chars - overhead - 200)
@@ -869,6 +924,124 @@ def _resolve_case_lists(
     }
 
 
+def _group_notification_cases(updates, result_changes):
+    """
+    업데이트와 결과변경을 시트(사건) 하나로 묶고, 기록이 많은 순으로 정렬합니다.
+
+    주니어 개발자 참고:
+    - 예전 메일은 '업데이트 전부'를 1통, '결과변경 전부'를 2통에 넣었습니다.
+      그래서 41096·41087처럼 같은 사건이 두 통에 같이 보였고, '(이어짐)'도 없었습니다.
+    - 이제는 시트명 기준으로 한 사건에 업데이트+결과변경을 같이 담습니다.
+    - row_count = 업데이트 행 수 + 결과변경 행 수.
+      많은 사건부터 오고, 행 수가 같으면 시트명 가나다순으로 고정합니다.
+    """
+    grouped = {}
+
+    def _bucket(s_name):
+        if s_name not in grouped:
+            grouped[s_name] = {
+                "sheet_name": s_name,
+                "sheet_url": "",
+                "updates": [],
+                "changes": [],
+            }
+        return grouped[s_name]
+
+    for u in updates or []:
+        s_name = (u.get("sheet_name") or "기타").strip() or "기타"
+        bucket = _bucket(s_name)
+        bucket["updates"].append(u)
+        if not bucket["sheet_url"] and u.get("sheet_url"):
+            bucket["sheet_url"] = u.get("sheet_url")
+
+    for ch in result_changes or []:
+        s_name = (ch.get("sheet_name") or "기타").strip() or "기타"
+        bucket = _bucket(s_name)
+        bucket["changes"].append(ch)
+        if not bucket["sheet_url"] and ch.get("sheet_url"):
+            bucket["sheet_url"] = ch.get("sheet_url")
+
+    cases = []
+    for bucket in grouped.values():
+        bucket["row_count"] = len(bucket["updates"]) + len(bucket["changes"])
+        cases.append(bucket)
+    cases.sort(key=lambda g: (-g["row_count"], g["sheet_name"] or ""))
+    return cases
+
+
+def _render_case_bundle_html(case, title_suffix=""):
+    """
+    한 사건의 업데이트+결과변경을 카드 하나 HTML로 만듭니다.
+
+    이 카드가 메일 예산 안에 들어가면, 패킹 단계에서 중간이 갈라지지 않습니다.
+    """
+    updates = case.get("updates") or []
+    changes = case.get("changes") or []
+    if not updates and not changes:
+        return ""
+    return _render_combined_case_card(
+        case.get("sheet_name") or "기타",
+        updates,
+        changes,
+        case.get("sheet_url") or "",
+        title_suffix,
+    )
+
+
+def _chunk_combined_case_cards(case, budget):
+    """
+    한 사건이 예산보다 클 때만 행을 나눕니다.
+
+    주니어: 업데이트 행을 먼저 넣고, 이어서 결과변경 행을 넣습니다.
+    한 조각 안에 두 종류가 같이 들어가면 그래도 카드는 하나입니다.
+    두 번째 조각부터 시트명 뒤에 '(이어짐 N)'을 붙입니다.
+    행 하나만으로 예산을 넘으면 더 쪼개지 않고, 나중에 안전 절단합니다.
+    """
+    s_name = case.get("sheet_name") or "기타"
+    url = case.get("sheet_url") or ""
+    tagged = [("u", row) for row in (case.get("updates") or [])]
+    tagged.extend(("c", row) for row in (case.get("changes") or []))
+    if not tagged:
+        return []
+
+    def _render(rows, idx):
+        suffix = f" (이어짐 {idx + 1})" if idx > 0 else ""
+        updates = [row for kind, row in rows if kind == "u"]
+        changes = [row for kind, row in rows if kind == "c"]
+        return _render_combined_case_card(s_name, updates, changes, url, suffix)
+
+    cards = []
+    chunk = []
+    cont_idx = 0
+    for item in tagged:
+        trial = chunk + [item]
+        if chunk and len(_render(trial, cont_idx)) > budget:
+            cards.append(_render(chunk, cont_idx))
+            cont_idx += 1
+            chunk = [item]
+        else:
+            chunk = trial
+    if chunk:
+        cards.append(_render(chunk, cont_idx))
+    return cards
+
+
+def _case_html_blocks(case, budget):
+    """
+    사건 1개를 패킹 블록으로 만듭니다.
+
+    - 합친 카드가 budget 이하면 블록 1개 (업데이트/결과변경이 다른 카드로 갈라지지 않음).
+    - budget을 넘을 때만 행을 나누고, 두 번째 카드부터 '(이어짐 N)'.
+    작은 사건은 미리 쪼개지 않아서 메일 통수가 늘어나지 않습니다.
+    """
+    whole = _render_case_bundle_html(case)
+    if not whole:
+        return []
+    if len(whole) <= budget:
+        return [whole]
+    return _chunk_combined_case_cards(case, budget)
+
+
 def get_summary_html_parts(
     success_cases=None,
     failed_cases=None,
@@ -880,7 +1053,12 @@ def get_summary_html_parts(
     """
     알림메일 HTML을 셀 한도 내로 나눈 리스트로 반환.
     반환: (html_parts:list[str], last_sent:str)
-    성공/실패 요약은 마지막 파트에만 포함됩니다.
+
+    주니어:
+    - 사건(시트) 단위로 묶고, 기록 행이 많은 사건부터 넣습니다.
+    - 한 사건이 예산 안이면 업데이트+결과변경을 카드 하나에 담아 메일 중간에서 갈라지지 않습니다.
+    - 한 사건만으로 예산을 넘을 때만 '(이어짐 N)'으로 다음 메일에 잇습니다.
+    - 성공/실패 요약은 마지막 파트에만 포함됩니다.
     """
     if max_chars is None:
         max_chars = int(getattr(config, "GOOGLE_SHEET_CELL_MAX_CHARS", 49000))
@@ -904,33 +1082,14 @@ def get_summary_html_parts(
     if not updates and not result_changes and not has_footer:
         return [], last_sent
 
-    # 카드 1개 예산: 전체 한도에서 래퍼·footer 여유를 뺀 값
-    max_card = max(3000, max_chars - _estimate_wrapper_overhead() - 1500)
+    # _pack_mail_parts 와 같은 본문 예산. 이 안에 들어가면 한 통에 유지합니다.
+    overhead = _estimate_wrapper_overhead()
+    budget = max(2000, max_chars - overhead - 200)
     blocks = []
-
-    if updates:
-        blocks.append({
-            "kind": "title",
-            "html": _mail_section_title("최신 업데이트 내역", padding="0 0 12px 0"),
-        })
-        updates_by_sheet = {}
-        for u in updates:
-            s_name = u.get("sheet_name") or "기타"
-            updates_by_sheet.setdefault(s_name, []).append(u)
-        for card in _build_update_card_list(updates_by_sheet, max_card_chars=max_card):
-            blocks.append({"kind": "update", "html": card})
-
-    if result_changes:
-        blocks.append({
-            "kind": "title",
-            "html": _mail_section_title("결과 변경 내역"),
-        })
-        changes_by_sheet = {}
-        for ch in result_changes:
-            s_name = ch.get("sheet_name") or "기타"
-            changes_by_sheet.setdefault(s_name, []).append(ch)
-        for card in _build_result_change_card_list(changes_by_sheet, max_card_chars=max_card):
-            blocks.append({"kind": "change", "html": card})
+    # 긴 사건부터. 각 사건이 예산 안이면 블록 1개라 업데이트/결과변경이 다른 메일로 갈라지지 않습니다.
+    for case in _group_notification_cases(updates, result_changes):
+        for html in _case_html_blocks(case, budget):
+            blocks.append({"kind": "case", "html": html})
 
     footer_html = ""
     if has_footer:
