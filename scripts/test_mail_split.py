@@ -174,6 +174,18 @@ def test_long_case_continues_short_case_once(path):
     )
 
 
+def test_change_only_cases_go_last():
+    """결과 변경만 있는 사건은 행이 더 많아도 업데이트 있는 사건 뒤에 옵니다."""
+    updates = [_update_row("업데이트사건", "기일변경", "2025가합1")]
+    changes = [_change_row("업데이트사건", "확인", "2025가합1")]
+    for i in range(12):
+        changes.append(_change_row("결과변경만", f"결과만 행 {i}", "2025가합41096"))
+    grouped = em._group_notification_cases(updates, changes)
+    names = [g["sheet_name"] for g in grouped]
+    assert names == ["업데이트사건", "결과변경만"], names
+    print("OK change-only last", names)
+
+
 def test_safe_trim():
     huge = "<html><body>" + ("가" * 100000) + "</body></html>"
     trimmed, omitted = em.safe_trim_html(huge, 49000)
@@ -190,6 +202,7 @@ def main():
     try:
         test_small_cases_stay_one_mail(path)
         test_long_case_continues_short_case_once(path)
+        test_change_only_cases_go_last()
         test_safe_trim()
     finally:
         if os.path.exists(path):

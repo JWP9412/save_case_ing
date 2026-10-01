@@ -955,7 +955,9 @@ def _group_notification_cases(updates, result_changes):
       그래서 41096·41087처럼 같은 사건이 두 통에 같이 보였고, '(이어짐)'도 없었습니다.
     - 이제는 시트명 기준으로 한 사건에 업데이트+결과변경을 같이 담습니다.
     - row_count = 업데이트 행 수 + 결과변경 행 수.
-      많은 사건부터 오고, 행 수가 같으면 시트명 가나다순으로 고정합니다.
+    - 최신 업데이트가 있는 사건이 먼저 옵니다. 그 안에서는 행이 많은 순입니다.
+    - 결과 변경만 있는 사건(업데이트 행 0)은 맨 뒤로 보냅니다.
+      그 안에서도 행이 많은 순이고, 같으면 시트명 가나다순입니다.
     """
     grouped = {}
 
@@ -987,7 +989,15 @@ def _group_notification_cases(updates, result_changes):
     for bucket in grouped.values():
         bucket["row_count"] = len(bucket["updates"]) + len(bucket["changes"])
         cases.append(bucket)
-    cases.sort(key=lambda g: (-g["row_count"], g["sheet_name"] or ""))
+    # change_only=1 이면 결과변경만 있는 사건 → 맨 뒤.
+    # 같은 그룹 안에서는 행이 많은 사건이 위입니다.
+    cases.sort(
+        key=lambda g: (
+            0 if g["updates"] else 1,
+            -g["row_count"],
+            g["sheet_name"] or "",
+        )
+    )
     return cases
 
 
@@ -1077,7 +1087,8 @@ def get_summary_html_parts(
     반환: (html_parts:list[str], last_sent:str)
 
     주니어:
-    - 사건(시트) 단위로 묶고, 기록 행이 많은 사건부터 넣습니다.
+    - 사건(시트) 단위로 묶습니다. 최신 업데이트가 있는 사건이 앞이고, 결과 변경만 있는 사건은 맨 뒤입니다.
+    - 같은 그룹 안에서는 기록 행이 많은 사건부터 넣습니다.
     - 한 사건이 예산 안이면 업데이트+결과변경을 카드 하나에 담아 메일 중간에서 갈라지지 않습니다.
     - 한 사건만으로 예산을 넘을 때만 '(이어짐 N)'으로 다음 메일에 잇습니다.
     - 성공/실패 요약은 마지막 파트에만 포함됩니다.
@@ -1108,7 +1119,8 @@ def get_summary_html_parts(
     overhead = _estimate_wrapper_overhead()
     budget = max(2000, max_chars - overhead - 200)
     blocks = []
-    # 긴 사건부터. 각 사건이 예산 안이면 블록 1개라 업데이트/결과변경이 다른 메일로 갈라지지 않습니다.
+    # 업데이트가 있는 사건이 앞, 결과변경만 있는 사건은 뒤.
+    # 각 사건이 예산 안이면 블록 1개라 중간에서 갈라지지 않습니다.
     for case in _group_notification_cases(updates, result_changes):
         for html in _case_html_blocks(case, budget):
             blocks.append({"kind": "case", "html": html})
